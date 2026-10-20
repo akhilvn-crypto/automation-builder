@@ -1,0 +1,6 @@
+Test Case ID,Test Case Title,Preconditions,Test Steps,Test Data,Expected Result,Priority
+TC-101,Add item to cart,User is on the product list,"1. Click ""Add to cart"" on the first product
+2. Open the cart",,"1. The cart badge shows 1
+2. The cart lists the product",High
+TC-102,Remove item from cart,Cart contains one item,Open the cart,,The cart page is shown,Medium
+,,,Click Remove on the item,,The cart is empty and shows "Your cart is empty",

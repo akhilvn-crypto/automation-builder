@@ -1,0 +1,76 @@
+---
+name: pipeline-setup
+description: Preflight, approval-gated dependency installation, and persisted setup configuration for the Playwright pipeline. Use when running the preflight/configuration stages, when config/automation.config.json is missing or invalid, or when the user wants to change pipeline settings.
+argument-hint: "[--reconfigure]"
+---
+
+# Pipeline setup
+
+Resolves the `preflight` and `configuration` stages. All state goes through the CLI; never hand-edit
+`config/automation.config.json`, `config/dependency-log.json` or a manifest.
+
+CLI: `node src/cli/pipeline.ts <args>` (JSON on stdout; exit 0 ok, 2 validation failed/not ready, 1 error).
+
+## 1. Preflight (read-only)
+
+Run `node src/cli/pipeline.ts preflight`. It never installs anything. Read `checks[]` and `config`.
+
+- `node` status `error` → stop; the user must upgrade Node manually.
+- Report a compact table: dependency, status, version, location, required.
+
+## 2. Configuration
+
+Run `node src/cli/pipeline.ts config check`.
+
+- `status: "valid"` and no `--reconfigure` → **reuse it**. Show a 3–5 line summary. Do not re-ask.
+- `absent` / `invalid` → ask **only** for the fields listed in `issues` (plus any the user wants to change).
+
+Rules for asking (use AskUserQuestion; group independent choices into one call, max 4 questions):
+
+| Field | How to ask | Recommendation |
+|---|---|---|
+| `language` | Skip if the project already establishes it (`tsconfig.json` or `typescript` devDependency ⇒ `typescript`). Never convert an existing project. | TypeScript |
+| `evidence.video` | off / on / retain-on-failure | retain-on-failure |
+| `evidence.screenshot` | off / on / only-on-failure | only-on-failure |
+| `evidence.trace` | off / on / on-first-retry / retain-on-failure | retain-on-failure |
+| `reporters` | multiSelect: html, json, allure, junit. `json` is mandatory (pipeline state). | html + json + allure |
+| `browsers` | multiSelect chromium/firefox/webkit | chromium |
+| `app.baseUrl`, `app.environment` | Free text. **Never invent a URL.** Must be an authorized test environment. | — |
+| `input.testCasesPath` | Relative path inside the project | `input/test-cases` |
+| `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only | — |
+
+Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.
+Extent Reports: only offer after verifying a maintained Playwright integration exists; otherwise say so.
+
+Write the candidate to a scratch JSON file, then `node src/cli/pipeline.ts config save --file <path>`.
+If exit code 2, show `issues` and re-ask only those fields. Never put secret values in the config —
+secrets live in `.env` (git-ignored); `.env.example` lists names only.
+
+## 3. Dependencies — one approval per dependency
+
+Re-run preflight after configuration (required-ness depends on config). For **each** check with
+`required: true` and `status: "missing"`, in this order: `typescript`, `@playwright/test`, `browser:*`,
+`@playwright/cli`, `allure-playwright`, `allure-cli`:
+
+1. Explain: what is missing, why (`purpose`), the exact `installCommand`, and that it is project-local and version-pinned.
+2. Ask a yes/no question for **that dependency only**. Approval never extends to another dependency.
+3. **Declined** →
+   `node src/cli/pipeline.ts deps record --dependency <id> --action declined --reason "<purpose>" --run <runId>`,
+   set the current stage `blocked` with the reason, and stop. Tell the user how to resume:
+   `/automation-builder:playwright-pipeline resume <runId>` after installing or approving.
+4. **Approved** → run exactly `installCommand`, re-run preflight to verify the check is now `ok`, then
+   `deps record --dependency <id> --action installed --version <verified> --cmd "<command>" --reason "<purpose>" --run <runId>`.
+   If verification fails, report the output and mark the stage `failed`. Do not try alternatives.
+
+Special cases:
+- `@playwright/cli` found only **globally** is acceptable (`status: ok`). You may *offer* a project-local pinned
+  install for reproducibility; it is optional.
+- Before proposing any Allure install, check current official Allure guidance (Allure 3 CLI is the npm
+  `allure` package; Allure 2 needs Java). Explain the runtime requirement in the question.
+- Before proposing the Playwright CLI install, check current official `@playwright/cli` guidance for the install
+  command and compatibility with the installed `@playwright/test` version.
+
+## 4. Done
+
+Preflight `ready: true` and config `valid` ⇒ stage may complete. Otherwise the stage is `blocked`
+(missing approval/info) or `failed` (an operation errored) — never `completed`.

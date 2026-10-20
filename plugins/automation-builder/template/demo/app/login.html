@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Login - Demo Shop</title></head>
+<body>
+  <main>
+    <h1>Login</h1>
+    <form id="login">
+      <label>Email <input type="email" name="email" required></label>
+      <label>Password <input type="password" name="password" required></label>
+      <button type="submit">{{SIGNIN_LABEL}}</button>
+    </form>
+    <p role="alert" id="error" hidden>Please enter your email and password</p>
+  </main>
+  <script>
+    document.getElementById("login").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      if (f.get("email") && f.get("password")) location.href = "/dashboard";
+      else document.getElementById("error").hidden = false;
+    });
+  </script>
+</body></html>

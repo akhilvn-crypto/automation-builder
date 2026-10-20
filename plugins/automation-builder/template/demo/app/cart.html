@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cart - Demo Shop</title></head>
+<body>
+  <main>
+    <h1>Your cart</h1>
+    <ul aria-label="Cart items">
+      <li data-price="10.00">Socks - $10.00</li>
+      <li data-price="20.00">Hat - $20.00</li>
+    </ul>
+    <p>Total: <output id="total" aria-label="Cart total"></output></p>
+  </main>
+  <script>
+    // Deliberate demo bug: slice(0, -1) drops the last item from the total.
+    const prices = [...document.querySelectorAll("li[data-price]")].map((li) => Number(li.dataset.price));
+    const total = prices.slice(0, -1).reduce((a, b) => a + b, 0);
+    document.getElementById("total").textContent = "$" + total.toFixed(2);
+  </script>
+</body></html>

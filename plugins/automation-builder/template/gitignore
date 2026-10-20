@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Secrets and authentication state — never commit
+.env
+.env.*
+!.env.example
+.auth/
+**/storage-state*.json
+**/*.auth.json
+
+# Pipeline run artifacts (per-run evidence, reports, traces, videos)
+output/runs/
+
+# Playwright default output locations
+test-results/
+playwright-report/
+blob-report/
+allure-results/
+allure-report/
+
+# Playwright CLI session artifacts
+.playwright-cli/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
