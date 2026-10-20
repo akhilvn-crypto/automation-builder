@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Pipeline run state (manifests, specs, exploration evidence, healing logs)
+runs/
+
+# Playwright CLI session artifacts
+.playwright-cli/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

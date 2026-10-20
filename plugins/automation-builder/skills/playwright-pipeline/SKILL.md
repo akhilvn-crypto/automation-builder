@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # /automation-builder:playwright-pipeline — orchestrator
 
-> **Project setup:** if `automation/engine/cli/pipeline.ts` does not exist, stop and tell the user to run
+> **Project setup:** if `dependencies/engine/cli/pipeline.ts` does not exist, stop and tell the user to run
 > `/automation-builder:init` first (it scaffolds the framework; it installs nothing).
 
 You (the main session) are the **pipeline orchestrator**. Orchestration runs in the main session, not in a
@@ -24,11 +24,11 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
 
 ## Start or resume
 
-- `$ARGUMENTS` starts with `resume <run-id>` → `node automation/engine/cli/pipeline.ts run resume <run-id>`. If `ok: false`, show
+- `$ARGUMENTS` starts with `resume <run-id>` → `node dependencies/engine/cli/pipeline.ts run resume <run-id>`. If `ok: false`, show
   the issues and stop (do not "fix" the manifest). Otherwise continue from `next`, and mention any `recovered`
   (interrupted) stages: they will be re-run from scratch.
-- Otherwise → `node automation/engine/cli/pipeline.ts run create --command playwright-pipeline` and note the `runId`. An optional
-  test-case path in `$ARGUMENTS` (relative to the project root or to `automation/`) is passed as `--path` to `input validate` and to the test-analyst for this run only.
+- Otherwise → `node dependencies/engine/cli/pipeline.ts run create --command playwright-pipeline` and note the `runId`. An optional
+  test-case path in `$ARGUMENTS` (e.g. `dependencies/input/test-cases`; the CLI also accepts it relative to `dependencies/`) is passed as `--path` to `input validate` and to the test-analyst for this run only.
 
 ## Run the stages
 
@@ -37,5 +37,5 @@ the artifacts to register, and the failure behaviour.
 
 ## Finish
 
-Print the final summary described at the end of stages.md, plus the run directory `output/runs/<runId>/`.
+Print the final summary described at the end of stages.md, plus the run directory `dependencies/runs/<runId>/` (summary.md inside) and the report folder `automation/reports/<runId>/`.
 If the run stopped early, give the exact resume command: `/automation-builder:playwright-pipeline resume <runId>`.

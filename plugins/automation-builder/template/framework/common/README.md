@@ -1,43 +1,59 @@
 # Test automation ({{LANGUAGE}} · Playwright Test)
 
-This folder is a self-contained Playwright project scaffolded by the `automation-builder` plugin. It has its own
-`package.json` and `node_modules`; nothing outside `automation/` is modified. Run every command below from
-this folder (`cd automation`).
+This folder is the Playwright framework scaffolded by the `automation-builder` plugin. It has its own `package.json`
+and `node_modules`. It holds the framework and nothing else: the pipeline engine, docs, test-case input and run state
+live in the sibling **`../dependencies/`** folder. Keep the two folders together (`playwright.config.{{EXT}}` and
+`fixtures/` import the config loader from `../dependencies/engine/`). Run every command below from this folder
+(`cd automation`).
 
-Language: **{{LANGUAGE}}** (chosen at `/automation-builder:init`; fixed for this folder).
+Language: **{{LANGUAGE}}** (chosen at `/automation-builder:init`; fixed for this project).
 
 ## Layout
 
 ```
+pages/                  Page Object Model classes: locators and page-specific actions (BasePage.{{EXT}} + one class per page)
+tests/                  every test (*.spec.{{EXT}}). Files the pipeline wrote start with "// @automation-builder:generated" and are
+                        regenerated/healed by it; delete that line to take a file over. All other files are yours: never modified
+helpers/                reusable utilities shared by tests and pages (test-data.{{EXT}}: requireEnv, uniqueSuffix, redact)
+fixtures/               the shared `test` / `expect` (test.{{EXT}}) — import these, never @playwright/test directly
+config/                 automation.config.json: approved, non-secret choices (base URL, browsers, evidence, reporters)
+reports/<run-id>/       reporter output per pipeline run (html, json, junit, allure); reports/adhoc/ for plain `npm test` (git-ignored)
+test-results/<run-id>/  screenshots, video, traces per pipeline run; test-results/adhoc/ for plain `npm test` (git-ignored)
 playwright.config.{{EXT}}   thin wrapper: every value comes from config/automation.config.json (+ PW_* env overrides)
-fixtures/test.{{EXT}}       the shared `test` / `expect` — import these, never @playwright/test directly
-pages/                  page objects (BasePage.{{EXT}} + one class per page/component)
-utils/test-data.{{EXT}}     requireEnv(), uniqueSuffix(), redact()
-tests/
-  generated/            written by the pipeline only (*.spec.{{EXT}}); regenerated and healed by it
-  handwritten/          yours; the pipeline never modifies it
-  setup/                *.setup.{{EXT}} — one-time login when auth is "storage-state"
-config/                 automation.config.json (approved, non-secret choices), dependency-log.json, scaffold.json
-input/test-cases/       your Markdown / CSV test cases
-output/runs/<run-id>/   per-run manifest, evidence, reports (git-ignored)
+package.json  .gitignore  .env.example  README.md
+```
+
+Created only when used (rule: no folder without a clear responsibility):
+
+```
+test-data/              non-sensitive test data (never credentials)
+auth/                   login setup (*.setup.{{EXT}}) and the saved storage state (auth/storage-state.json, git-ignored);
+                        created when the authentication approach is "storage-state"
+```
+
+Where the rest went (`../dependencies/`, not part of the framework):
+
+```
 engine/                 the pipeline engine (TypeScript run by Node 24+). Plugin-managed: refresh it with
                         /automation-builder:init --update instead of editing it
 docs/                   test-case format and run-artifact reference
-.env.example            names of the environment variables the tests read — copy to .env (git-ignored)
+input/test-cases/       your Markdown / CSV test cases (the pipeline's input)
+runs/<run-id>/          per-run manifest, specs, exploration, healing log, summary (git-ignored)
+state/                  scaffold.json (chosen language), dependency-log.json (approved installs)
 ```
 
 ## Daily use
 
 | Task | Command |
 |---|---|
-| Run the whole pipeline (from the project root) | `/automation-builder:playwright-pipeline automation/input/test-cases` |
+| Run the whole pipeline (from the project root) | `/automation-builder:playwright-pipeline dependencies/input/test-cases` |
 | Run the tests directly | `npm test` (Playwright, all projects) · `npm run test:headed` · `npm run test:ui` |
-| Open the last HTML report | `npm run report` |
-| Pipeline CLI | `npm run pipeline -- run list` |
+| Open the last plain-run HTML report | `npm run report` |
+| Pipeline CLI (from `dependencies/`) | `npm run pipeline -- run list` |
 
 ## Writing tests by hand
 
-Put them in `tests/handwritten/<feature>.spec.{{EXT}}`:
+Put them in `tests/<feature>.spec.{{EXT}}` (no generated header):
 
 ```{{FENCE}}
 {{EXAMPLE}}
@@ -49,7 +65,7 @@ Conventions (the pipeline's reviewer enforces the same ones for generated tests)
 - Start the title with `[<ID>] ` and add the `testId` annotation — results, triage and healing map back to it.
 - Locators in this order: `getByRole` → `getByLabel` → `getByPlaceholder` / `getByText` → `getByTestId` →
   a scoped `locator()` with a comment. No XPath, no `waitForTimeout`, no `.only` / `.skip`.
-- Page objects own locators and actions; assertions stay in the test.
+- Page objects own locators and actions; assertions stay in the test. Generic, app-agnostic functions go in `helpers/`.
 - Navigate with relative paths (`page.goto('/login')`); the base URL comes from config.
 - Secrets: `requireEnv('NAME')` only. Real values live in `.env`, never in code, config or reports.
 - Create data with `uniqueSuffix()` and clean up only what the test created.

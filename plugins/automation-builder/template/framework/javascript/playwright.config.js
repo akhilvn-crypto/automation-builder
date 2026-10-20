@@ -1,10 +1,10 @@
 // Single Playwright Test configuration. All values come from config/automation.config.json
-// (+ env overrides) through engine/config/playwright-settings.ts — change settings there, not here.
+// (+ env overrides) through ../dependencies/engine/config/playwright-settings.ts — change settings there, not here.
 
 import { createRequire } from 'node:module';
 import { defineConfig, devices } from '@playwright/test';
-import { loadConfig } from './engine/config/load-config.ts';
-import { playwrightSettings } from './engine/config/playwright-settings.ts';
+import { loadConfig } from '../dependencies/engine/config/load-config.ts';
+import { playwrightSettings } from '../dependencies/engine/config/playwright-settings.ts';
 
 const rootDir = import.meta.dirname;
 
@@ -42,7 +42,6 @@ const DEVICES = { chromium: devices['Desktop Chrome'], firefox: devices['Desktop
 export default defineConfig({
   testDir: s.testDir,
   testMatch: s.testMatch,
-  testIgnore: s.testIgnore,
   outputDir: s.outputDir,
   timeout: s.timeout,
   retries: s.retries,
@@ -53,6 +52,7 @@ export default defineConfig({
   use: s.use,
   projects: s.projects.map((p) => ({
     name: p.name,
+    ...(p.testDir ? { testDir: p.testDir } : {}),
     ...(p.testMatch ? { testMatch: p.testMatch } : {}),
     ...(p.dependencies ? { dependencies: p.dependencies } : {}),
     use: { ...(p.browser ? DEVICES[p.browser] : {}), ...(p.storageState ? { storageState: p.storageState } : {}) },

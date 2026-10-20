@@ -14,22 +14,22 @@ per run) and refuses ineligible tests.
 
 ```bash
 # 1. reserve an attempt + snapshot the file (refused when the limit is reached → report unresolved)
-node automation/engine/cli/pipeline.ts heal begin <runId> <testId> --test-file tests/generated/<file>.spec.ts
+node dependencies/engine/cli/pipeline.ts heal begin <runId> <testId> --test-file tests/<file>.spec.ts
 #    → { attempt, remaining, snapshot, rerunLabel }
 
 # 2. minimal edit with the Edit tool: change only the broken locator/step, using current UI evidence
 
 # 3. guard: the patch must not weaken assertions (exit 2 = violations)
-node automation/engine/cli/pipeline.ts heal check <runId> <testId> --attempt <n> --test-file <file>
+node dependencies/engine/cli/pipeline.ts heal check <runId> <testId> --attempt <n> --test-file <file>
 
 # 4. static check
-npm run typecheck:framework
+(cd automation && npm run typecheck)
 
 # 5. targeted rerun with no retries (skip if steps 3–4 failed)
-node automation/engine/cli/pipeline.ts exec run <runId> --label <rerunLabel> --test-id <testId> --test-file <file> --retries 0
+node dependencies/engine/cli/pipeline.ts exec run <runId> --label <rerunLabel> --test-id <testId> --test-file <file> --retries 0
 
 # 6. record (always, even after a guard failure); reverts the file unless outcome = healed
-node automation/engine/cli/pipeline.ts heal record <runId> <testId> --attempt <n> --test-file <file> \
+node dependencies/engine/cli/pipeline.ts heal record <runId> <testId> --attempt <n> --test-file <file> \
   --rationale "<what changed and the evidence>" --evidence <path> [--evidence <path>]
 ```
 
@@ -49,6 +49,6 @@ After `still_failing`, a second attempt needs **new** evidence or a different hy
 - Service returns 503: environment issue, no edit. ❌
 
 ## Afterwards
-`node automation/engine/cli/pipeline.ts heal finish <runId>` lists the healed files. Regression validation reruns every test in
+`node dependencies/engine/cli/pipeline.ts heal finish <runId>` lists the healed files. Regression validation reruns every test in
 those files (`exec run <runId> --label regression --test-file <f>...`). A healed test that fails regression is
-reported as failed. Commits, shared test data and files outside `tests/generated/` need explicit user approval.
+reported as failed. Commits, shared test data and files without the `@automation-builder:generated` header (handwritten tests) need explicit user approval.

@@ -12,7 +12,7 @@ skills: automation-builder:playwright-framework, automation-builder:test-data-ma
 **Inputs:** `runId`; `generation-manifest.json`; `test-specs.json`; `exploration/exploration.json`.
 
 **Procedure**
-1. `node automation/engine/cli/pipeline.ts review static <runId>` runs the static rules and the typecheck, and (re)writes
+1. `node dependencies/engine/cli/pipeline.ts review static <runId>` runs the static rules and the typecheck, and (re)writes
    `review-report.json` and `review-report.md`.
 2. Read every generated file next to its spec and check:
    - **Assertion fidelity (most important):** every expected result in the spec has an assertion, and no assertion
@@ -25,7 +25,7 @@ skills: automation-builder:playwright-framework, automation-builder:test-data-ma
    - Page objects listed in `sharedFilesChanged` (`pages/*`): they extend `BasePage`, hold locators and actions only —
      **assertions in a page object are a major finding** — and use exploration-backed locators and relative paths.
 3. Record judgement findings: write a JSON array to a scratch file and run
-   `node automation/engine/cli/pipeline.ts review add <runId> --file <path>`. Each item is
+   `node dependencies/engine/cli/pipeline.ts review add <runId> --file <path>`. Each item is
    `{severity, file, line, rule, message}`, with severity `critical | major | minor | info`. A missing or altered
    expected result is **critical**.
 4. After the generator sends back fixes, re-run `review static`, then run

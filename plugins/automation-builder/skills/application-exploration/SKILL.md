@@ -15,22 +15,24 @@ Read `exploration.tool` from the run config and the `@playwright/cli` preflight 
 | Situation | Do |
 |---|---|
 | `playwright-cli` and the CLI is installed (project or global) | use the Playwright CLI (below) |
-| CLI missing, install not approved, `@playwright/test` + a browser installed | fallback: `node automation/engine/tools/aria-snapshot.ts` (read-only page snapshots) |
+| CLI missing, install not approved, `@playwright/test` + a browser installed | fallback: `node dependencies/engine/tools/aria-snapshot.ts` (read-only page snapshots) |
 | neither | stop; the stage is `blocked`. Do not install anything or try other tools |
 
 ## Playwright CLI
 
-The framework is the `automation/` folder: run a project-local CLI from there (`cd automation && npx playwright-cli …`),
-and evidence paths (`output/runs/<runId>/exploration/…`, also what `exploration.json` records) are relative to it.
+Run the CLI from the **`dependencies/`** folder, not from `automation/`: it writes session files (`.playwright-cli/`)
+into the current directory, and `automation/` must stay framework-only. A project-local install lives in
+`automation/node_modules`, so call it by path (`../automation/node_modules/.bin/playwright-cli …`); a global install is
+just `playwright-cli …`. Evidence goes to `runs/<runId>/exploration/…` (relative to `dependencies/`); `exploration.json`
+records those files relative to the run directory (`exploration/<page>.aria.yml`).
 
-Check the installed version's syntax first: `playwright-cli --help` (or `npx playwright-cli --help` for a
-project-local install). Don't assume flags. Typical flow:
+Check the installed version's syntax first: `playwright-cli --help` (or the same with the project-local path). Don't assume flags. Typical flow:
 
 1. Open a named, isolated session at the base URL, e.g. `playwright-cli -s=explore-<runId> open <baseUrl>`.
 2. `snapshot` → read the accessibility tree (roles, names, element refs like `e12`).
 3. For each ready spec, perform its steps in order using refs (`click e12`, `fill e5 "text"`), taking a snapshot after
    each state change. Use `$ENV_VAR` for credentials in the shell. Never type a literal secret.
-4. Save evidence that matters into `output/runs/<runId>/exploration/` (`<page>.aria.yml`, `<page>.png`).
+4. Save evidence that matters into `dependencies/runs/<runId>/exploration/` (`<page>.aria.yml`, `<page>.png`).
    Don't save pages showing secrets or personal data.
 5. Close the session (`close` / `session-stop` per `--help`). Always close it, even after an error.
 
@@ -41,7 +43,7 @@ role+name or test id; **medium** = text/label that could repeat; **low** = needs
 
 ## Fallback: aria snapshot
 
-`node automation/engine/tools/aria-snapshot.ts --url <baseUrl><path> --out output/runs/<runId>/exploration/<page>` writes
+`node dependencies/engine/tools/aria-snapshot.ts --url <baseUrl><path> --out runs/<runId>/exploration/<page>` (`--out` is relative to `dependencies/`) writes
 `<page>.aria.yml` + `<page>.png` for one page (navigation only, no interaction). Use it for each page the steps
 reach directly by URL. Record `tool: "aria-snapshot-fallback"` and mark specs needing interaction as `partial`,
 with the reason in `uncertainties`.
@@ -56,4 +58,4 @@ with the reason in `uncertainties`.
 
 Write `exploration/exploration.json` (schema in `engine/pipeline/exploration.ts`): pages (url, title, evidence paths,
 elements with `candidateLocator` + confidence), per-spec steps with the observation and the locators used, and
-`uncertainties`. Validate with `node automation/engine/cli/pipeline.ts explore validate <runId>`.
+`uncertainties`. Validate with `node dependencies/engine/cli/pipeline.ts explore validate <runId>`.

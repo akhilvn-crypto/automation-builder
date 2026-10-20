@@ -1,27 +1,35 @@
 ---
 name: init
-description: Scaffold the Automation Builder framework into the automation/ folder of the current project — a self-contained Playwright project in the language the user picks (TypeScript or JavaScript) plus the pipeline engine — or update the engine files to this plugin's version. Installs nothing.
+description: Scaffold the Automation Builder into the current project — the Playwright framework in automation/ (pages, tests, helpers, fixtures, config) and everything else the pipeline needs in a sibling dependencies/ folder — in the language the user picks (TypeScript or JavaScript), migrate an older single-folder layout, or update the engine files to this plugin's version. Installs nothing.
 argument-hint: "[--language typescript|javascript] [--update] [--with-demo] [--with-pipeline-tests] [--force]"
 disable-model-invocation: true
 ---
 
 # /automation-builder:init
 
-Sets up the current project so the pipeline commands can run. Everything goes into **`automation/`** (its own
-`package.json`, `node_modules`, config, tests and evidence), so the host project's own files are untouched apart from
-a rules block in the root `CLAUDE.md`. The pipeline engine is TypeScript run directly by Node 24+
-(`node automation/engine/cli/pipeline.ts`); the Playwright framework around it is TypeScript **or** JavaScript, as the
-user chooses.
+Sets up the current project so the pipeline commands can run. It creates **two sibling folders**:
+
+- **`automation/`** — the Playwright framework and nothing else, laid out as in `playwright_framework_structure.md`:
+  `pages/`, `tests/`, `helpers/` (mandatory), `fixtures/`, `config/`, and `reports/`, `test-results/` (generated), plus
+  `playwright.config.*`, `package.json`, `.gitignore`, `.env.example`, `README.md`. It has its own `package.json` and
+  `node_modules`; `test-data/` and `auth/` are created later, only if a test needs them.
+- **`dependencies/`** — everything that is not framework: the pipeline `engine/`, `docs/`, the test-case `input/`,
+  run state `runs/`, bookkeeping `state/`, and the optional demo app and engine tests. No `node_modules` here.
+
+The host project's own files are untouched apart from a rules block in the root `CLAUDE.md`. The pipeline engine is
+TypeScript run directly by Node 24+ (`node dependencies/engine/cli/pipeline.ts`); the Playwright framework is
+TypeScript **or** JavaScript, as the user chooses.
 
 ## Steps
 
 1. **Language — ask, never default.**
-   - If `automation/config/scaffold.json` exists, the language was already chosen (read `language` from it); do not
-     ask and do not pass `--language`. It cannot be changed in place.
+   - If `dependencies/state/scaffold.json` exists (or, in an older project, `automation/config/scaffold.json`), the
+     language was already chosen (read `language` from it); do not ask and do not pass `--language`. It cannot be
+     changed in place.
    - Otherwise, unless `$ARGUMENTS` already contains `--language`, ask with AskUserQuestion: *"Which language should
      the Playwright framework and generated tests use?"* with options **TypeScript (Recommended)** — typed
      fixtures/page objects, compile-time checks of generated tests (needs the `typescript` dev dependency) — and
-     **JavaScript** — plain ES modules with JSDoc types, no compiler. Say that the choice is fixed for the folder.
+     **JavaScript** — plain ES modules with JSDoc types, no compiler. Say that the choice is fixed for the project.
    - Pass the answer as `--language typescript|javascript`.
 
 2. Show what will happen with a dry run:
@@ -30,10 +38,17 @@ user chooses.
    node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --dry-run --language <choice> $ARGUMENTS
    ```
 
-   Summarize `created`, `overwritten`, `merged` and `warnings` from the JSON. `overwritten` is non-empty only with
-   `--update` (engine files: `engine/`, `docs/`, `playwright.config.*`, `tsconfig*.json`/`jsconfig.json`) or
-   `--force` (everything). If anything would be overwritten, or a warning mentions an existing `automation/package.json`
-   problem or an older root-level install, tell the user and ask to confirm before step 3.
+   Summarize `created`, `overwritten`, `merged`, `moved`, `removed`, `rewritten` and `warnings` from the JSON.
+   `overwritten` is non-empty only with `--update` (plugin-owned files: `dependencies/engine`, `dependencies/docs`,
+   `dependencies/tsconfig.json`, `automation/playwright.config.*`, `automation/tsconfig.json`/`jsconfig.json`) or
+   `--force` (everything).
+   **`migratedFromLegacyLayout: true`** means the project was scaffolded by plugin 0.2.x with everything inside
+   `automation/`. The script moves the pipeline's data out (`input/`, `output/runs/` → `dependencies/runs/`, `demo/`,
+   `config/scaffold.json` and `config/dependency-log.json` → `dependencies/state/`), renames `utils/` to `helpers/`,
+   moves `tests/setup/` to `auth/`, flattens `tests/generated/` + `tests/handwritten/` into `tests/` (generated specs get the ownership header), rewrites the affected imports in the user's own files, and **replaces** the
+   plugin-managed copies of `engine/`, `docs/`, `tsconfig.engine.json` and `tests/pipeline/`.
+   If anything would be overwritten, removed or moved, or a warning mentions an existing `package.json` problem or an
+   older root-level install, tell the user and ask to confirm before step 3.
    Exit code 2 with `needsInput: "language"` means step 1 was skipped.
 
 3. Run it for real (same arguments, without `--dry-run`):
@@ -45,21 +60,32 @@ user chooses.
 4. Report the result and the next step. Do **not** install anything here: `typescript` (TypeScript projects only),
    `@types/node`, `@playwright/test` and browsers are offered one by one, with explicit approval, by the
    preflight/configuration stages of `/automation-builder:playwright-pipeline`. They install into `automation/`.
+   After a migration, remind the user that runs moved to `dependencies/runs/` are history only (do not resume them) and to
+   re-check any moved `auth/*.setup.*` file.
 
-## What it creates (inside `automation/`)
+## What it creates
 
 ```
-playwright.config.{ts|js}  fixtures/test.*  pages/BasePage.*  utils/test-data.*   the framework (yours to extend)
-tsconfig.json + tsconfig.engine.json  (TypeScript)   or   jsconfig.json  (JavaScript)
-engine/  docs/                                            the pipeline engine and reference (plugin-managed)
-tests/generated  tests/handwritten  tests/setup  input/test-cases  config/        working folders
-package.json  .gitignore  .env.example  README.md
-config/scaffold.json                                      records the chosen language and plugin version
+automation/                              the framework only
+  pages/BasePage.*                       page objects
+  tests/                                 all tests; pipeline-written files start with "// @automation-builder:generated"
+  helpers/test-data.*                    reusable utilities (requireEnv, uniqueSuffix, redact)
+  fixtures/test.*                        shared test/expect
+  config/                                automation.config.json (written by the pipeline setup)
+  playwright.config.*  tsconfig.json (TypeScript) | jsconfig.json (JavaScript)
+  package.json  .gitignore  .env.example  README.md
+dependencies/                            not framework
+  engine/  docs/                         pipeline engine and reference (plugin-managed)
+  input/test-cases/                      your Markdown / CSV test cases
+  runs/                                  per-run state (created by the pipeline, git-ignored)
+  state/scaffold.json                    records the chosen language and plugin version
+  package.json  tsconfig.json (TypeScript)  .gitignore
 ```
 
 - Existing files are skipped; they are overwritten only with `--update` (plugin-owned files) or `--force` (all).
 - `.gitignore` lines and `package.json` scripts are merged, never replaced. No dependencies are added.
 - The project's root `CLAUDE.md` gets the pipeline's hard rules between `<!-- automation-builder:start/end -->` markers.
 
-Optional: `--with-demo` adds the local demo app (`npm run demo:app`) and demo test cases under `automation/demo/`;
-`--with-pipeline-tests` adds the pipeline's own `node:test` suites (`npm run test:pipeline`).
+Optional: `--with-demo` adds the local demo app (`npm run demo:app` in `dependencies/`) and demo test cases under
+`dependencies/demo/`; `--with-pipeline-tests` adds the pipeline's own `node:test` suites in `dependencies/engine-tests/`
+(`npm test` in `dependencies/`).

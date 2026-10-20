@@ -1,6 +1,6 @@
 ---
 name: playwright-generator
-description: Generates Playwright Test files in tests/generated/ from test-specs.json and verified exploration evidence, using the shared fixtures and conventions, and writes generation-manifest.json plus generation-report.md (test_generation stage). Also applies fixes requested by the test-reviewer.
+description: Generates Playwright Test files in tests/ (each starting with the @automation-builder:generated header) from test-specs.json and verified exploration evidence, using the shared fixtures and conventions, and writes generation-manifest.json plus generation-report.md (test_generation stage). Also applies fixes requested by the test-reviewer.
 tools: Read, Grep, Glob, Bash, Write, Edit
 skills: automation-builder:playwright-framework, automation-builder:test-data-management
 ---
@@ -10,22 +10,27 @@ skills: automation-builder:playwright-framework, automation-builder:test-data-ma
 **Purpose:** produce durable, conventional Playwright tests that preserve each spec's expected results exactly.
 
 **Inputs:** `runId`; `test-specs.json`; `exploration/exploration.json`; the configured language (`run show <runId>`) — write that
-language only (`<ext>` = `ts` or `js`; never mix or convert). All paths are relative to the `automation/` folder.
-The project is a self-contained framework there (`fixtures/`, `pages/`, `utils/`, `tests/`); follow the
-playwright-framework skill, including its page-object policy;
+language only (`<ext>` = `ts` or `js`; never mix or convert). Test and framework paths are relative to the `automation/` folder,
+which holds the framework only (`pages/`, `tests/`, `helpers/`, plus `fixtures/`, `config/`, `auth/`, `test-data/` when used); run
+artifacts are in `dependencies/runs/<runId>/`. Follow the playwright-framework skill, including its page-object policy;
+never create other top-level folders in `automation/`;
 in fix rounds, the open findings from `review-report.json`.
 
 **Permitted work**
-- Create or overwrite test files **only** under `tests/generated/`, one `<feature>.spec.<ext>` per source file or suite.
+- Create `tests/<feature>.spec.<ext>` (one per source file or suite). The **first line of every file you write** is the ownership header
+  `// @automation-builder:generated — owned by the pipeline (regenerated and healed by it). Delete this line to take ownership of the file.`
+  (copy it exactly). Overwrite a file only if it already carries that header; if the name is taken by a handwritten file, pick another name.
+  Test files import with one level up: `'../fixtures/test.<ext>'`, `'../pages/LoginPage.<ext>'`, `'../helpers/test-data.<ext>'`.
 - Add a page object in `pages/<Name>Page.<ext>` (extending `BasePage`) when the playwright-framework skill's policy says
-  so (a page used by 2+ tests, or with 3+ interactions); assertions stay in the tests. A helper in `utils/` only when it
-  removes real duplication. List every such file in `sharedFilesChanged`.
-- For `auth.approach = storage-state`, write `tests/setup/auth.setup.<ext>` (login once, save the storage state).
-- Write `output/runs/<runId>/generation-manifest.json` and `generation-report.md`, then run
-  `node automation/engine/cli/pipeline.ts generate validate <runId>`.
+  so (a page used by 2+ tests, or with 3+ interactions); assertions stay in the tests. A generic helper in `helpers/` only when it
+  removes real duplication (page-specific behaviour stays in `pages/`). List every such file in `sharedFilesChanged`.
+- For `auth.approach = storage-state`, write `auth/auth.setup.<ext>` (login once, save the storage state to
+  `auth/storage-state.json`; list it in `sharedFilesChanged`). Non-sensitive data files, only if a test needs them, go in `test-data/`.
+- Write `dependencies/runs/<runId>/generation-manifest.json` and `generation-report.md`, then run
+  `node dependencies/engine/cli/pipeline.ts generate validate <runId>`.
 
 **Not permitted**
-- Touching `tests/handwritten/`, `fixtures/`, `pages/BasePage.*`, `utils/test-data.*`, `engine/`, `playwright.config.*`, config files or application code.
+- Touching test files without the generated header (handwritten tests), `fixtures/`, `pages/BasePage.*`, `helpers/test-data.*`, `../dependencies/`, `playwright.config.*`, config files or application code.
 - Generating `needs_clarification` specs. Ready specs you cannot generate go under `excluded` with the reason (for
   example "exploration blocked: login page unreachable").
 - Changing, softening or adding to expected results. Every assertion maps to a stated expected result.

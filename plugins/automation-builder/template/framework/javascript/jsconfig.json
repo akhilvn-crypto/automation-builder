@@ -14,10 +14,10 @@
     "playwright.config.js",
     "fixtures/**/*.js",
     "pages/**/*.js",
-    "utils/**/*.js",
-    "engine/config/**/*.ts",
-    "tests/generated/**/*.js",
-    "tests/handwritten/**/*.js",
-    "tests/setup/**/*.js"
+    "helpers/**/*.js",
+    "auth/**/*.js",
+    "test-data/**/*.js",
+    "tests/**/*.js",
+    "../dependencies/engine/config/**/*.ts"
   ]
 }

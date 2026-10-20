@@ -5,22 +5,18 @@ node_modules/
 .env
 .env.*
 !.env.example
+auth/storage-state*.json
 .auth/
 **/storage-state*.json
 **/*.auth.json
 
-# Pipeline run artifacts (per-run evidence, reports, traces, videos)
-output/runs/
-
-# Playwright default output locations
+# Generated reports and execution artifacts (screenshots, videos, traces, raw results)
+reports/
 test-results/
 playwright-report/
 blob-report/
 allure-results/
 allure-report/
-
-# Playwright CLI session artifacts
-.playwright-cli/
 
 # OS / editor noise
 .DS_Store

@@ -9,7 +9,7 @@ user-invocable: false
 ## Credentials and secrets
 - Specs reference secrets as `env:VAR_NAME`. Values live only in `automation/.env` (git-ignored) or the real environment.
   `automation/.env.example` lists names with empty values.
-- In tests: `requireEnv('VAR_NAME')` from `utils/test-data.<ext>`. It fails with a clear message when the
+- In tests: `requireEnv('VAR_NAME')` from `helpers/test-data.<ext>`. It fails with a clear message when the
   variable is unset, and the failure is classified as `test_data_or_precondition`, not a script defect.
 - Never write a secret into tests, config, logs, reports, exploration files, commit messages or chat output.
   `config.auth.credentialEnvVars` lists the variable **names** so runner logs and diagnostics get redacted.
@@ -19,8 +19,8 @@ user-invocable: false
 ## Auth approaches (`config.auth.approach`)
 - `none`: no login.
 - `ui-login`: each test logs in through the UI with `requireEnv` credentials. Simplest; use while suites are small.
-- `storage-state`: a `tests/setup/auth.setup.<ext>` setup project logs in once and saves `.auth/storage-state.json`
-  (git-ignored); browser projects depend on it. If the state looks expired (redirect to login), re-run setup.
+- `storage-state`: an `auth/auth.setup.<ext>` setup project logs in once and saves `auth/storage-state.json`
+  (git-ignored); browser projects depend on it. Create the `auth/` folder only for this approach. If the state looks expired (redirect to login), re-run setup.
   Never commit or copy that file.
 
 ## Isolation
@@ -33,4 +33,6 @@ user-invocable: false
 - Delete only records the test created, through the app's normal UI/API, in the test or `afterEach`.
 - If no cleanup path exists, say so in the generation report. Never delete data you didn't create, and never run
   bulk deletes.
-- Run evidence under `output/runs/` is removed only by the explicit `retention.keepRuns` policy.
+- Non-sensitive fixture data (JSON/CSV) goes in `automation/test-data/`, created only when a test needs it. Never put credentials there.
+- Run state (`dependencies/runs/`) and run output (`automation/reports/<runId>/`, `automation/test-results/<runId>/`) is removed
+  only by the explicit `retention.keepRuns` policy.

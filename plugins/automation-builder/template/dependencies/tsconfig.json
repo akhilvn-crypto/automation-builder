@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "typeRoots": ["../automation/node_modules/@types"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "engine/cli/**/*.ts",
+    "engine/config/**/*.ts",
+    "engine/pipeline/**/*.ts",
+    "engine/utils/**/*.ts",
+    "engine/tools/**/*.ts",
+    "engine-tests/**/*.ts",
+    "demo/**/*.ts"
+  ]
+}

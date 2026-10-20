@@ -7,22 +7,24 @@ argument-hint: "[--reconfigure]"
 # Pipeline setup
 
 Resolves the `preflight` and `configuration` stages. All state goes through the CLI; never hand-edit
-`config/automation.config.json`, `config/dependency-log.json` or a manifest.
+`automation/config/automation.config.json`, `dependencies/state/dependency-log.json` or a manifest.
 
-CLI: `node automation/engine/cli/pipeline.ts <args>` (JSON on stdout; exit 0 ok, 2 validation failed/not ready, 1 error).
-Run it from the project root. All paths below are relative to the `automation/` folder, which is a self-contained
-project: **dependencies install into it**, so run every `installCommand` as `cd automation && <installCommand>`.
+CLI: `node dependencies/engine/cli/pipeline.ts <args>` (JSON on stdout; exit 0 ok, 2 validation failed/not ready, 1 error).
+Run it from the project root. The project has two sibling folders: `automation/` (the Playwright framework — config
+paths below are relative to it) and `dependencies/` (the pipeline engine, test-case input, run state). Packages install
+into `automation/` (the only folder with a `package.json` dependency list and `node_modules`), so run every
+`installCommand` as `cd automation && <installCommand>`.
 
 ## 1. Preflight (read-only)
 
-Run `node automation/engine/cli/pipeline.ts preflight`. It never installs anything. Read `checks[]` and `config`.
+Run `node dependencies/engine/cli/pipeline.ts preflight`. It never installs anything. Read `checks[]` and `config`.
 
 - `node` status `error` → stop; the user must upgrade Node manually.
 - Report a compact table: dependency, status, version, location, required.
 
 ## 2. Configuration
 
-Run `node automation/engine/cli/pipeline.ts config check`.
+Run `node dependencies/engine/cli/pipeline.ts config check`.
 
 - `status: "valid"` and no `--reconfigure` → **reuse it**. Show a 3–5 line summary. Do not re-ask.
 - `absent` / `invalid` → ask **only** for the fields listed in `issues` (plus any the user wants to change).
@@ -31,20 +33,20 @@ Rules for asking (use AskUserQuestion; group independent choices into one call, 
 
 | Field | How to ask | Recommendation |
 |---|---|---|
-| `language` | **Do not ask here and do not infer it from tsconfig/devDependencies.** It was chosen by the user at `/automation-builder:init` and is recorded in `config/scaffold.json` (preflight shows it as `scaffold.language`); the CLI seeds it into the config and rejects a different value. Only if `scaffold` is `null` (a folder not created by init) stop and tell the user to run `/automation-builder:init`. | chosen at init |
+| `language` | **Do not ask here and do not infer it from tsconfig/devDependencies.** It was chosen by the user at `/automation-builder:init` and is recorded in `dependencies/state/scaffold.json` (preflight shows it as `scaffold.language`); the CLI seeds it into the config and rejects a different value. Only if `scaffold` is `null` (a folder not created by init) stop and tell the user to run `/automation-builder:init`. | chosen at init |
 | `evidence.video` | off / on / retain-on-failure | retain-on-failure |
 | `evidence.screenshot` | off / on / only-on-failure | only-on-failure |
 | `evidence.trace` | off / on / on-first-retry / retain-on-failure | retain-on-failure |
 | `reporters` | multiSelect: html, json, allure, junit. `json` is mandatory (pipeline state). | html + json + allure |
 | `browsers` | multiSelect chromium/firefox/webkit | chromium |
 | `app.baseUrl`, `app.environment` | Free text. **Never invent a URL.** Must be an authorized test environment. | — |
-| `input.testCasesPath` | Path relative to `automation/` | `input/test-cases` |
+| `input.testCasesPath` | Path relative to `dependencies/` (test cases live in `dependencies/input/`) | `input/test-cases` |
 | `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only | — |
 
 Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.
 Extent Reports: only offer after verifying a maintained Playwright integration exists; otherwise say so.
 
-Write the candidate to a scratch JSON file, then `node automation/engine/cli/pipeline.ts config save --file <path>`.
+Write the candidate to a scratch JSON file, then `node dependencies/engine/cli/pipeline.ts config save --file <path>`.
 If exit code 2, show `issues` and re-ask only those fields. Never put secret values in the config —
 secrets live in `automation/.env` (git-ignored); `automation/.env.example` lists names only.
 
@@ -57,7 +59,7 @@ Re-run preflight after configuration (required-ness depends on config). For **ea
 1. Explain: what is missing, why (`purpose`), the exact `installCommand`, and that it is project-local and version-pinned.
 2. Ask a yes/no question for **that dependency only**. Approval never extends to another dependency.
 3. **Declined** →
-   `node automation/engine/cli/pipeline.ts deps record --dependency <id> --action declined --reason "<purpose>" --run <runId>`,
+   `node dependencies/engine/cli/pipeline.ts deps record --dependency <id> --action declined --reason "<purpose>" --run <runId>`,
    set the current stage `blocked` with the reason, and stop. Tell the user how to resume:
    `/automation-builder:playwright-pipeline resume <runId>` after installing or approving.
 4. **Approved** → run exactly `installCommand` (from inside `automation/`), re-run preflight to verify the check is now `ok`, then

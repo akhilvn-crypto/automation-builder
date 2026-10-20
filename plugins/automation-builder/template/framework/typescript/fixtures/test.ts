@@ -1,6 +1,6 @@
 // Shared Playwright Test fixtures. Generated and handwritten tests import { test, expect } from here.
 //
-//   import { test, expect } from '../../fixtures/test.ts';
+//   import { test, expect } from '../fixtures/test.ts';
 //   test('[TC-001] Valid user can sign in', { annotation: { type: 'testId', description: 'TC-001' } }, async ({ page }) => { ... });
 //
 // `diagnostics` (auto): collects console errors, page errors and failed requests, and attaches them
@@ -10,8 +10,8 @@
 
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
-import { loadConfig } from '../engine/config/load-config.ts';
-import { redact, secretValues } from '../utils/test-data.ts';
+import { loadConfig } from '../../dependencies/engine/config/load-config.ts';
+import { redact, secretValues } from '../helpers/test-data.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 

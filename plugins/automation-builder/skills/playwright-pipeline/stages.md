@@ -1,11 +1,19 @@
 # Stage playbook (shared by /automation-builder:playwright-pipeline, /automation-builder:generate-tests, /automation-builder:run-tests, /automation-builder:heal-tests)
 
-CLI: `node automation/engine/cli/pipeline.ts …` (abbreviated `pl` below), run from the project root. JSON on stdout; exit 0 ok, 2 not ready/invalid, 1 error.
+CLI: `node dependencies/engine/cli/pipeline.ts …` (abbreviated `pl` below), run from the project root. JSON on stdout; exit 0 ok, 2 not ready/invalid, 1 error.
 
-The framework is the self-contained `automation/` folder. Every path in artifacts, config and CLI arguments is relative to it
-(`input/test-cases`, `tests/generated/x.spec.ts`, `output/runs/<runId>/…`); a path written from the project root
-(`automation/input/test-cases/login.md`) is accepted and normalized by the CLI. Package installs and `npx` tools run inside it
-(`cd automation && …`). Generated code uses the language chosen at init (`language` in the run config).
+Two sibling folders. `automation/` is the Playwright framework only; `dependencies/` holds the engine, test-case input and
+run state. Paths follow one rule:
+
+| Kind | Relative to | Examples |
+|---|---|---|
+| test files, page objects, evidence, reports | `automation/` | `tests/x.spec.ts`, `test-results/<runId>/initial/…`, `reports/<runId>/initial/html/index.html` |
+| test-case input (`input.testCasesPath`, `--path`, `--input`) | `dependencies/` | `input/test-cases`, `input/test-cases/login.md` |
+| run artifacts (registered with `--artifact name=path`) | the run directory `dependencies/runs/<runId>/` | `test-specs.json`, `exploration/exploration.json`, `summary.json` |
+
+A path written from the project root (`automation/tests/x.spec.ts`, `dependencies/input/test-cases/login.md`) is
+accepted and normalized by the CLI. Package installs and `npx` tools run inside `automation/` (`cd automation && …`).
+Generated code uses the language chosen at init (`language` in the run config).
 
 Every stage follows the same pattern:
 
@@ -39,12 +47,12 @@ listed. Agents return a summary. Verify their claims with the CLI validators bef
 | 9 | `failure_triage` | execution results (this run or `sourceRunId`) | `pl triage run <runId>`; if there are failures, Agent **failure-healer** Phase A (confirm classifications) | `failureAnalysis=failure-analysis.json` | no failures → still complete (empty analysis) |
 | 10 | `healing` | failure analysis | no eligible failures → `skipped` ("no eligible script defects"). Else Agent **failure-healer** Phase B | `healingLog=healing-log.json` | the healer must run `pl heal finish` |
 | 11 | `regression_validation` | healing log | nothing healed → `skipped`. Else Agent **test-executor**, label `regression`, `--test-file` for each healed file | `regressionResults=regression-results.json` | runner error → `failed` |
-| 12 | `report_generation` | everything above | `pl report build <runId>` | `summary=reports/summary.json`, `summaryMarkdown=reports/summary.md` | exit 2 (reporter failed / runner error) → `failed` with the reporter details; the summary files still exist for the user |
+| 12 | `report_generation` | everything above | `pl report build <runId>` | `summary=summary.json`, `summaryMarkdown=summary.md` | exit 2 (reporter failed / runner error) → `failed` with the reporter details; the summary files still exist for the user |
 | 13 | `finalization` | summary | `pl run finalize <runId>` | — | refused until counts are recorded |
 
 Progress line after each stage: `[n/13] <stage> … <status> — <short note>`.
 
 Final message: run id and status (`pl run show <runId>`); the counts table (total / passed / failed /
 flaky(recovered) / healed / blocked / skipped / unresolved); failure categories; healing attempts; unresolved tests
-with reasons; paths to `reports/summary.md`, the HTML report, the Allure report if any, and `evidence/`.
+with reasons; paths to `dependencies/runs/<runId>/summary.md`, the HTML report (`automation/reports/<runId>/initial/html/index.html`), the Allure report if any, and the evidence folder `automation/test-results/<runId>/`.
 Never call a run successful unless its status is `completed`, and never present a flaky pass as a pass.

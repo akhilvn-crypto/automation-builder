@@ -20,11 +20,10 @@
     "playwright.config.ts",
     "fixtures/**/*.ts",
     "pages/**/*.ts",
-    "utils/**/*.ts",
-    "engine/config/**/*.ts",
-    "engine/tools/**/*.ts",
-    "tests/generated/**/*.ts",
-    "tests/handwritten/**/*.ts",
-    "tests/setup/**/*.ts"
+    "helpers/**/*.ts",
+    "auth/**/*.ts",
+    "test-data/**/*.ts",
+    "tests/**/*.ts",
+    "../dependencies/engine/config/**/*.ts"
   ]
 }

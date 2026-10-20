@@ -8,24 +8,30 @@ user-invocable: false
 
 One framework for every agent. Do not create parallel configs, fixtures or helpers.
 
-All paths are relative to the **`automation/`** folder (a self-contained project with its own `package.json`).
+All paths are relative to the **`automation/`** folder (the framework, with its own `package.json`). The pipeline engine,
+test-case input and run state live in the sibling `dependencies/` folder; never put them in `automation/`.
 `<ext>` is `ts` or `js` — the language the user chose at `/automation-builder:init`, recorded as `language` in
-`config/scaffold.json` and in the run's config (`node automation/engine/cli/pipeline.ts run show <runId>`).
+`dependencies/state/scaffold.json` and in the run's config (`node dependencies/engine/cli/pipeline.ts run show <runId>`).
 **Write only that language.** Never mix, never convert.
 
 ## Layout
 
+The structure follows `playwright_framework_structure.md`: **`pages/`, `tests/`, `helpers/` are mandatory**; `fixtures/`,
+`config/`, `test-data/`, `auth/`, `reports/`, `test-results/` exist only when they have a clear responsibility. Do not add other
+top-level folders to `automation/`.
+
 | Path | Owner | Notes |
 |---|---|---|
-| `playwright.config.<ext>` | framework | thin wrapper; all values come from `config/automation.config.json` via `engine/config/playwright-settings.ts` |
+| `playwright.config.<ext>` | framework | thin wrapper; all values come from `config/automation.config.json` via `../dependencies/engine/config/playwright-settings.ts` |
 | `fixtures/test.<ext>` | framework | exports `test`, `expect`; auto `diagnostics` fixture attaches console/page/network errors on failure |
-| `utils/test-data.<ext>` | framework | `requireEnv(name)`, `uniqueSuffix(prefix)`, `redact()` |
+| `helpers/test-data.<ext>` | framework | `requireEnv(name)`, `uniqueSuffix(prefix)`, `redact()`. Generic, app-agnostic helpers only; page-specific behaviour belongs in `pages/` |
+| `test-data/` | humans | only when needed: non-sensitive data files (JSON/CSV). Never credentials |
 | `pages/BasePage.<ext>` | framework | base class for page objects (`path`, `open()`, `byTestId()`) |
 | `pages/<Name>Page.<ext>` | generator | page objects extending `BasePage` (see policy below) |
-| `tests/generated/*.spec.<ext>` | generator | the only place generated tests are written |
-| `tests/handwritten/` | humans | never modified by the pipeline |
-| `tests/setup/*.setup.<ext>` | generator | only for `auth.approach = storage-state` (setup project) |
-| `engine/` | plugin | pipeline engine — never edit |
+| `tests/*.spec.<ext>` | generator + humans | one folder for every test. A file the pipeline wrote starts with the header `// @automation-builder:generated` and is the only kind it regenerates or heals; files without it are handwritten and never modified. Never overwrite a file lacking the header: choose another name |
+| `auth/*.setup.<ext>` | generator | only for `auth.approach = storage-state`: logs in once and saves `auth/storage-state.json` (git-ignored; never commit it) |
+| `reports/`, `test-results/` | generated | Playwright output per run (`<runId>/<label>/`); never write source code here |
+| `../dependencies/engine/` | plugin | pipeline engine — never edit |
 
 Type check (TypeScript projects): `npm run typecheck` (needs `@playwright/test`). JavaScript projects are syntax-checked
 and reviewed statically. Import specifiers carry the real extension: `.ts` in TypeScript projects, `.js` in JavaScript
@@ -45,12 +51,12 @@ ones. TypeScript uses only erasable syntax (no enums, namespaces or parameter pr
 
 ## Test shape
 
-TypeScript (`tests/generated/login.spec.ts`):
+TypeScript (`tests/login.spec.ts`; first line is the ownership header):
 
 ```ts
-import { test, expect } from '../../fixtures/test.ts';
-import { LoginPage } from '../../pages/LoginPage.ts';
-import { requireEnv } from '../../utils/test-data.ts';
+import { test, expect } from '../fixtures/test.ts';
+import { LoginPage } from '../pages/LoginPage.ts';
+import { requireEnv } from '../helpers/test-data.ts';
 
 test.describe('Login', () => {
   test('[TC-001] Valid user can sign in', { annotation: { type: 'testId', description: 'TC-001' }, tag: ['@smoke'] }, async ({ page }) => {
@@ -67,8 +73,8 @@ test.describe('Login', () => {
 });
 ```
 
-JavaScript is identical minus the types, with `.js` import specifiers (`'../../fixtures/test.js'`,
-`'../../pages/LoginPage.js'`, `'../../utils/test-data.js'`); page objects declare `path = '/login'` as a class field and
+JavaScript is identical minus the types, with `.js` import specifiers (`'../fixtures/test.js'`,
+`'../pages/LoginPage.js'`, `'../helpers/test-data.js'`); page objects declare `path = '/login'` as a class field and
 use JSDoc (`/** @param {string} email */`) instead of annotations.
 
 Rules:

@@ -7,16 +7,16 @@ disable-model-invocation: true
 
 # /automation-builder:run-tests
 
-> **Project setup:** if `automation/engine/cli/pipeline.ts` does not exist, stop and tell the user to run
+> **Project setup:** if `dependencies/engine/cli/pipeline.ts` does not exist, stop and tell the user to run
 > `/automation-builder:init` first (it scaffolds the framework; it installs nothing).
 
 Same orchestrator role, shared modules and configuration as `/automation-builder:playwright-pipeline`.
 
-1. Start: `node automation/engine/cli/pipeline.ts run create --command run-tests` (or `run resume <run-id>`).
+1. Start: `node dependencies/engine/cli/pipeline.ts run create --command run-tests` (or `run resume <run-id>`).
 2. Run these stages exactly as described in [../playwright-pipeline/stages.md](../playwright-pipeline/stages.md):
    `preflight` → `configuration` → `execution` → `failure_triage` → `report_generation` → `finalization`.
    - `execution`: delegate to **test-executor** with label `initial`, passing each path from `$ARGUMENTS` as
-     `--test-file` (none = every `*.spec.*` under `tests/`, generated and handwritten).
+     `--test-file` (none = every `*.spec.*` under `tests/`, pipeline-generated and handwritten).
    - `failure_triage`: `triage run`, then **failure-healer** Phase A only (classification). No edits in this command.
 3. Tests without a `[ID]` title appear as `untagged:<file>:<title>`. That's expected for handwritten tests.
 

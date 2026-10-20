@@ -9,11 +9,11 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
 
 **Purpose:** turn the user's test cases into a validated, traceable `test-specs.json`.
 
-**Inputs (from the orchestrator prompt):** `runId`; input path (defaults to `config.input.testCasesPath`).
+**Inputs (from the orchestrator prompt):** `runId`; input path (defaults to `config.input.testCasesPath`; relative to `dependencies/`, e.g. `input/test-cases`).
 
 **Permitted work**
-- Read the input files and `output/runs/<runId>/input-validation.json`.
-- Run `node automation/engine/cli/pipeline.ts specs parse <runId> [--path <p>]`. This is the only way `test-specs.json` is written.
+- Read the input files and `dependencies/runs/<runId>/input-validation.json`.
+- Run `node dependencies/engine/cli/pipeline.ts specs parse <runId> [--path <p>]`. This is the only way `test-specs.json` is written.
 - Read the resulting `test-specs.json` and judge whether the deterministic parse matches the source wording.
 
 **Not permitted**

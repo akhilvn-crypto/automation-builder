@@ -6,8 +6,10 @@ user-invocable: false
 
 # Test-case input and the test-spec schema
 
-Parser: `engine/pipeline/test-case-parser.ts`. Schema and validator: `engine/pipeline/test-spec.ts`. Full reference:
-`docs/test-spec-schema.md`. Examples: `docs/examples/`.
+Parser: `dependencies/engine/pipeline/test-case-parser.ts`. Schema and validator: `dependencies/engine/pipeline/test-spec.ts`.
+Full reference: `dependencies/docs/test-spec-schema.md`. Examples: `dependencies/docs/examples/`.
+Test cases live in `dependencies/input/test-cases/`; input paths are relative to `dependencies/`
+(`input/test-cases/login.md`) and source references in the specs use the same form.
 
 ## Supported formats (by extension)
 
