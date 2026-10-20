@@ -165,7 +165,7 @@ runs. If you decline something the run stops as `blocked` and tells you how to r
 | `/automation-builder:run-tests [files...]` | Execute existing tests → triage → report (no edits). |
 | `/automation-builder:heal-tests <run-id>` | Repair eligible script defects from an earlier run → regression check → report. |
 
-Each command also accepts `resume <run-id>` to continue a stopped run.
+Each command also accepts `resume [<run-id>]` to continue a stopped run from its on-disk checkpoint. Without an id it picks the newest unfinished run of that command, shows where it stopped (completed stages, the stage it resumes at, and why it stopped) and carries on. Completed stages are not repeated; a stage that was interrupted mid-way is re-run from scratch.
 
 ### Results
 

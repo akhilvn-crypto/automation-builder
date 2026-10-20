@@ -1,7 +1,7 @@
 ---
 name: generate-tests
 description: Parse test cases, explore the app as needed, then generate and review Playwright tests — without executing them.
-argument-hint: "[test-case path] | resume <run-id>"
+argument-hint: "[test-case path] | resume [<run-id>]"
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ disable-model-invocation: true
 
 Same orchestrator role, shared modules and configuration as `/automation-builder:playwright-pipeline`; only the scope is smaller.
 
-1. Start: `node dependencies/engine/cli/pipeline.ts run create --command generate-tests` (or `run resume <run-id>`).
+1. Start: `node dependencies/engine/cli/pipeline.ts run create --command generate-tests` (or resume: `run resume <run-id>`, or `run resume --command generate-tests` for the newest unfinished run; show its `checkpoint` first, as in playwright-pipeline).
    Out-of-scope stages are pre-marked `skipped`.
 2. Run these stages exactly as described in [../playwright-pipeline/stages.md](../playwright-pipeline/stages.md):
    `preflight` → `configuration` → `input_validation` → `test_analysis` → `application_exploration` →

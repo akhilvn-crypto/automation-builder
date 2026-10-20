@@ -9,7 +9,8 @@
 //   preflight
 //   config check | show | save --file <json>
 //   run create --command <cmd> [--input <path>]... [--from-run <runId>]
-//   run list | show <runId> | resume <runId>
+//   run list | show <runId> | resume [<runId>] [--command <cmd>]   (no id = newest resumable run)
+//   run resumable [--command <cmd>]                                 (checkpoints, newest first)
 //   run stage <runId> <stage> <status> [--message <text>] [--artifact name=relPath]...
 //   run set-config <runId>
 //   run counts <runId> --file <json>
@@ -33,8 +34,8 @@ import { loadConfig, saveConfig } from '../config/load-config.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
 import {
-  HealingLimitError, createRun, listRuns, loadManifest, prepareResume, recordHealingAttempt,
-  recordSetupChange, setRunConfig, setTestCounts, updateStage, type TestCounts,
+  HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt,
+  recordSetupChange, resumeLatest, setRunConfig, setTestCounts, updateStage, type TestCounts,
 } from '../pipeline/run-manager.ts';
 import { StageContractError } from '../pipeline/stage-contracts.ts';
 import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command } from '../pipeline/state-manager.ts';
@@ -134,9 +135,18 @@ export function main(argv: string[]): number {
           return out(r, r.ok ? 0 : 2);
         }
         case 'resume': {
-          const r = prepareResume(root, need(rest[0], 'runId'));
+          // No run id: continue the newest resumable run (optionally of one --command).
+          if (rest[0] === undefined) {
+            const command = values.command as Command | undefined;
+            if (command !== undefined && !COMMANDS.includes(command)) throw new UsageError(`--command must be one of: ${COMMANDS.join(', ')}`);
+            const r = resumeLatest(root, command);
+            return out(r, r.ok ? 0 : 2);
+          }
+          const r = prepareResume(root, rest[0]);
           return out(r, r.ok ? 0 : 2);
         }
+        case 'resumable':
+          return out(listResumable(root, values.command as Command | undefined));
         case 'stage': {
           const [runId, stage, status] = rest;
           if (!isStageName(stage)) throw new UsageError(`unknown stage ${JSON.stringify(stage)}`);
@@ -168,7 +178,7 @@ export function main(argv: string[]): number {
           return out(r.value, r.code);
         }
         default:
-          throw new UsageError('run <create|list|show|resume|stage|set-config|counts|healing-attempt|finalize>');
+          throw new UsageError('run <create|list|show|resume|resumable|stage|set-config|counts|healing-attempt|finalize>');
       }
     }
 

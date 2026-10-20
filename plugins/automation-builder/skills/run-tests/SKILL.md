@@ -1,7 +1,7 @@
 ---
 name: run-tests
 description: Execute existing Playwright tests, collect evidence, classify failures and produce the report — no generation and no healing.
-argument-hint: "[test file or folder ...] | resume <run-id>"
+argument-hint: "[test file or folder ...] | resume [<run-id>]"
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ disable-model-invocation: true
 
 Same orchestrator role, shared modules and configuration as `/automation-builder:playwright-pipeline`.
 
-1. Start: `node dependencies/engine/cli/pipeline.ts run create --command run-tests` (or `run resume <run-id>`).
+1. Start: `node dependencies/engine/cli/pipeline.ts run create --command run-tests` (or resume: `run resume <run-id>`, or `run resume --command run-tests` for the newest unfinished run; show its `checkpoint` first, as in playwright-pipeline).
 2. Run these stages exactly as described in [../playwright-pipeline/stages.md](../playwright-pipeline/stages.md):
    `preflight` → `configuration` → `execution` → `failure_triage` → `report_generation` → `finalization`.
    - `execution`: delegate to **test-executor** with label `initial`, passing each path from `$ARGUMENTS` as

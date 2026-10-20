@@ -1,7 +1,7 @@
 ---
 name: playwright-pipeline
 description: Run the full agentic Playwright pipeline — preflight, setup, test analysis, exploration, generation, review, execution, triage, bounded healing, and reporting — with on-disk run state.
-argument-hint: "[test-case path] | resume <run-id>"
+argument-hint: "[test-case path] | resume [<run-id>]"
 disable-model-invocation: true
 ---
 
@@ -24,9 +24,15 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
 
 ## Start or resume
 
-- `$ARGUMENTS` starts with `resume <run-id>` → `node dependencies/engine/cli/pipeline.ts run resume <run-id>`. If `ok: false`, show
-  the issues and stop (do not "fix" the manifest). Otherwise continue from `next`, and mention any `recovered`
-  (interrupted) stages: they will be re-run from scratch.
+- `$ARGUMENTS` starts with `resume` → continue a stopped run from its on-disk checkpoint:
+  - `resume <run-id>` → `node dependencies/engine/cli/pipeline.ts run resume <run-id>`.
+  - bare `resume` (no id) → `node dependencies/engine/cli/pipeline.ts run resume --command playwright-pipeline`, which picks the
+    newest run that is `in_progress`, `blocked` or `failed` (never `completed`/`cancelled`).
+  If `ok: false`, show the issues and stop (do not "fix" the manifest; with no resumable run, offer to start a new one).
+  Otherwise show the `checkpoint` in 2–3 lines before doing anything: run id, stages already completed, the stage
+  it resumes at and why it stopped (`reason`), and mention any `recovered` (interrupted) stages, which are re-run
+  from scratch. If `others` is non-empty, say how many other resumable runs exist and that `resume <run-id>` picks
+  a specific one (`run resumable` lists them). Then continue from `next`; completed stages are never repeated.
 - Otherwise → `node dependencies/engine/cli/pipeline.ts run create --command playwright-pipeline` and note the `runId`. An optional
   test-case path in `$ARGUMENTS` (e.g. `dependencies/input/test-cases`; the CLI also accepts it relative to `dependencies/`) is passed as `--path` to `input validate` and to the test-analyst for this run only.
 

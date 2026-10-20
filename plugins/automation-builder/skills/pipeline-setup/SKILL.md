@@ -31,6 +31,14 @@ Run `node dependencies/engine/cli/pipeline.ts config check`.
 
 Rules for asking (use AskUserQuestion; group independent choices into one call, max 4 questions):
 
+- **Every question needs 2–4 options** (the tool rejects the whole call otherwise, and the user never sees it).
+  When there is only one candidate value — e.g. a base URL found in a test case — never send it as a one-option
+  question and never add a filler option. Ask a confirm question instead: *"Use `<value>` as `<field>`?"* with
+  options *Yes, use as-is (Recommended)* and *No, I'll give a different value* (the user types it via Other).
+  A genuinely free-text field with no candidate is asked in plain chat, not with AskUserQuestion.
+- If a call is rejected with `InputValidationError`, do not repeat it unchanged: fix the offending question and
+  re-ask. Do not re-ask questions the user already answered.
+
 | Field | How to ask | Recommendation |
 |---|---|---|
 | `language` | **Do not ask here and do not infer it from tsconfig/devDependencies.** It was chosen by the user at `/automation-builder:init` and is recorded in `dependencies/state/scaffold.json` (preflight shows it as `scaffold.language`); the CLI seeds it into the config and rejects a different value. Only if `scaffold` is `null` (a folder not created by init) stop and tell the user to run `/automation-builder:init`. | chosen at init |
@@ -47,6 +55,8 @@ Briefly mention storage cost: `on` for video/trace on every test is large; failu
 Extent Reports: only offer after verifying a maintained Playwright integration exists; otherwise say so.
 
 Write the candidate to a scratch JSON file, then `node dependencies/engine/cli/pipeline.ts config save --file <path>`.
+Save as soon as the answers are in, before any install or exploration: a saved config is checkpointed on disk, so
+a resumed run reuses it instead of asking again.
 If exit code 2, show `issues` and re-ask only those fields. Never put secret values in the config —
 secrets live in `automation/.env` (git-ignored); `automation/.env.example` lists names only.
 

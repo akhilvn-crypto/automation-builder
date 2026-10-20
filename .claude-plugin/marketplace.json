@@ -10,7 +10,7 @@
       "name": "automation-builder",
       "source": "./plugins/automation-builder",
       "description": "Agentic Playwright pipeline: test cases in, reviewed + executed + bounded self-healing Playwright tests and reports out.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "category": "testing",
       "tags": ["playwright", "testing", "qa", "e2e"]
     }

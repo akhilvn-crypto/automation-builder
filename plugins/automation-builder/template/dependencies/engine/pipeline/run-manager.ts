@@ -260,12 +260,40 @@ export function updateStage(
   return updated;
 }
 
+// Where a run stopped, derived from the manifest alone, so a new session can pick up without the old chat.
+export interface Checkpoint {
+  runId: string;
+  command: Command;
+  status: RunStatus;
+  completedStages: StageName[]; // done in order, up to the first unfinished stage
+  resumeStage: StageName | null;
+  resumeStageStatus: StageStatus | null; // pending (not started), blocked or failed
+  reason: string | null; // why the resume stage stopped (its recorded message)
+  lastActivity: string; // ISO time of the most recent stage change
+}
+
+export function describeCheckpoint(m: RunManifest): Checkpoint {
+  const resumeStage = nextStage(m.stages);
+  const completedStages = STAGES.filter((s) => m.stages[s].status === 'completed');
+  const times = STAGES.flatMap((s) => [m.stages[s].startedAt, m.stages[s].endedAt]).filter((t): t is string => t !== null);
+  return {
+    runId: m.runId,
+    command: m.command,
+    status: m.status,
+    completedStages,
+    resumeStage,
+    resumeStageStatus: resumeStage ? m.stages[resumeStage].status : null,
+    reason: resumeStage ? m.stages[resumeStage].message : null,
+    lastActivity: [m.createdAt, ...times].sort().at(-1)!,
+  };
+}
+
+export type ResumeResult =
+  | { ok: true; manifest: RunManifest; recovered: StageName[]; next: StageName | null; checkpoint: Checkpoint }
+  | { ok: false; issues: string[] };
+
 // Validate a run before resuming: recover stages left `running` by an interrupted process.
-export function prepareResume(
-  rootDir: string,
-  runId: string,
-  clock: Clock = systemClock,
-): { ok: true; manifest: RunManifest; recovered: StageName[]; next: StageName | null } | { ok: false; issues: string[] } {
+export function prepareResume(rootDir: string, runId: string, clock: Clock = systemClock): ResumeResult {
   const loaded = loadManifest(rootDir, runId);
   if (!loaded.ok) return loaded;
   const now = clock().toISOString();
@@ -278,7 +306,34 @@ export function prepareResume(
   if (m.status === 'cancelled' || m.status === 'completed') {
     return { ok: false, issues: [`run ${runId} is ${m.status} and cannot be resumed`] };
   }
-  return { ok: true, manifest: m, recovered, next: nextStage(m.stages) };
+  return { ok: true, manifest: m, recovered, next: nextStage(m.stages), checkpoint: describeCheckpoint(m) };
+}
+
+// Resumable runs (in_progress, blocked or failed), newest first. Run ids start with a UTC timestamp, so
+// id order is creation order. Unreadable manifests are skipped here; `run show <id>` reports them.
+export function listResumable(rootDir: string, command?: Command): Checkpoint[] {
+  const found: Checkpoint[] = [];
+  for (const id of listRuns(rootDir).reverse()) {
+    const loaded = loadManifest(rootDir, id);
+    if (!loaded.ok) continue;
+    const m = loaded.manifest;
+    if (m.status === 'cancelled' || m.status === 'completed') continue;
+    if (command && m.command !== command) continue;
+    found.push(describeCheckpoint(m));
+  }
+  return found;
+}
+
+// Resume the newest resumable run. `others` lists the remaining candidates so the caller can say so.
+export function resumeLatest(
+  rootDir: string,
+  command?: Command,
+  clock: Clock = systemClock,
+): (Extract<ResumeResult, { ok: true }> & { others: Checkpoint[] }) | { ok: false; issues: string[] } {
+  const [latest, ...others] = listResumable(rootDir, command);
+  if (!latest) return { ok: false, issues: [`no resumable run found${command ? ` for /${command}` : ''}; start a new one`] };
+  const r = prepareResume(rootDir, latest.runId, clock);
+  return r.ok ? { ...r, others } : r;
 }
 
 export function setTestCounts(rootDir: string, runId: string, counts: TestCounts): RunManifest {

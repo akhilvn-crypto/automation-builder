@@ -9,10 +9,10 @@ Install: `/plugin marketplace add akhilvn-crypto/automation-builder` then `/plug
 | Command | Does |
 |---|---|
 | `/automation-builder:init [--language typescript|javascript] [--update] [--with-demo] [--with-pipeline-tests] [--force]` | asks TypeScript or JavaScript, then scaffolds (or updates/migrates) `automation/` (framework) and `dependencies/` (pipeline); installs nothing |
-| `/automation-builder:playwright-pipeline [path] \| resume <run-id>` | full 13-stage pipeline |
-| `/automation-builder:generate-tests [path] \| resume <run-id>` | parse → explore → generate → review (no execution) |
-| `/automation-builder:run-tests [files...] \| resume <run-id>` | execute existing tests → triage → report (no edits) |
-| `/automation-builder:heal-tests <run-id> \| resume <run-id>` | repair eligible script defects → regression check → report |
+| `/automation-builder:playwright-pipeline [path] \| resume [<run-id>]` | full 13-stage pipeline |
+| `/automation-builder:generate-tests [path] \| resume [<run-id>]` | parse → explore → generate → review (no execution) |
+| `/automation-builder:run-tests [files...] \| resume [<run-id>]` | execute existing tests → triage → report (no edits) |
+| `/automation-builder:heal-tests <run-id> \| resume [<run-id>]` | repair eligible script defects → regression check → report |
 
 Knowledge skills (loaded automatically by Claude and the agents): `pipeline-setup`, `test-case-parser`,
 `playwright-framework`, `application-exploration`, `test-data-management`, `execution-and-diagnostics`,

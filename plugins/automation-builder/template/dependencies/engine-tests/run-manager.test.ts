@@ -4,8 +4,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { runDir } from '../engine/pipeline/artifact-manager.ts';
 import {
-  HealingLimitError, createRun, generateRunId, listRuns, loadManifest, manifestPath, prepareResume,
-  recordHealingAttempt, setRunConfig, setTestCounts, updateStage, validateTestCounts,
+  HealingLimitError, createRun, generateRunId, listResumable, listRuns, loadManifest, manifestPath, prepareResume,
+  recordHealingAttempt, resumeLatest, setRunConfig, setTestCounts, updateStage, validateTestCounts,
 } from '../engine/pipeline/run-manager.ts';
 import { fakeClock, tmpRoot, validConfig, writeDep } from './helpers.ts';
 
@@ -122,6 +122,41 @@ test('resume recovers an interrupted stage and reports the next stage', (t) => {
   assert.equal(r.next, 'preflight');
   // the failed stage can now be retried
   assert.equal(updateStage(root, runId, 'preflight', 'running').status, 'in_progress');
+});
+
+test('resume reports a checkpoint: completed stages, where it stopped and why', (t) => {
+  const root = tmpRoot(t);
+  const { runId } = createRun(root, { command: 'playwright-pipeline' });
+  updateStage(root, runId, 'preflight', 'running');
+  updateStage(root, runId, 'preflight', 'completed');
+  updateStage(root, runId, 'configuration', 'running');
+  updateStage(root, runId, 'configuration', 'blocked', { message: 'waiting for base URL approval' });
+  const r = prepareResume(root, runId);
+  assert.ok(r.ok);
+  assert.deepEqual(r.checkpoint.completedStages, ['preflight']);
+  assert.equal(r.checkpoint.resumeStage, 'configuration');
+  assert.equal(r.checkpoint.resumeStageStatus, 'blocked');
+  assert.equal(r.checkpoint.reason, 'waiting for base URL approval');
+});
+
+test('resume without a run id picks the newest resumable run, optionally per command', (t) => {
+  const root = tmpRoot(t);
+  const first = createRun(root, { command: 'run-tests', clock: fakeClock('2026-10-19T08:00:00Z') });
+  const second = createRun(root, { command: 'playwright-pipeline', clock: fakeClock('2026-10-19T09:00:00Z') });
+  const cancelled = createRun(root, { command: 'playwright-pipeline', clock: fakeClock('2026-10-19T10:00:00Z') });
+  updateStage(root, cancelled.runId, 'preflight', 'cancelled');
+
+  const latest = resumeLatest(root);
+  assert.ok(latest.ok);
+  assert.equal(latest.checkpoint.runId, second.runId, 'newest run that is not cancelled');
+  assert.deepEqual(latest.others.map((c) => c.runId), [first.runId]);
+
+  const perCommand = resumeLatest(root, 'run-tests');
+  assert.ok(perCommand.ok);
+  assert.equal(perCommand.checkpoint.runId, first.runId);
+
+  assert.equal(listResumable(root, 'heal-tests').length, 0);
+  assert.equal(resumeLatest(root, 'heal-tests').ok, false);
 });
 
 test('cancelled runs cannot be resumed', (t) => {
