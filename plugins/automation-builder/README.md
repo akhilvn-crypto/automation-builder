@@ -2,7 +2,7 @@
 
 Agentic Playwright pipeline for Claude Code with on-disk, resumable run state.
 
-Install: `/plugin marketplace add <owner>/<repo>` then `/plugin install automation-builder@automation-builder-marketplace`.
+Install: `/plugin marketplace add akhilvn-crypto/automation-builder` then `/plugin install automation-builder@automation-builder-marketplace`.
 
 ## Commands
 
