@@ -40,8 +40,9 @@ TypeScript **or** JavaScript, as the user chooses.
 
    Summarize `created`, `overwritten`, `merged`, `moved`, `removed`, `rewritten` and `warnings` from the JSON.
    `overwritten` is non-empty only with `--update` (plugin-owned files: `dependencies/engine`, `dependencies/docs`,
-   `dependencies/tsconfig.json`, `automation/playwright.config.*`, `automation/tsconfig.json`/`jsconfig.json`) or
-   `--force` (everything).
+   `dependencies/tsconfig.json`, `automation/tsconfig.json`/`jsconfig.json`) or `--force` (everything).
+   `automation/playwright.config.*` is the user's file: created once, never refreshed by `--update` (only the old thin
+   wrapper from plugin 0.6.x and earlier is replaced, with a warning).
    **`migratedFromLegacyLayout: true`** means the project was scaffolded by plugin 0.2.x with everything inside
    `automation/`. The script moves the pipeline's data out (`input/`, `output/runs/` → `dependencies/runs/`, `demo/`,
    `config/scaffold.json` and `config/dependency-log.json` → `dependencies/state/`), renames `utils/` to `helpers/`,
@@ -76,7 +77,7 @@ automation/                              the framework only
   package.json  .gitignore  .env.example  README.md
 dependencies/                            not framework
   engine/  docs/                         pipeline engine and reference (plugin-managed)
-  input/test-cases/                      your Markdown / CSV test cases
+  input/test-cases/                      your test cases, converted to the pipeline's Markdown by the pipeline
   runs/                                  per-run state (created by the pipeline, git-ignored)
   state/scaffold.json                    records the chosen language and plugin version
   package.json  tsconfig.json (TypeScript)  .gitignore

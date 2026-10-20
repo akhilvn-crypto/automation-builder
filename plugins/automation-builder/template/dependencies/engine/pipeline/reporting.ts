@@ -1,4 +1,5 @@
 // report_generation: final per-test outcomes, counts, reporter verification and the run summary.
+// The custom evidence-pdf reporter is built by evidence-report.ts and listed alongside the Playwright reporters.
 // Summary files in the run directory (dependencies/runs/<run-id>/): summary.json (machine-readable) and summary.md.
 // Reporter output itself lives in automation/reports/<run-id>/<label>/.
 
@@ -8,6 +9,8 @@ import path from 'node:path';
 import type { AutomationConfig, Reporter } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { ARTIFACTS, EVIDENCE_DIR, REPORTS_DIR, reportsDirFor } from './artifact-manager.ts';
+import { secretValuesFor } from './env-file.ts';
+import { buildEvidenceReport, type PdfRenderer } from './evidence-report.ts';
 import type { ExecutionResults, Outcome } from './execution.ts';
 import type { Category, FailureAnalysis } from './failure-classifier.ts';
 import type { GenerationManifest } from './generation.ts';
@@ -140,7 +143,7 @@ function nonEmptyFile(p: string): boolean {
   return existsSync(p) && statSync(p).isFile() && statSync(p).size > 0;
 }
 
-export function verifyReporters(rootDir: string, runId: string, config: AutomationConfig, label: string, allure: AllureRunner): ReporterStatus[] {
+export function verifyReporters(rootDir: string, runId: string, config: AutomationConfig, label: string, allure: AllureRunner, evidencePdf?: () => ReporterStatus): ReporterStatus[] {
   const dir = reportsDirFor(rootDir, runId, label);
   const rel = (p: string) => toPosixRelative(rootDir, p);
   return config.reporters.map((name): ReporterStatus => {
@@ -158,6 +161,9 @@ export function verifyReporters(rootDir: string, runId: string, config: Automati
       const p = path.join(dir, 'junit.xml');
       const ok = nonEmptyFile(p) && /<testsuites?[\s>]/.test(readFileSync(p, 'utf8').slice(0, 2000));
       return { name, status: ok ? 'generated' : 'failed', path: ok ? rel(p) : null, detail: ok ? null : 'junit.xml missing or not JUnit XML' };
+    }
+    if (name === 'evidence-pdf') {
+      return evidencePdf ? evidencePdf() : { name, status: 'failed', path: null, detail: 'evidence report was not built' };
     }
     // allure
     const resultsDir = path.join(dir, 'allure-results');
@@ -182,6 +188,7 @@ export interface BuildSummaryInput extends OutcomeInputs {
   config: AutomationConfig;
   label?: string; // execution label whose reporter output is verified (default "initial")
   allure?: AllureRunner;
+  pdfRenderer?: PdfRenderer; // renders the evidence-pdf report; default uses the project's Playwright + Chromium
   now?: Date;
 }
 
@@ -194,7 +201,10 @@ export function buildSummary(i: BuildSummaryInput): RunSummary {
   const label = i.label ?? 'initial';
   const reporterRunId = i.reporterRunId ?? i.manifest.runId;
   const reporters = i.results && existsSync(reportsDirFor(i.rootDir, reporterRunId, label))
-    ? verifyReporters(i.rootDir, reporterRunId, i.config, label, i.allure ?? defaultAllureRunner)
+    ? verifyReporters(i.rootDir, reporterRunId, i.config, label, i.allure ?? defaultAllureRunner, () => buildEvidenceReport({
+      rootDir: i.rootDir, manifest: i.manifest, config: i.config, tests, counts, results: i.results, regression: i.regression, specs: i.specs,
+      secrets: secretValuesFor(i.rootDir, i.config.auth.credentialEnvVars), now: i.now ?? new Date(),
+    }, i.pdfRenderer))
     : i.config.reporters.map((name): ReporterStatus => ({ name, status: 'failed', path: null, detail: `no execution output for label "${label}" in this run` }));
   const rel = (p: string) => toPosixRelative(i.rootDir, p);
   const summary: RunSummary = {

@@ -36,6 +36,28 @@ export interface GenerationManifest {
   sharedFilesChanged: string[]; // fixtures/pages/helpers/auth touched, relative to automation/
 }
 
+// Tests are organised module by module: every file holds the tests of exactly one module, and a module's tests are not
+// spread over several files. `specs modules` gives the file name to use for each module.
+export function moduleLayoutIssues(tests: { testId: string; file: string }[], specs: TestSpecDocument): string[] {
+  const slugOf = new Map(specs.specs.map((s) => [s.id, s.moduleSlug]));
+  const modulesIn = new Map<string, Set<string>>();
+  const filesOf = new Map<string, Set<string>>();
+  for (const t of tests) {
+    const slug = slugOf.get(t.testId);
+    if (!slug) continue; // reported as "has no source spec"
+    modulesIn.set(t.file, (modulesIn.get(t.file) ?? new Set()).add(slug));
+    filesOf.set(slug, (filesOf.get(slug) ?? new Set()).add(t.file));
+  }
+  const issues: string[] = [];
+  for (const [file, slugs] of modulesIn) {
+    if (slugs.size > 1) issues.push(`"${file}" mixes tests from ${slugs.size} modules (${[...slugs].join(', ')}): write one test file per module (see "specs modules")`);
+  }
+  for (const [slug, files] of filesOf) {
+    if (files.size > 1) issues.push(`module "${slug}" is split over ${files.size} files (${[...files].join(', ')}): keep all of a module's tests in one file`);
+  }
+  return issues;
+}
+
 export function validateGenerationManifest(v: unknown, ctx: { rootDir: string; specs: TestSpecDocument | null }): string[] {
   if (typeof v !== 'object' || v === null) return ['generation manifest must be an object'];
   const g = v as Partial<GenerationManifest>;
@@ -83,6 +105,7 @@ export function validateGenerationManifest(v: unknown, ctx: { rootDir: string; s
     }
     const known = new Set(ctx.specs.specs.map((s) => s.id));
     for (const id of generated) if (!known.has(id)) issues.push(`generated test ${id} has no source spec`);
+    issues.push(...moduleLayoutIssues(g.tests, ctx.specs));
   }
   for (const e of g.excluded) {
     if (typeof e.reason !== 'string' || e.reason.trim() === '') issues.push(`excluded ${e.testId} needs a reason`);

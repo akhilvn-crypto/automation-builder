@@ -6,9 +6,11 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../config/load-config.ts';
+import { syncFromSavedConfig } from '../config/playwright-config.ts';
 import { isAbsoluteOrEscaping, type AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { inputBaseDir } from '../utils/layout.ts';
+import { toRootRelative } from '../utils/paths.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
 import { missingEnvMessage, missingEnvVars, readEnvValues, referencedEnvVars, secretValuesFor, syncEnvFiles } from '../pipeline/env-file.ts';
@@ -21,7 +23,11 @@ import { PAGE_OBJECTS_DIR, validateGenerationManifest, type GenerationManifest }
 import {
   checkAttempt, eligibleFailure, ensureHealingLog, healLabel, readHealingLog, recordAttempt, revertAttempt, snapshotForAttempt,
 } from '../pipeline/healing.ts';
+import { applyMapping, inspectInput } from '../pipeline/input-inspect.ts';
+import { IMPORT_DIR, cleanSourcePath, importInput } from '../pipeline/input-import.ts';
+import { loadMappings } from '../pipeline/input-table.ts';
 import { validateInput } from '../pipeline/input-validation.ts';
+import { planModules, writeNormalizedInput } from '../pipeline/modules.ts';
 import { buildSummary, reportersOk } from '../pipeline/reporting.ts';
 import {
   HealingLimitError, loadManifest, pruneRuns, recordHealingAttempt, saveManifest, setTestCounts, type RunManifest,
@@ -50,6 +56,15 @@ export interface Values {
   attempt?: string;
   status?: string;
   note?: string;
+  column?: string[];
+  sheet?: string;
+  'header-row'?: string;
+  module?: string;
+  'module-from'?: string;
+  skip?: boolean;
+  clear?: boolean;
+  from?: string;
+  overwrite?: boolean;
 }
 
 export interface Result {
@@ -109,18 +124,60 @@ export function stageCommand(root: string, group: string, action: string | undef
     case 'input validate': {
       const r = run(root, rest[0]);
       const inputPath = inputPathOf(r, v);
-      const report = validateInput(inputBaseDir(root), r.dir, inputPath);
+      const report = validateInput(inputBaseDir(root), r.dir, inputPath, new Date(), loadMappings(root));
       // Record input files and hashes on the manifest for traceability.
       saveManifest(root, { ...r.manifest, inputs: report.files.map((f) => ({ path: f.path, sha256: f.sha256 })) });
       return { value: { ok: report.ok, artifact: ARTIFACTS.inputValidation, report }, code: report.ok ? 0 : 2 };
+    }
+
+    // Converts the user's test cases, wherever they are, into the pipeline's format under dependencies/input/test-cases/.
+    case 'input import': {
+      const result = importInput(inputBaseDir(root), cleanSourcePath(need(v.from ?? rest[0], '--from <file-or-folder>')), loadMappings(root), { overwrite: v.overwrite === true });
+      // The converted files hold env:VAR references, so the values the source contained must reach .env now (existing values win).
+      const env = result.ok && !result.alreadyInPlace
+        ? syncEnvFiles(root, new Map(result.credentials.map((c) => [c.envVar, c.value])), referencedEnvVars(result.document))
+        : null;
+      const { credentials, document, ...shown } = result;
+      return {
+        value: {
+          ...shown,
+          // The folder to pass as --input / --path from here on.
+          path: IMPORT_DIR,
+          env: env && { ...env, detected: credentials.map((c) => c.envVar), action: missingEnvMessage(root, env.missing) },
+        },
+        code: result.ok ? 0 : 2,
+      };
+    }
+
+    // How the user's own CSV/Excel layout is read (headers, mapped fields, ignored columns, modules). No cell values.
+    case 'input inspect': {
+      const state = loadConfig(root);
+      const inputPath = v.path ?? (state.status === 'valid' ? state.config.input.testCasesPath : undefined);
+      if (!inputPath) throw new UsageError('input inspect --path <file-or-folder> (no configured input path yet)');
+      const inspection = inspectInput(inputBaseDir(root), inputPath, loadMappings(root));
+      return { value: inspection, code: inspection.ok ? 0 : 2 };
+    }
+
+    // Saves how one table's columns map to test-case fields, for layouts the built-in column names do not recognise.
+    case 'input map': {
+      const base = inputBaseDir(root);
+      const file = toRootRelative(base, need(rest[0], 'file'));
+      const result = applyMapping(base, root, loadMappings(root), {
+        file, sheet: v.sheet ?? null, columns: v.column ?? [],
+        headerRow: v['header-row'] === undefined ? undefined : Number(v['header-row']),
+        module: v.module, moduleFrom: v['module-from'], skip: v.skip === true, clear: v.clear === true,
+      });
+      return { value: result, code: result.ok ? 0 : 2 };
     }
 
     case 'specs parse': {
       const r = run(root, rest[0]);
       const inputPath = inputPathOf(r, v);
       const base = inputBaseDir(root);
-      const { document, errors, unsupported, credentials } = parseInputs(base, listInputFiles(base, inputPath));
+      const { document, errors, unsupported, tables, credentials } = parseInputs(base, listInputFiles(base, inputPath), new Date(), loadMappings(root));
       writeJsonAtomic(path.join(r.dir, ARTIFACTS.testSpecs), document);
+      // The same cases in the pipeline's own Markdown format, one file per module: a record of how the input was understood.
+      const normalized = writeNormalizedInput(path.join(r.dir, ARTIFACTS.normalizedInputDir), document);
       const issues = validateTestSpecDocument(document);
       const ready = document.specs.filter((s) => s.status === 'ready');
       const blocked = document.specs.filter((s) => s.status === 'needs_clarification');
@@ -130,6 +187,13 @@ export function stageCommand(root: string, group: string, action: string | undef
         ok: issues.length === 0 && errors.length === 0 && ready.length > 0,
         artifact: ARTIFACTS.testSpecs,
         counts: { total: document.specs.length, ready: ready.length, needsClarification: blocked.length },
+        modules: normalized.map((m) => ({
+          module: m.module, moduleSlug: m.moduleSlug, cases: m.cases,
+          ready: ready.filter((s) => s.moduleSlug === m.moduleSlug).length,
+          normalizedFile: `${ARTIFACTS.normalizedInputDir}/${m.file}`,
+        })),
+        // Spreadsheet/CSV layouts: which header fed which field, and the columns that were left out (so nothing is dropped silently).
+        tables: tables.map((t) => ({ path: t.path, sheet: t.sheet, status: t.status, reason: t.reason, headerLine: t.headerLine, mapped: t.mapped, ignoredColumns: t.ignoredColumns, moduleFrom: t.moduleFrom, sections: t.sections, titlePrefixes: t.titlePrefixes, cases: t.cases })),
         needsClarification: blocked.map((s) => ({ id: s.id, title: s.title, source: s.source, ambiguities: s.ambiguities })),
         warnings: document.specs.flatMap((s) => s.ambiguities.filter((a) => a.kind === 'vague_expected_result').map((a) => ({ id: s.id, ...a }))),
         env: {
@@ -140,6 +204,14 @@ export function stageCommand(root: string, group: string, action: string | undef
         errors, unsupported, issues,
       };
       return { value, code: value.ok ? 0 : 2 };
+    }
+
+    // The module plan: one test file per module, with the file name to use and which specs to generate or hold back.
+    case 'specs modules': {
+      const r = run(root, rest[0]);
+      const doc = artifactWithSource<TestSpecDocument>(r, ARTIFACTS.testSpecs).value;
+      if (!doc) return notReady({ ok: false, issues: [`no ${ARTIFACTS.testSpecs} in this run or its source run; run "specs parse" first`] });
+      return ok({ ok: true, language: configOf(r).language, modules: planModules(doc, configOf(r).language, root) });
     }
 
     // Run a command with automation/.env loaded into its environment (the real environment wins). The shell the agent
@@ -223,6 +295,8 @@ export function stageCommand(root: string, group: string, action: string | undef
     case 'exec run': {
       const r = run(root, rest[0]);
       const label = v.label ?? 'initial';
+      // Catches a config saved before a dependency (e.g. allure-playwright) was installed; a hand-edited file is left as it is.
+      syncFromSavedConfig(root);
       const results = runPlaywright(root, configOf(r), {
         runId: r.runId, label,
         files: v['test-file'], testIds: v['test-id'], projects: v.project,

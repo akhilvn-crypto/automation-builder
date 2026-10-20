@@ -45,13 +45,16 @@ Rules for asking (use AskUserQuestion; group independent choices into one call, 
 | `evidence.video` | off / on / retain-on-failure | retain-on-failure |
 | `evidence.screenshot` | off / on / only-on-failure | only-on-failure |
 | `evidence.trace` | off / on / on-first-retry / retain-on-failure | retain-on-failure |
-| `reporters` | multiSelect: html, json, allure, junit. `json` is mandatory (pipeline state). | html + json + allure |
+| `reporters` | multiSelect (max 4 options): **html, allure, junit, evidence-pdf**. `json` is mandatory (pipeline state), so add it to the saved list yourself and do not offer it. Describe `evidence-pdf` as the *custom evidence report*: one PDF that lists every executed step with the screenshot taken when it ended, plus expected results and failures. Say what it costs: a screenshot per step for every test (passing ones too), and Chromium is used to print the PDF (no extra package). Never preselect it for the user | html + json + allure |
 | `browsers` | multiSelect chromium/firefox/webkit | chromium |
 | `app.baseUrl`, `app.environment` | Free text. **Never invent a URL.** Must be an authorized test environment. | — |
-| `input.testCasesPath` | Path relative to `dependencies/` (test cases live in `dependencies/input/`) | `input/test-cases` |
+| `input.testCasesPath` | Path relative to `dependencies/`. **Don't ask in `/playwright-pipeline`:** the orchestrator already asked where the test cases are and imported them into `input/test-cases`, so use that. Ask only when no import happened (e.g. `/generate-tests` with the files already placed by hand) | `input/test-cases` |
 | `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only. Don't ask for credentials or their names: those in the test cases are created in `automation/.env` by `specs parse` and redacted automatically, so `credentialEnvVars` may be `[]` | — |
 
 Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.
+`evidence-pdf` is independent of `evidence.screenshot`: its per-step screenshots are always taken, so the screenshot mode
+only controls Playwright's own failure screenshot. If the user picks `evidence-pdf` without `chromium` in `browsers`,
+preflight adds a `browser:chromium` requirement (purpose "Render the evidence PDF"), approved like any other dependency.
 Extent Reports: only offer after verifying a maintained Playwright integration exists; otherwise say so.
 
 Write the candidate to a scratch JSON file, then `node dependencies/engine/cli/pipeline.ts config save --file <path>`.
@@ -59,6 +62,9 @@ Save as soon as the answers are in, before any install or exploration: a saved c
 a resumed run reuses it instead of asking again.
 If exit code 2, show `issues` and re-ask only those fields. Never put secret values in the config —
 secrets live in `automation/.env` (git-ignored); `automation/.env.example` lists names only.
+The save also writes the choices into `automation/playwright.config.*` (a standard Playwright config the user may edit).
+If the output says `playwrightConfig.status: "kept"`, the user edited that file by hand: tell them the new settings were
+not applied to it (show `detail`) and let them choose between updating it themselves or `config render --force`.
 
 ## 3. Dependencies — one approval per dependency
 
@@ -81,6 +87,8 @@ Special cases:
   install for reproducibility; it is optional.
 - Before proposing any Allure install, check current official Allure guidance (Allure 3 CLI is the npm
   `allure` package; Allure 2 needs Java). Explain the runtime requirement in the question.
+- After an approved `allure-playwright` install run `node dependencies/engine/cli/pipeline.ts config render`, so the
+  reporter is added to `playwright.config.*` (it is listed there only once the adapter can be loaded).
 - Before proposing the Playwright CLI install, check current official `@playwright/cli` guidance for the install
   command and compatibility with the installed `@playwright/test` version.
 

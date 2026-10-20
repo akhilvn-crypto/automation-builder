@@ -286,6 +286,34 @@ test('report generation failure is visible and blocks a clean finish', (t) => {
   assert.equal(failed.status, 'failed', 'run is failed, not completed');
 });
 
+test('the evidence-pdf reporter writes the evidence page and reports missing rendering tools instead of claiming a PDF', (t) => {
+  const root = setupProject(t, ['html', 'json', 'evidence-pdf']);
+  const runId = startRun(root);
+  exploreGenerateReview(root, runId);
+  scenario(root, 'initial', [pass('TC-1', 'a'), pass('TC-2', 'b'), pass('TC-3', 'c'), pass('TC-4', 'd')]);
+  stage(root, runId, 'execution', 'running');
+  must(root, 'exec', 'run', runId);
+  stage(root, runId, 'execution', 'completed', 'executionResults=execution-results.json');
+  stage(root, runId, 'failure_triage', 'running');
+  must(root, 'triage', 'run', runId);
+  stage(root, runId, 'failure_triage', 'completed', 'failureAnalysis=failure-analysis.json');
+  stage(root, runId, 'healing', 'skipped');
+  stage(root, runId, 'regression_validation', 'skipped');
+  stage(root, runId, 'report_generation', 'running');
+  const r = cli(root, 'report', 'build', runId);
+  // The stand-in has no real @playwright/test or Chromium, so the PDF cannot be rendered: that must be visible.
+  assert.equal(r.code, 2);
+  const pdf = r.json.reporters.find((x: any) => x.name === 'evidence-pdf');
+  assert.equal(pdf.status, 'missing_dependency');
+  assert.equal(pdf.path, null);
+  assert.match(pdf.detail, /@playwright\/test is required to render the PDF/);
+  assert.deepEqual(r.json.reporters.filter((x: any) => x.name !== 'evidence-pdf').map((x: any) => x.status), ['generated', 'generated']);
+  const page = path.join(root, 'reports', runId, 'evidence-report', 'evidence-report.html');
+  assert.ok(existsSync(page), 'the evidence page is still written');
+  assert.match(readFileSync(page, 'utf8'), /Test evidence report/);
+  assert.ok(!existsSync(path.join(root, 'reports', runId, 'evidence-report', 'evidence-report.pdf')));
+});
+
 test('a runner/config error fails execution instead of reporting test results', (t) => {
   const root = setupProject(t);
   const runId = startRun(root);
@@ -311,7 +339,7 @@ test('malformed input blocks input validation with a clear reason', (t) => {
   const r = cli(root, 'input', 'validate', runId);
   assert.equal(r.code, 2);
   const messages = r.json.report.errors.map((e: any) => `${e.path}: ${e.message}`).join('\n');
-  assert.match(messages, /bad.csv: CSV needs a steps column/);
+  assert.match(messages, /bad\.csv.*no steps or expected-result column/s);
   assert.match(messages, /demo.md: no test cases found/);
   const blocked = stage(root, runId, 'input_validation', 'blocked');
   assert.equal(blocked.status, 'blocked');

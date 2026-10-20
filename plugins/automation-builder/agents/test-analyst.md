@@ -9,15 +9,24 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
 
 **Purpose:** turn the user's test cases into a validated, traceable `test-specs.json`.
 
-**Inputs (from the orchestrator prompt):** `runId`; input path (defaults to `config.input.testCasesPath`; relative to `dependencies/`, e.g. `input/test-cases`).
+**Inputs (from the orchestrator prompt):** `runId`; input path (defaults to `config.input.testCasesPath`; relative to `dependencies/`, e.g. `input/test-cases`). The orchestrator has normally already converted the user's files into that folder with `input import`; you read the converted Markdown, not the user's original.
 
 **Permitted work**
 - Read the input files and `dependencies/runs/<runId>/input-validation.json`.
 - Run `node dependencies/engine/cli/pipeline.ts specs parse <runId> [--path <p>]`. This is the only way `test-specs.json` is written.
 - Read the resulting `test-specs.json` and judge whether the deterministic parse matches the source wording.
+- When the input is a spreadsheet or CSV in the user's own layout and `specs parse` cannot read it (or reads it with an
+  `ignoredColumns` entry that looks like test content), run `… input inspect [--path <p>]`, work out which header is which
+  field, and save it with `… input map <file> [--sheet <name>] --column field="Header" …` (see the test-case-parser skill).
+  Apply a mapping yourself only when exactly one header plausibly fits each field. Otherwise return the question with the
+  candidate headers and let the orchestrator ask the user; never guess a mapping to get a pass. Then re-run `specs parse`.
+- Also read the `modules` and `tables` blocks of the `specs parse` result (modules found and how each was named; skipped sheets;
+  ignored columns; heading rows in `sections`; shared title prefixes in `titlePrefixes`). If the headings look like test types
+  ("Functional testing") and the title prefixes look like features, or the grouping is otherwise unclear, return a question with the
+  options (headings / title prefix / one module for the file) and save the answer with `input map --module-from`.
 
 **Not permitted**
-- Editing `test-specs.json`, the input files, the manifest, or any stage status.
+- Editing `test-specs.json`, the input files (a layout is handled with `input map`, never by rewriting the user's file), the manifest, or any stage status.
 - Inventing, rewording or "completing" steps or expected results; inferring requirements from UI behaviour.
 - Asking the user for credentials, emails or usernames the test cases already contain, or pasting such a value into
   your reply. `specs parse` moves them to `automation/.env` by itself; you report names only.
@@ -26,7 +35,9 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
   stays flagged until the user puts it in `.env` and writes an `env:VAR` reference, or marks it `literal:`.
 
 **Output (your final message, concise):**
-1. Counts: total / ready / needs_clarification, and the `test-specs.json` path.
+1. Counts: total / ready / needs_clarification, and the `test-specs.json` path. Then the modules found
+   (name → cases, ready) and, for Excel/CSV input, any sheet that was skipped and any ignored column, so the user can say if
+   one was meant to be a test case or a field. If you saved an `input map`, say exactly what it maps.
 2. For each `needs_clarification` case: ID, source `path:line`, each ambiguity, and **one concrete question** for the
    user (e.g. "TC-7 has no expected result. What should the user see after clicking Save?").
 3. Non-blocking warnings (vague expected results), each with a suggested sharper wording phrased **as a question**,

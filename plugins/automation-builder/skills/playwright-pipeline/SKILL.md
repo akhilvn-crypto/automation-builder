@@ -36,8 +36,36 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
   it resumes at and why it stopped (`reason`), and mention any `recovered` (interrupted) stages, which are re-run
   from scratch. If `others` is non-empty, say how many other resumable runs exist and that `resume <run-id>` picks
   a specific one (`run resumable` lists them). Then continue from `next`; completed stages are never repeated.
-- Otherwise → `node dependencies/engine/cli/pipeline.ts run create --command playwright-pipeline` and note the `runId`. An optional
-  test-case path in `$ARGUMENTS` (e.g. `dependencies/input/test-cases`; the CLI also accepts it relative to `dependencies/`) is passed as `--path` to `input validate` and to the test-analyst for this run only.
+- Otherwise → a new run. **Ask where the test cases are before creating it**:
+  1. **Where are they?** If `$ARGUMENTS` holds a path, that is the answer. Otherwise ask. First look at
+     `dependencies/input/test-cases/`: if it already holds supported files (`.md`, `.csv`, `.xlsx`), ask with AskUserQuestion
+     (*Use the N files already in `input/test-cases` (Recommended)* / *Import test cases from another path*; the user types the
+     path via Other). If it is empty, ask in plain chat: "Where are your test cases? Give the path to a file (`.xlsx`, `.csv`
+     or `.md`) or to a folder of them. Any location and any column layout is fine." Don't guess a path and don't search the
+     disk for one.
+  2. **Check how they will be grouped, then convert and save them.** The import fixes the modules (one test file each), so look
+     first: `node dependencies/engine/cli/pipeline.ts input inspect --path "<path>"` (read-only; headers and counts, no values).
+     If a table's section headings and its `titlePrefixes` disagree (headings such as "Functional testing" while the titles name
+     the feature: "Home page - …"), ask which grouping they want and save it with `input map --module-from` (test-case-parser
+     skill) before importing; don't pick silently. Then:
+     `node dependencies/engine/cli/pipeline.ts input import --from "<path>"`. It reads the
+     original (never changed), converts it to the pipeline's Markdown, one file per module, in `dependencies/input/test-cases/`,
+     and moves any credentials, usernames and emails it finds into `automation/.env` (names only in the output). Skip this
+     only when the user chose files already in `dependencies/input/` (a path inside it, or the existing files): the pipeline
+     reads those as they are, so use that path as the test-case path and carry on.
+     - Exit 0 → tell the user in 2–3 lines: how many cases and modules, the files written, and the `.env` names added
+       (`env.created`). Mention `needsClarification` (cases that lack steps or expected results) and `renamedIds`
+       (duplicate IDs in the source, renamed `-dupN`) so they can fix the source and re-import with `--overwrite`. If
+       `othersInFolder` is not empty, say so: those files were already in `input/test-cases/` and the pipeline will read them
+       too (e.g. modules from an earlier grouping); ask whether to keep them, and never delete them yourself.
+     - Exit 2, files in `conflict` → files with those names already exist and differ. Ask whether to replace them
+       (`--overwrite`) or import from somewhere else; never overwrite unasked.
+     - Exit 2, unreadable layout → not the user's mistake: `input inspect --path "<path>"`, ask which header is which field,
+       `input map`, then import again (test-case-parser skill). Other errors (missing path, `.xls`, protected workbook): show the
+       message and ask for another path or file.
+  3. `node dependencies/engine/cli/pipeline.ts run create --command playwright-pipeline --input input/test-cases`, note the
+     `runId`, and use `input/test-cases` as the test-case path for this run (`--path` to `input validate`, `specs parse` and the
+     test-analyst, and `input.testCasesPath` in the configuration stage: don't ask for it again).
 
 ## Run the stages
 

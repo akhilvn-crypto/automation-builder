@@ -1,9 +1,9 @@
 // Normalized test specification: the contract between test analysis and generation.
 // Written to dependencies/runs/<run-id>/test-specs.json. Documented in docs/test-spec-schema.md.
 
-export const TEST_SPEC_SCHEMA_VERSION = 1;
+export const TEST_SPEC_SCHEMA_VERSION = 2;
 
-export const INPUT_FORMATS = ['markdown', 'csv'] as const;
+export const INPUT_FORMATS = ['markdown', 'csv', 'xlsx'] as const;
 export type InputFormat = (typeof INPUT_FORMATS)[number];
 
 export const SPEC_STATUSES = ['ready', 'needs_clarification'] as const;
@@ -28,8 +28,9 @@ export const BLOCKING_AMBIGUITIES: readonly AmbiguityKind[] = [
 
 export interface SourceRef {
   path: string; // relative to dependencies/, posix
-  line: number; // 1-based line (markdown) or CSV record line
+  line: number; // 1-based line (markdown), CSV record line or spreadsheet row
   originalId: string | null; // ID as written in the source, if any
+  sheet: string | null; // worksheet name for .xlsx sources, else null
 }
 
 export interface SpecStep {
@@ -56,7 +57,9 @@ export interface TestSpec {
   id: string; // stable ID used in test titles, results and healing records
   title: string;
   source: SourceRef;
-  suite: string | null;
+  suite: string | null; // the Markdown "# heading" the case sits under, else null (informational)
+  module: string; // the module (feature area) the case belongs to; one test file is generated per module
+  moduleSlug: string; // file-name form of `module`; always slugify(module)
   priority: string | null;
   tags: string[];
   preconditions: string[];
@@ -78,6 +81,11 @@ export interface TestSpecDocument {
   generatedAt: string;
   sources: SourceFile[];
   specs: TestSpec[];
+}
+
+// File-name form of a module name: "Create Project" -> "create-project". Never empty.
+export function slugify(name: string): string {
+  return name.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '') || 'general';
 }
 
 export const TEST_ID_PATTERN = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -119,6 +127,8 @@ export function validateTestSpecDocument(v: unknown): string[] {
     else ids.add(s.id);
     if (typeof s.title !== 'string' || s.title.trim() === '') issues.push(`${at}.title is required`);
     if (!isObj(s.source) || typeof s.source.path !== 'string' || !Number.isInteger(s.source.line)) issues.push(`${at}.source must have path and line`);
+    if (typeof s.module !== 'string' || s.module.trim() === '') issues.push(`${at}.module is required`);
+    else if (s.moduleSlug !== slugify(s.module)) issues.push(`${at}.moduleSlug must be "${slugify(s.module)}" for module ${JSON.stringify(s.module)}`);
     if (!isStrArray(s.tags) || !isStrArray(s.preconditions) || !isStrArray(s.expectedResults)) {
       issues.push(`${at}: tags, preconditions and expectedResults must be string arrays`);
     }

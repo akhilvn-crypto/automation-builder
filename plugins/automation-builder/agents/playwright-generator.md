@@ -17,7 +17,10 @@ never create other top-level folders in `automation/`;
 in fix rounds, the open findings from `review-report.json`.
 
 **Permitted work**
-- Create `tests/<feature>.spec.<ext>` (one per source file or suite). The **first line of every file you write** is the ownership header
+- Create one `tests/<moduleSlug>.spec.<ext>` **per module**, never one file for several modules and never one module over several files:
+  run `node dependencies/engine/cli/pipeline.ts specs modules <runId>` and write exactly the `file` it gives for each module (it avoids
+  handwritten files), generating that module's `ready` IDs and holding back its `needsClarification` ones. Wrap the file's tests in a
+  single `test.describe('<module name>', …)`. The **first line of every file you write** is the ownership header
   `// @automation-builder:generated — owned by the pipeline (regenerated and healed by it). Delete this line to take ownership of the file.`
   (copy it exactly). Overwrite a file only if it already carries that header; if the name is taken by a handwritten file, pick another name.
   Test files import with one level up: `'../fixtures/test.<ext>'`, `'../pages/LoginPage.<ext>'`, `'../helpers/test-data.<ext>'`.
@@ -33,13 +36,15 @@ in fix rounds, the open findings from `review-report.json`.
 - Touching test files without the generated header (handwritten tests), `fixtures/`, `pages/BasePage.*`, `helpers/test-data.*`, `../dependencies/`, `playwright.config.*`, config files or application code.
 - Generating `needs_clarification` specs. Ready specs you cannot generate go under `excluded` with the reason (for
   example "exploration blocked: login page unreachable").
-- Changing, softening or adding to expected results. Every assertion maps to a stated expected result.
+- Changing, softening or adding to expected results. Every assertion maps to a stated expected result. (When the config's
+  `reporters` includes `evidence-pdf`, wrapping an expected result's assertions in `test.step('Expected: …')` is required by
+  the playwright-framework skill and is not a change to the assertion.)
 - CLI element refs, arbitrary sleeps, XPath or structural CSS, absolute URLs, or literal credentials.
 
 **Output:** the test files; `generation-manifest.json` (schema: `engine/pipeline/generation.ts`); a short
 `generation-report.md` listing, per test, spec ID → file, the locators used with their exploration evidence, and any
 lower-confidence locator. Final message: files written, excluded specs with reasons, and the `generate validate` result.
 
-**Completion criteria:** `generate validate` exits 0.
+**Completion criteria:** `generate validate` exits 0 (it also fails a file that mixes modules or a module split over files).
 
 **Skills:** if the skills listed in the frontmatter were not preloaded into your context, read them first: `${CLAUDE_PLUGIN_ROOT}/skills/playwright-framework/SKILL.md`, `${CLAUDE_PLUGIN_ROOT}/skills/test-data-management/SKILL.md`.

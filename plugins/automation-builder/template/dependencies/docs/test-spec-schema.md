@@ -1,20 +1,23 @@
-# Test-spec schema (`test-specs.json`, schemaVersion 1)
+# Test-spec schema (`test-specs.json`, schemaVersion 2)
 
-Produced by `node dependencies/engine/cli/pipeline.ts specs parse <runId>` from the configured input. Source:
-`engine/pipeline/test-spec.ts` (types + validator) and `engine/pipeline/test-case-parser.ts` (parser), both under
-`dependencies/`. Input formats are described in the plugin's `test-case-parser` skill; examples are in
+Produced by `node dependencies/engine/cli/pipeline.ts specs parse <runId>` from the configured input (Markdown, CSV or Excel
+`.xlsx`, in the user's own column layout). Source: `engine/pipeline/test-spec.ts` (types + validator),
+`engine/pipeline/test-case-parser.ts` + `input-table.ts` (parser and column mapping) and `engine/utils/xlsx.ts` (Excel reader),
+all under `dependencies/`. Input formats are described in the plugin's `test-case-parser` skill; examples are in
 `dependencies/docs/examples/`. Source paths in the document are relative to `dependencies/`.
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generatedAt": "2026-10-20T04:00:00.000Z",
-  "sources": [{ "path": "input/test-cases/login.md", "sha256": "…", "format": "markdown" }],
+  "sources": [{ "path": "input/test-cases/login.md", "sha256": "…", "format": "markdown" }],   // format: markdown | csv | xlsx
   "specs": [{
     "id": "TC-001",                       // source ID, or AUTO-<8 hex> derived from path + title
     "title": "Valid user can sign in",
-    "source": { "path": "input/test-cases/login.md", "line": 3, "originalId": "TC-001" },
-    "suite": "Login",                     // Markdown "# heading", else null
+    "source": { "path": "input/test-cases/login.md", "line": 3, "originalId": "TC-001", "sheet": null },   // sheet: worksheet name for .xlsx
+    "suite": "Login",                     // Markdown "# heading", else null (informational)
+    "module": "Login",                    // the feature area; one test file is generated per module
+    "moduleSlug": "login",                // file-name form of module (always slugify(module))
     "priority": "High",                   // or null
     "tags": ["smoke", "auth"],
     "preconditions": ["An active test account exists"],
@@ -34,6 +37,13 @@ Produced by `node dependencies/engine/cli/pipeline.ts specs parse <runId>` from 
 ```
 
 ## Rules enforced by the validator
+
+- `module` is required and `moduleSlug` must equal its slug. A module is, in order: the saved `input map --module`, the row's
+  module column (an empty cell inherits the one above), the title prefix (`input map --module-from title-prefix`), the heading
+  row above the case (a row with only its ID cell filled), the Markdown `# heading`, the sheet name (generic names such as
+  `Sheet1` don't count), then the file name. Cases whose modules slug to the same value are one module.
+- Generated tests are organised by module: `generate validate` fails if a test file mixes two modules or one module's tests
+  are split over several files (`engine/pipeline/generation.ts`, `moduleLayoutIssues`).
 
 - IDs match `PREFIX-REST` and are unique. Duplicate source IDs are flagged on every occurrence and suffixed `-dup2`, …
 - Steps are numbered 1..n. Wording is copied verbatim from the source.
@@ -68,5 +78,11 @@ written to the framework: `automation/reports/<run-id>/<label>/` and `automation
 | `failure-analysis.json` | `engine/pipeline/failure-classifier.ts` |
 | `healing-log.json` | `engine/pipeline/healing.ts` |
 | `summary.json`, `summary.md` | `engine/pipeline/reporting.ts` |
+
+Also in the run directory: `normalized-input/<module-slug>.md`, written by `specs parse`: the same cases in the pipeline's
+Markdown format, one file per module (credentials appear as `env:VAR`, never as values).
+
+The saved column mappings for non-standard CSV/Excel layouts are in `dependencies/state/input-mapping.json`
+(`engine/pipeline/input-table.ts`; written only by `input map`).
 
 Stage → required artifacts: `engine/pipeline/stage-contracts.ts`.

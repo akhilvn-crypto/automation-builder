@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 import { configPath, loadConfig, saveConfig } from '../engine/config/load-config.ts';
+import { UNCONFIGURED, renderPlaywrightConfig, syncFromSavedConfig } from '../engine/config/playwright-config.ts';
 import { validateConfig } from '../engine/config/schema.ts';
 import { tmpRoot, validConfig, writeDep, writeFile } from './helpers.ts';
 
@@ -150,4 +152,81 @@ test('invalid env override is surfaced, not ignored', (t) => {
   const s = loadConfig(root, { env: { PW_WORKERS: 'many' } });
   assert.equal(s.status, 'invalid');
   assert.ok('issues' in s && s.issues.some((i) => i.path === 'execution.workers'));
+});
+
+// ---------- config -> playwright.config ----------
+
+test('playwright.config is a plain Playwright config with the approved values as literals', () => {
+  const cfg = { ...validConfig(), browsers: ['chromium', 'firefox'] as ('chromium' | 'firefox')[], reporters: ['html', 'json', 'junit', 'allure', 'evidence-pdf'] as const };
+  const text = renderPlaywrightConfig({ ...cfg, reporters: [...cfg.reporters] }, { allure: false });
+  assert.match(text, /import \{ defineConfig, devices \} from '@playwright\/test';/);
+  assert.doesNotMatch(text, /dependencies|loadConfig|playwright-settings/, 'self-contained: no link to the pipeline engine');
+  assert.match(text, /baseURL: process\.env\.PW_BASE_URL \|\| 'https:\/\/test\.example\.com'/);
+  assert.match(text, /timeout: 30000,/);
+  assert.match(text, /screenshot: 'only-on-failure',\n\s+video: 'retain-on-failure',\n\s+trace: 'retain-on-failure',/);
+  assert.match(text, /\['json', \{ outputFile: `reports\/\$\{scope\}\/results\.json` \}\]/);
+  assert.match(text, /outputDir: `\.\/test-results\/\$\{scope\}`/);
+  assert.match(text, /\['html', .*\],\n\s+\['json', .*\],\n\s+\['junit'/, 'reporters follow the configured order');
+  assert.doesNotMatch(text, /allure-playwright/, 'allure is not enabled while its adapter is missing');
+  assert.match(text, /\{ name: 'chromium', use: \{ \.\.\.devices\['Desktop Chrome'\] \} \}/);
+  assert.match(text, /\{ name: 'firefox', use: \{ \.\.\.devices\['Desktop Firefox'\] \} \}/);
+  assert.match(text, /testMatch: '\*\*\/\*\.spec\.ts'/);
+  assert.match(renderPlaywrightConfig({ ...cfg, reporters: [...cfg.reporters] }, { allure: true }), /allure-playwright/);
+  assert.match(renderPlaywrightConfig({ ...validConfig(), language: 'javascript' }, { allure: false }), /testMatch: '\*\*\/\*\.spec\.js'/);
+});
+
+test('storage-state auth adds a setup project the browser projects depend on', () => {
+  const cfg = validConfig();
+  cfg.auth = { approach: 'storage-state', credentialEnvVars: ['TEST_USER_PASSWORD'] };
+  const text = renderPlaywrightConfig(cfg, { allure: false });
+  assert.match(text, /\{ name: 'setup', testDir: '\.\/auth', testMatch: '\*\*\/\*\.setup\.ts' \}/);
+  // Playwright resolves a relative storageState against the working directory, so it is anchored to the config's folder.
+  assert.match(text, /storageState: `\$\{import\.meta\.dirname\}\/auth\/storage-state\.json` \}, dependencies: \['setup'\]/);
+});
+
+test('config save writes playwright.config; a hand-edited file is kept, --force rewrites it', (t) => {
+  const root = tmpRoot(t);
+  const file = path.join(root, 'playwright.config.ts');
+  writeFileSync(file, `// automation-builder:config sha256=${UNCONFIGURED}\nexport default {};\n`);
+
+  saveConfig(root, validConfig());
+  assert.equal(syncFromSavedConfig(root)?.status, 'written', 'the unconfigured scaffold file is replaced');
+  assert.match(readFileSync(file, 'utf8'), /test\.example\.com/);
+  assert.equal(syncFromSavedConfig(root)?.status, 'unchanged');
+
+  // A saved setting changes and the file is still as generated: it follows.
+  saveConfig(root, { ...validConfig(), execution: { workers: 2, retries: 0, timeoutMs: 45_000 } });
+  assert.equal(syncFromSavedConfig(root)?.status, 'written');
+  assert.match(readFileSync(file, 'utf8'), /timeout: 45000,[\s\S]*Number\(process\.env\.PW_WORKERS\) : 2,/);
+
+  // The user edits it: later saves leave it alone.
+  writeFileSync(file, readFileSync(file, 'utf8').replace('fullyParallel: true', 'fullyParallel: false'));
+  saveConfig(root, { ...validConfig(), execution: { workers: null, retries: 3, timeoutMs: 30_000 } });
+  const kept = syncFromSavedConfig(root);
+  assert.equal(kept?.status, 'kept');
+  assert.match(kept?.detail ?? '', /edited by hand/);
+  assert.match(readFileSync(file, 'utf8'), /fullyParallel: false/);
+
+  assert.equal(syncFromSavedConfig(root, { force: true })?.status, 'written');
+  assert.match(readFileSync(file, 'utf8'), /fullyParallel: true/);
+});
+
+test('PW_* environment overrides are read by the generated file at run time, never baked in', (t) => {
+  const root = tmpRoot(t);
+  saveConfig(root, validConfig());
+  const prior = process.env.PW_BASE_URL;
+  process.env.PW_BASE_URL = 'https://override.example.com';
+  try {
+    syncFromSavedConfig(root);
+  } finally {
+    if (prior === undefined) delete process.env.PW_BASE_URL;
+    else process.env.PW_BASE_URL = prior;
+  }
+  assert.doesNotMatch(readFileSync(path.join(root, 'playwright.config.ts'), 'utf8'), /override\.example\.com/);
+});
+
+test('syncFromSavedConfig does nothing without a valid saved config', (t) => {
+  const root = tmpRoot(t);
+  assert.equal(syncFromSavedConfig(root), null);
+  assert.equal(existsSync(path.join(root, 'playwright.config.ts')), false);
 });

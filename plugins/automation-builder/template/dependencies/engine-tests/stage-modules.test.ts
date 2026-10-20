@@ -3,7 +3,6 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { playwrightSettings } from '../engine/config/playwright-settings.ts';
 import { runDir } from '../engine/pipeline/artifact-manager.ts';
 import { buildPlaywrightArgs, normalizeReport, runPlaywright, type ExecutionResults } from '../engine/pipeline/execution.ts';
 import { checkLocatorExpression, validateExplorationRecord } from '../engine/pipeline/exploration.ts';
@@ -25,33 +24,6 @@ const NOW = new Date('2026-10-20T00:00:00Z');
 function results(root: string, tests: FakeTest[], label = 'initial'): ExecutionResults {
   return normalizeReport(pwReport(root, tests), { rootDir: root, runId: 'r', label, secrets: [], now: NOW });
 }
-
-// ---------- config -> Playwright ----------
-
-test('playwright settings map evidence, reporters and run-scoped output dirs', () => {
-  const cfg = { ...validConfig(), reporters: ['html', 'json', 'junit', 'allure'] as const };
-  const s = playwrightSettings({ ...cfg, reporters: [...cfg.reporters] }, {
-    rootDir: '/p', env: { PIPELINE_RUN_ID: '20261019-083012-abc123', PIPELINE_LABEL: 'initial' }, isInstalled: () => false,
-  });
-  assert.deepEqual(s.use, { baseURL: 'https://test.example.com', video: 'retain-on-failure', screenshot: 'only-on-failure', trace: 'retain-on-failure', testIdAttribute: 'data-testid' });
-  assert.equal(s.outputDir, path.join('/p', 'test-results', '20261019-083012-abc123', 'initial'), 'evidence goes to the framework test-results/');
-  assert.equal(s.reportsDir, path.join('/p', 'reports', '20261019-083012-abc123', 'initial'), 'reports go to the framework reports/');
-  assert.deepEqual(s.reporter.map((r) => r[0]), ['list', 'html', 'json', 'junit']);
-  assert.deepEqual(s.missingReporters, ['allure'], 'allure is not silently enabled without its adapter');
-  assert.deepEqual(s.testMatch, ['**/*.spec.ts']);
-});
-
-test('storage-state auth adds a setup project the browser projects depend on', () => {
-  const cfg = validConfig();
-  cfg.auth = { approach: 'storage-state', credentialEnvVars: ['TEST_USER_PASSWORD'] };
-  cfg.browsers = ['chromium', 'firefox'];
-  const s = playwrightSettings(cfg, { rootDir: '/p', env: {}, isInstalled: () => true });
-  assert.deepEqual(s.projects.map((p) => [p.name, p.dependencies ?? null]), [['setup', null], ['chromium', ['setup']], ['firefox', ['setup']]]);
-  assert.equal(s.projects[0]!.testDir, path.join('/p', 'auth'), 'login setup lives in auth/');
-  assert.equal(s.projects[1]!.storageState, path.join('/p', 'auth', 'storage-state.json'));
-  assert.equal(s.outputDir, path.join('/p', 'test-results', 'adhoc'), 'plain runs never touch pipeline run evidence');
-  assert.equal(s.reportsDir, path.join('/p', 'reports', 'adhoc'));
-});
 
 test('redact masks secret values', () => {
   assert.equal(redact('user hunter2 logged hunter2', ['hunter2', '']), 'user *** logged ***');

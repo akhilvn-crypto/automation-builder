@@ -1,4 +1,4 @@
-// Parses supplied test cases (Markdown, CSV) into normalized TestSpecs.
+// Parses supplied test cases (Markdown, CSV, Excel .xlsx) into normalized TestSpecs.
 // Wording is preserved verbatim; nothing is inferred. Gaps are flagged as ambiguities.
 // Input formats are documented in docs/test-spec-schema.md.
 
@@ -6,13 +6,25 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { sha256File, toPosixRelative } from '../utils/fs.ts';
+import { readXlsx } from '../utils/xlsx.ts';
 import { quoteEnvValue } from './env-file.ts';
 import {
-  TEST_ID_PATTERN, TEST_SPEC_SCHEMA_VERSION, specStatus,
+  mappingFor, reportOf, resolveTable, type Field, type InputMappings, type ResolvedTable, type TableMapping, type TableReport, type TableRow,
+} from './input-table.ts';
+import {
+  TEST_ID_PATTERN, TEST_SPEC_SCHEMA_VERSION, slugify, specStatus,
   type Ambiguity, type InputFormat, type SourceFile, type SpecStep, type TestDataRef, type TestSpec, type TestSpecDocument,
 } from './test-spec.ts';
 
-export const FORMAT_BY_EXTENSION: Record<string, InputFormat> = { '.md': 'markdown', '.markdown': 'markdown', '.csv': 'csv' };
+export const FORMAT_BY_EXTENSION: Record<string, InputFormat> = { '.md': 'markdown', '.markdown': 'markdown', '.csv': 'csv', '.tsv': 'csv', '.xlsx': 'xlsx' };
+
+// Spreadsheet formats the engine cannot read, with what to do instead.
+export const CONVERT_FIRST: Record<string, string> = {
+  '.xls': 'legacy Excel format: open it in Excel and save as .xlsx (or export to .csv)',
+  '.xlsm': 'macro-enabled workbook: save a copy as .xlsx (or export to .csv)',
+  '.ods': 'OpenDocument spreadsheet: save as .xlsx or export to .csv',
+  '.numbers': 'Numbers spreadsheet: export to .xlsx or .csv',
+};
 
 export function detectFormat(file: string): InputFormat | null {
   return FORMAT_BY_EXTENSION[path.extname(file).toLowerCase()] ?? null;
@@ -24,6 +36,8 @@ interface DraftCase {
   title: string;
   line: number;
   suite: string | null;
+  module: string | null; // explicit module from a column, sheet or mapping; Markdown cases use their "# heading" (suite)
+  sheet: string | null;
   priority: string | null;
   tags: string[];
   preconditions: string[];
@@ -33,7 +47,7 @@ interface DraftCase {
 }
 
 function draft(line: number, suite: string | null, originalId: string | null, title: string): DraftCase {
-  return { originalId, title, line, suite, priority: null, tags: [], preconditions: [], steps: [], expectedResults: [], testData: [] };
+  return { originalId, title, line, suite, module: null, sheet: null, priority: null, tags: [], preconditions: [], steps: [], expectedResults: [], testData: [] };
 }
 
 const ID_TITLE = /^\[?([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*)\]?\s*(?:[:–—-]\s*|\s+)(.+)$/;
@@ -234,13 +248,15 @@ function splitList(v: string): string[] {
   return v.split(/[,;]/).map((s) => s.trim().replace(/^@/, '')).filter(Boolean);
 }
 
-// ---------- CSV ----------
+// ---------- Tables (CSV and spreadsheet sheets) ----------
 
-export function parseCsvRecords(text: string): { line: number; cells: string[] }[] {
+export function parseCsvRecords(text: string): TableRow[] {
   const src = text.replace(/^﻿/, '');
-  const firstLine = src.split(/\r?\n/, 1)[0] ?? '';
-  const delim = (firstLine.match(/;/g)?.length ?? 0) > (firstLine.match(/,/g)?.length ?? 0) ? ';' : ',';
-  const records: { line: number; cells: string[] }[] = [];
+  // The delimiter is the one used most across the first lines (a title block above the header may have none).
+  const head = src.split(/\r?\n/).slice(0, 10).join('\n');
+  const count = (re: RegExp) => head.match(re)?.length ?? 0;
+  const delim = [[',', count(/,/g)], [';', count(/;/g)], ['\t', count(/\t/g)]].sort((a, b) => (b[1] as number) - (a[1] as number))[0]![0] as string;
+  const records: TableRow[] = [];
   let cells: string[] = [];
   let cell = '';
   let quoted = false;
@@ -271,55 +287,84 @@ export function parseCsvRecords(text: string): { line: number; cells: string[] }
   return records;
 }
 
-const COLUMN_ALIASES: Record<string, readonly string[]> = {
-  id: ['id', 'test id', 'test case id', 'tc id', 'case id', 'testcase id'],
-  title: ['title', 'test case title', 'test case name', 'test case', 'testcase', 'name', 'summary', 'scenario', 'test scenario'],
-  preconditions: ['preconditions', 'precondition', 'pre-conditions', 'pre-condition', 'prerequisites', 'pre-requisites'],
-  steps: ['steps', 'test steps', 'step', 'test step', 'action', 'actions', 'step description'],
-  expected: ['expected result', 'expected results', 'expected', 'expected outcome', 'expected behaviour', 'expected behavior'],
-  data: ['test data', 'data'],
-  priority: ['priority'],
-  tags: ['tags', 'labels', 'tag'],
-};
-
-export function mapColumns(header: string[]): { columns: Partial<Record<keyof typeof COLUMN_ALIASES, number>>; errors: string[] } {
-  const norm = header.map((h) => h.trim().toLowerCase().replace(/\s+/g, ' '));
-  const columns: Partial<Record<string, number>> = {};
-  for (const [key, aliases] of Object.entries(COLUMN_ALIASES)) {
-    const idx = norm.findIndex((h) => aliases.includes(h));
-    if (idx >= 0) columns[key] = idx;
-  }
-  const errors: string[] = [];
-  if (columns.title === undefined && columns.id === undefined) errors.push('CSV needs a test case ID or title column');
-  if (columns.steps === undefined) errors.push('CSV needs a steps column');
-  if (columns.expected === undefined) errors.push('CSV needs an expected result column');
-  if (errors.length) errors.push(`found columns: ${header.map((h) => JSON.stringify(h.trim())).join(', ')}`);
-  return { columns, errors };
-}
-
-const NUMBERED = /^\s*(?:\d+[.)]|[-*•])\s*/;
+// "1. Open", "2) Open", "Step 3: Open", "- Open", "• Open" -> "Open"
+const NUMBERED = /^\s*(?:step\s*\d+\s*[-–:.)]?|\d+\s*[.):]|[-*•])\s*/i;
 
 function cellLines(v: string): string[] {
   return v.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-export function parseCsv(text: string): DraftCase[] {
-  const records = parseCsvRecords(text);
-  if (records.length === 0) throw new Error('CSV is empty');
-  const { columns, errors } = mapColumns(records[0]!.cells);
-  if (errors.length) throw new Error(errors.join('; '));
-  const get = (cells: string[], key: keyof typeof COLUMN_ALIASES) => {
-    const i = columns[key];
+// Sheet names that say nothing about the feature under test; the file name is used for the module instead.
+const GENERIC_SHEET = /^(?:sheet\s*\d*|test\s*cases?|tests?|test\s*suite|cases|data|main)$/i;
+
+export const cleanName = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+export interface TableParse {
+  drafts: DraftCase[];
+  moduleFrom: TableReport['moduleFrom'];
+  sections: string[];
+  titlePrefixes: TableReport['titlePrefixes'];
+}
+
+const TITLE_PREFIX = /^(.+?)\s+[-–—]\s+\S/;
+const titlePrefixOf = (title: string): string | null => {
+  const m = TITLE_PREFIX.exec(title);
+  return m ? cleanName(m[1]!) : null;
+};
+
+// A heading row inside the table: only its first (ID) cell is filled and it reads as a name, not as an ID ("SMS login
+// accessibility", "Blog Subscription/Subscription"; an ID-shaped value such as TC-9 is an incomplete case instead).
+function sectionLabel(cells: string[], idColumn: number | undefined): string | null {
+  if (idColumn === undefined) return null;
+  const filled = cells.map((c, i) => [c.trim(), i] as const).filter(([c]) => c !== '');
+  if (filled.length !== 1 || filled[0]![1] !== idColumn) return null;
+  const text = filled[0]![0];
+  return TEST_ID_PATTERN.test(text) && /\d/.test(text) ? null : cleanName(text);
+}
+
+// Turns the rows below a resolved header into cases. A row that starts a case has an ID or a title; a row with neither,
+// or one repeating the previous case's ID, continues it (one step per row, as in merged-cell layouts).
+export function parseTable(rows: TableRow[], t: ResolvedTable, opts: { sheet: string | null; mapping?: TableMapping }): TableParse {
+  const get = (cells: string[], key: Field) => {
+    const i = t.columns[key];
     return i === undefined ? '' : (cells[i] ?? '').trim();
   };
+  const fixed = opts.mapping?.module ? cleanName(opts.mapping.module) : null;
+  const sheetModule = opts.sheet !== null && !GENERIC_SHEET.test(opts.sheet.trim()) ? cleanName(opts.sheet) : null;
+  const source = opts.mapping?.moduleSource;
+  let moduleFrom: TableReport['moduleFrom'] = null;
+  let columnModule: string | null = null;
+  let sectionModule: string | null = null;
+  const sections: string[] = [];
 
-  const cases: DraftCase[] = [];
+  const drafts: DraftCase[] = [];
   let cur: DraftCase | null = null;
-  for (const { line, cells } of records.slice(1)) {
+  for (const { line, cells } of rows.slice(t.headerIndex + 1)) {
+    const section = sectionLabel(cells, t.columns.id);
+    if (section !== null) {
+      sectionModule = section;
+      if (!sections.includes(section)) sections.push(section);
+      cur = null; // a continuation row never carries over a heading
+      continue;
+    }
     const id = get(cells, 'id');
     const title = get(cells, 'title');
-    if (id || title || !cur) {
+    const repeatsId = cur !== null && id !== '' && id === cur.originalId && (title === '' || title === cur.title);
+    if ((id || title || !cur) && !repeatsId) {
+      const cell = cleanName(get(cells, 'module'));
+      if (cell) columnModule = cell; // an empty module cell inherits the one above (merged or filled-down column)
+      // The first source that has a value wins; "section" (heading rows) is the default for a table that has them.
+      const sources: [NonNullable<TableReport['moduleFrom']>, string | null][] = [
+        ['mapping', fixed], ['column', columnModule],
+        ['title-prefix', source === 'title-prefix' ? titlePrefixOf(title) : null],
+        ['sheet', source === 'sheet' ? sheetModule : null],
+        ['section', sectionModule], ['sheet', sheetModule],
+      ];
+      const [from, module] = sources.find(([, name]) => name !== null) ?? [null, null];
+      moduleFrom ??= from;
       cur = draft(line, null, id || null, title || id || `Row ${line}`);
+      cur.module = module;
+      cur.sheet = opts.sheet;
       cur.priority = get(cells, 'priority') || null;
       cur.tags = splitList(get(cells, 'tags'));
       cur.preconditions = cellLines(get(cells, 'preconditions')).map((l) => l.replace(NUMBERED, ''));
@@ -327,15 +372,31 @@ export function parseCsv(text: string): DraftCase[] {
         const ref = d.trim() ? parseDataItem(d) : null;
         if (ref) cur.testData.push(ref);
       }
-      cases.push(cur);
+      drafts.push(cur);
     }
-    addCsvSteps(cur, get(cells, 'steps'), get(cells, 'expected'));
+    addTableSteps(cur!, get(cells, 'steps'), get(cells, 'expected'));
   }
-  return cases;
+  // Prefixes shared by several cases ("Home page - ..."), offered as an alternative way to name the modules.
+  const prefixCounts = new Map<string, number>();
+  for (const d of drafts) {
+    const p = titlePrefixOf(d.title);
+    if (p) prefixCounts.set(p, (prefixCounts.get(p) ?? 0) + 1);
+  }
+  const shared = [...prefixCounts.values()].some((n) => n >= 2);
+  const titlePrefixes = shared ? [...prefixCounts].slice(0, 30).map(([prefix, cases]) => ({ prefix, cases })) : [];
+  return { drafts, moduleFrom, sections, titlePrefixes };
+}
+
+export function parseCsv(text: string, mapping?: TableMapping): DraftCase[] {
+  const rows = parseCsvRecords(text);
+  if (rows.length === 0) throw new Error('CSV is empty');
+  const t = resolveTable(rows, mapping);
+  if (t.status !== 'ok') throw new Error(`${t.reason}; found columns: ${t.header.filter((h) => h.trim()).map((h) => JSON.stringify(h.trim())).join(', ')}`);
+  return parseTable(rows, t, { sheet: null, mapping }).drafts;
 }
 
 // One row may hold one step (multi-row cases) or a numbered list of steps (single-row cases).
-function addCsvSteps(c: DraftCase, stepsCell: string, expectedCell: string): void {
+function addTableSteps(c: DraftCase, stepsCell: string, expectedCell: string): void {
   const steps = cellLines(stepsCell).map((l) => l.replace(NUMBERED, ''));
   const expected = cellLines(expectedCell).map((l) => l.replace(NUMBERED, ''));
   if (steps.length === 0) {
@@ -357,8 +418,16 @@ function addCsvSteps(c: DraftCase, stepsCell: string, expectedCell: string): voi
 
 // ---------- Normalization ----------
 
-function autoId(sourcePath: string, title: string): string {
-  return `AUTO-${createHash('sha256').update(`${sourcePath}\n${title.trim().toLowerCase()}`).digest('hex').slice(0, 8)}`;
+// Spreadsheet cases are keyed by sheet too, so the same title on two sheets stays two cases. Markdown/CSV IDs are unchanged.
+function autoId(sourcePath: string, title: string, sheet: string | null = null): string {
+  const where = sheet === null ? sourcePath : `${sourcePath}#${sheet}`;
+  return `AUTO-${createHash('sha256').update(`${where}\n${title.trim().toLowerCase()}`).digest('hex').slice(0, 8)}`;
+}
+
+// The module a case belongs to: its explicit module (column, sheet, mapping), else its Markdown "# heading", else the file name.
+function moduleOf(c: DraftCase, sourcePath: string): string {
+  const stem = path.basename(sourcePath, path.extname(sourcePath));
+  return cleanName(c.module ?? c.suite ?? '') || cleanName(stem) || 'General';
 }
 
 function checkCase(c: DraftCase): Ambiguity[] {
@@ -388,10 +457,26 @@ function checkCase(c: DraftCase): Ambiguity[] {
   return out;
 }
 
+// Workbooks restart their numbering on every sheet ("TC001" on all of them) and often number with bare counters ("1").
+// Such an ID is prefixed with its sheet (or file) name so it is unique and a valid test ID: "Target Block" + "TC001" -> TARGET-BLOCK-TC001.
+function qualifyId(originalId: string, where: string): string | null {
+  const slug = slugify(where).toUpperCase().slice(0, 30).replace(/-+$/, '');
+  const prefix = /^[A-Z]/.test(slug) ? slug : `S${slug}`;
+  const own = originalId.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  const id = `${prefix}-${own}`;
+  return own !== '' && TEST_ID_PATTERN.test(id) ? id : null;
+}
+
 export function normalizeCases(drafts: DraftCase[], sourcePath: string, seen: Map<string, TestSpec[]>): TestSpec[] {
   return drafts.map((c) => {
     const ambiguities = checkCase(c);
-    const key = c.originalId ?? autoId(sourcePath, c.title);
+    let key = c.originalId ?? autoId(sourcePath, c.title, c.sheet);
+    if (c.originalId !== null) {
+      const where = c.sheet ?? path.basename(sourcePath, path.extname(sourcePath));
+      // Only a workbook restarts its numbering per sheet; the same ID in two Markdown/CSV files is still a duplicate to flag.
+      const usedElsewhere = c.sheet !== null && (seen.get(key) ?? []).some((p) => p.source.path !== sourcePath || p.source.sheet !== c.sheet);
+      if (!TEST_ID_PATTERN.test(key) || usedElsewhere) key = qualifyId(key, where) ?? autoId(sourcePath, c.title, c.sheet);
+    }
     let id = key;
     const prior = seen.get(key);
     if (prior) {
@@ -407,11 +492,14 @@ export function normalizeCases(drafts: DraftCase[], sourcePath: string, seen: Ma
       id = `${key}-dup${prior.length + 1}`;
     }
     const steps: SpecStep[] = c.steps.map((s, i) => ({ index: i + 1, action: s.action, expected: s.expected }));
+    const module = moduleOf(c, sourcePath);
     const spec: TestSpec = {
       id,
       title: c.title,
-      source: { path: sourcePath, line: c.line, originalId: c.originalId },
+      source: { path: sourcePath, line: c.line, originalId: c.originalId, sheet: c.sheet },
       suite: c.suite,
+      module,
+      moduleSlug: slugify(module),
       priority: c.priority,
       tags: c.tags,
       preconditions: c.preconditions,
@@ -437,7 +525,7 @@ export function listInputFiles(baseDir: string, inputPath: string): string[] {
   const st = statSync(abs);
   if (st.isFile()) return [abs];
   return readdirSync(abs, { recursive: true, withFileTypes: true })
-    .filter((d) => d.isFile() && !d.name.startsWith('.'))
+    .filter((d) => d.isFile() && !d.name.startsWith('.') && !d.name.startsWith('~$')) // dot files, and Excel's lock files for open workbooks
     .map((d) => path.join(d.parentPath, d.name))
     .sort();
 }
@@ -446,28 +534,76 @@ export interface ParsedInputs {
   document: TestSpecDocument;
   errors: ParseError[];
   unsupported: string[];
+  // One entry per CSV file / worksheet: how its columns were read, what was left out, and where each case's module came from.
+  tables: TableReport[];
   // Credential/email literals found in the input, already replaced by env var names in `document`.
   // Contains values: the caller writes them to .env and must not print or store them elsewhere.
   credentials: DetectedCredential[];
 }
 
-export function parseInputs(baseDir: string, files: string[], now: Date = new Date()): ParsedInputs {
+interface RawTable { sheet: string | null; rows: TableRow[] }
+
+function readTables(abs: string, format: 'csv' | 'xlsx'): RawTable[] {
+  if (format === 'csv') return [{ sheet: null, rows: parseCsvRecords(readFileSync(abs, 'utf8')) }];
+  return readXlsx(readFileSync(abs)).map((s) => ({ sheet: s.name, rows: s.rows }));
+}
+
+export function parseInputs(baseDir: string, files: string[], now: Date = new Date(), mappings?: InputMappings): ParsedInputs {
   const sources: SourceFile[] = [];
   const specs: TestSpec[] = [];
   const errors: ParseError[] = [];
   const unsupported: string[] = [];
+  const tables: TableReport[] = [];
   const seen = new Map<string, TestSpec[]>();
   const parsed: { rel: string; drafts: DraftCase[] }[] = [];
   for (const abs of files) {
     const rel = toPosixRelative(baseDir, abs);
     const format = detectFormat(abs);
-    if (!format) { unsupported.push(rel); continue; }
+    if (!format) {
+      const hint = CONVERT_FIRST[path.extname(abs).toLowerCase()];
+      if (hint) errors.push({ path: rel, message: `cannot read this file: ${hint}` });
+      else unsupported.push(rel);
+      continue;
+    }
     try {
-      const text = readFileSync(abs, 'utf8');
-      const drafts = format === 'markdown' ? parseMarkdown(text) : parseCsv(text);
-      if (drafts.length === 0) {
-        errors.push({ path: rel, message: format === 'markdown' ? 'no test cases found (each case needs a "## <ID>: <title>" heading)' : 'no data rows' });
-        continue;
+      let drafts: DraftCase[];
+      if (format === 'markdown') {
+        drafts = parseMarkdown(readFileSync(abs, 'utf8'));
+        if (drafts.length === 0) {
+          errors.push({ path: rel, message: 'no test cases found (each case needs a "## <ID>: <title>" heading)' });
+          continue;
+        }
+      } else {
+        drafts = [];
+        const fileErrors: ParseError[] = [];
+        for (const raw of readTables(abs, format)) {
+          const mapping = mappingFor(mappings, rel, raw.sheet);
+          const t = resolveTable(raw.rows, mapping);
+          const report: TableReport = { ...reportOf(rel, raw.sheet, t), moduleFrom: null, sections: [], titlePrefixes: [], cases: 0 };
+          tables.push(report);
+          const where = raw.sheet === null ? rel : `${rel} (sheet "${raw.sheet}")`;
+          // A standalone CSV is the user's test-case file by definition; only a workbook sheet may be a cover page or notes.
+          const notATable = raw.sheet === null && t.status === 'skipped' && !mapping?.skip && raw.rows.length > 0;
+          if (t.status === 'unresolved' || notATable) {
+            fileErrors.push({ path: rel, message: `${where}: ${t.reason}. Columns found: ${report.headers.map((h) => JSON.stringify(h)).join(', ') || 'none'}. Map them with "input map" (see "input inspect")` });
+          }
+          if (t.status !== 'ok') continue;
+          const table = parseTable(raw.rows, t, { sheet: raw.sheet, mapping });
+          report.cases = table.drafts.length;
+          report.moduleFrom = table.moduleFrom ?? 'file';
+          report.sections = table.sections;
+          report.titlePrefixes = table.titlePrefixes;
+          drafts.push(...table.drafts);
+        }
+        errors.push(...fileErrors);
+        if (drafts.length === 0) {
+          if (fileErrors.length === 0) {
+            const mine = tables.filter((x) => x.path === rel);
+            const why = mine.map((x) => `${x.sheet === null ? '' : `sheet "${x.sheet}": `}${x.reason ?? 'no data rows'}${x.headers.length ? ` (columns: ${x.headers.map((h) => JSON.stringify(h)).join(', ')})` : ''}`).join('; ');
+            errors.push({ path: rel, message: mine.some((x) => x.status === 'ok') ? 'no data rows' : `no test-case table found: ${why || 'the file is empty'}` });
+          }
+          continue;
+        }
       }
       sources.push({ path: rel, sha256: sha256File(abs), format });
       parsed.push({ rel, drafts });
@@ -478,13 +614,14 @@ export function parseInputs(baseDir: string, files: string[], now: Date = new Da
   // After every file is read, so names the user wrote as env:VAR anywhere in the input are reserved first.
   const alloc = new EnvAllocator(parsed.flatMap((p) => p.drafts.flatMap((c) => c.testData.flatMap((d) => (d.envVar ? [d.envVar] : [])))));
   for (const { rel, drafts } of parsed) {
-    for (const c of drafts) extractCredentials(c, c.originalId ?? autoId(rel, c.title), alloc);
+    for (const c of drafts) extractCredentials(c, c.originalId ?? autoId(rel, c.title, c.sheet), alloc);
     specs.push(...normalizeCases(drafts, rel, seen));
   }
   return {
     document: { schemaVersion: TEST_SPEC_SCHEMA_VERSION, generatedAt: now.toISOString(), sources, specs },
     errors,
     unsupported,
+    tables,
     credentials: [...alloc.values].map(([envVar, value]) => ({ envVar, value })),
   };
 }

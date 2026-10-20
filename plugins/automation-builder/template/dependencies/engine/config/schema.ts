@@ -10,7 +10,9 @@ export const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
 export const VIDEO_MODES = ['off', 'on', 'retain-on-failure'] as const;
 export const SCREENSHOT_MODES = ['off', 'on', 'only-on-failure'] as const;
 export const TRACE_MODES = ['off', 'on', 'on-first-retry', 'retain-on-failure'] as const;
-export const REPORTERS = ['html', 'json', 'allure', 'junit'] as const;
+// 'evidence-pdf' is the pipeline's own report: a PDF listing every executed step with its screenshot. It is built after
+// the run by report_generation, not by a Playwright reporter.
+export const REPORTERS = ['html', 'json', 'allure', 'junit', 'evidence-pdf'] as const;
 export const AUTH_APPROACHES = ['none', 'ui-login', 'storage-state'] as const;
 export const EXPLORATION_TOOLS = ['playwright-cli', 'none'] as const;
 

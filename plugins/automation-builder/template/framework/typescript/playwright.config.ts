@@ -1,60 +1,44 @@
-// Single Playwright Test configuration. All values come from config/automation.config.json
-// (+ env overrides) through ../dependencies/engine/config/playwright-settings.ts — change settings there, not here.
+// Playwright Test configuration. Written by the Automation Builder pipeline from config/automation.config.json and
+// meant to be read and edited like any Playwright config. While this file is unchanged the pipeline refreshes it when a
+// setting changes; once you edit it, the pipeline leaves it alone (`config render --force` rewrites it).
+// automation-builder:config sha256=unconfigured
 
-import { createRequire } from 'node:module';
 import { defineConfig, devices } from '@playwright/test';
-import { loadConfig } from '../dependencies/engine/config/load-config.ts';
-import { playwrightSettings } from '../dependencies/engine/config/playwright-settings.ts';
-
-const rootDir = import.meta.dirname;
 
 // Secrets live in .env (git-ignored). Node's built-in loader; no dotenv dependency.
 try {
-  process.loadEnvFile(`${rootDir}/.env`);
+  process.loadEnvFile(`${import.meta.dirname}/.env`);
 } catch {
   // no .env file: credentials may come from the real environment
 }
 
-const state = loadConfig(rootDir);
-if (state.status !== 'valid') {
-  throw new Error(
-    `config/automation.config.json is ${state.status}: ${state.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}. ` +
-      'Run /automation-builder:playwright-pipeline (or the pipeline-setup skill) to configure it.',
-  );
-}
-
-const require = createRequire(import.meta.url);
-const s = playwrightSettings(state.config, {
-  rootDir,
-  env: process.env,
-  isInstalled: (pkg) => {
-    try {
-      require.resolve(pkg);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-});
-
-const DEVICES = { chromium: devices['Desktop Chrome'], firefox: devices['Desktop Firefox'], webkit: devices['Desktop Safari'] };
+// Pipeline runs write to reports/<run id>/<label>; a plain `npx playwright test` writes to reports/adhoc.
+const scope = process.env.PIPELINE_RUN_ID
+  ? `${process.env.PIPELINE_RUN_ID}/${process.env.PIPELINE_LABEL ?? 'initial'}`
+  : 'adhoc';
 
 export default defineConfig({
-  testDir: s.testDir,
-  testMatch: s.testMatch,
-  outputDir: s.outputDir,
-  timeout: s.timeout,
-  retries: s.retries,
-  workers: s.workers,
-  forbidOnly: true,
+  testDir: './tests',
+  testMatch: '**/*.spec.ts',
+  outputDir: `./test-results/${scope}`,
+  timeout: 30000,
   fullyParallel: true,
-  reporter: s.reporter,
-  use: s.use,
-  projects: s.projects.map((p) => ({
-    name: p.name,
-    ...(p.testDir ? { testDir: p.testDir } : {}),
-    ...(p.testMatch ? { testMatch: p.testMatch } : {}),
-    ...(p.dependencies ? { dependencies: p.dependencies } : {}),
-    use: { ...(p.browser ? DEVICES[p.browser] : {}), ...(p.storageState ? { storageState: p.storageState } : {}) },
-  })),
+  forbidOnly: true,
+  retries: process.env.PW_RETRIES ? Number(process.env.PW_RETRIES) : 1,
+  workers: process.env.PW_WORKERS ? Number(process.env.PW_WORKERS) : undefined,
+  reporter: [
+    ['list'],
+    ['json', { outputFile: `reports/${scope}/results.json` }],
+    ['html', { outputFolder: `reports/${scope}/html`, open: 'never' }],
+  ],
+  use: {
+    baseURL: process.env.PW_BASE_URL,
+    testIdAttribute: 'data-testid',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    trace: 'retain-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
 });

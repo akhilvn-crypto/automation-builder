@@ -20,6 +20,7 @@ export const ARTIFACTS = {
   inputValidation: 'input-validation.json',
   inputCopyDir: 'input', // verbatim copy of the original test-case files
   testSpecs: 'test-specs.json',
+  normalizedInputDir: 'normalized-input', // the test cases re-written in the pipeline's Markdown format, one file per module
   explorationDir: 'exploration',
   exploration: 'exploration/exploration.json',
   generationManifest: 'generation-manifest.json',

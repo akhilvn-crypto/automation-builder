@@ -78,7 +78,10 @@ interface BrowsersJson {
 }
 
 function checkBrowsers(rootDir: string, config: AutomationConfig | null, env: NodeJS.ProcessEnv): PreflightCheck[] {
-  const wanted = config?.browsers ?? ['chromium'];
+  const wanted: string[] = [...(config?.browsers ?? ['chromium'])];
+  // The evidence PDF is printed by Chromium, whatever browsers the tests run in.
+  if (config?.reporters.includes('evidence-pdf') && !wanted.includes('chromium')) wanted.push('chromium');
+  const purpose = (b: string) => (config && !config.browsers.includes(b as never) ? 'Render the evidence PDF' : 'Run generated tests');
   const manifest = readJson(path.join(rootDir, 'node_modules', 'playwright-core', 'browsers.json'));
   if (!manifest.ok) {
     return wanted.map((b) => ({
@@ -88,7 +91,7 @@ function checkBrowsers(rootDir: string, config: AutomationConfig | null, env: No
       required: true,
       version: null,
       location: null,
-      purpose: 'Run generated tests',
+      purpose: purpose(b),
       installCommand: `npx playwright install ${b}`,
       detail: 'Cannot determine the required browser revision until @playwright/test is installed in the project.',
     }));
@@ -114,7 +117,7 @@ function checkBrowsers(rootDir: string, config: AutomationConfig | null, env: No
       required: true,
       version: revisions.join(', ') || null,
       location: missing.length === 0 ? 'system' : null,
-      purpose: 'Run generated tests',
+      purpose: purpose(b),
       installCommand: missing.length === 0 ? null : `npx playwright install ${b}`,
       detail: missing.length === 0 ? `cache: ${cache}` : `missing: ${missing.join(', ')}`,
     } satisfies PreflightCheck;

@@ -194,3 +194,88 @@ test('flattening: tests/generated + tests/handwritten of a 0.3.0 project move in
   assert.ok(json.warnings.some((w) => /clash\.spec\.ts was not moved/.test(w)));
   assert.ok(!existsSync(a('tests/handwritten')));
 });
+
+// ---- --update and the stepEvidence fixture (evidence-pdf reporter) ----
+
+const DATA = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'data');
+
+for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
+  test(`${language}: --update refreshes an unmodified older fixtures/test.${ext} and leaves a customised one alone`, (t) => {
+    const root = project(t);
+    assert.equal(init(root, '--language', language).code, 0);
+    const fixture = path.join(root, 'automation', 'fixtures', `test.${ext}`);
+    const shipped = readFileSync(path.join(DATA, `fixture-0.6.0.${ext}.txt`), 'utf8');
+    assert.doesNotMatch(shipped, /stepEvidence/);
+
+    // Unmodified older copy (also with Windows line endings): a plain run keeps it, --update replaces it.
+    writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
+    assert.ok(!init(root).json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    assert.doesNotMatch(readFileSync(fixture, 'utf8'), /stepEvidence/, 'no flag: untouched');
+    const updated = init(root, '--update');
+    assert.ok(updated.json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    assert.match(readFileSync(fixture, 'utf8'), /stepEvidence/);
+
+    // Customised copy: never replaced, the user is told how to get the fixture.
+    const custom = `${shipped}\n// my own fixture\n`;
+    writeFileSync(fixture, custom);
+    const kept = init(root, '--update');
+    assert.equal(readFileSync(fixture, 'utf8'), custom);
+    assert.ok(!kept.json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('stepEvidence')), JSON.stringify(kept.json.warnings));
+
+    // A copy that already has the fixture is left alone silently.
+    writeFileSync(fixture, `${custom}// stepEvidence\n`);
+    const quiet = init(root, '--update');
+    assert.ok(!quiet.json.warnings.some((w) => w.includes('customised')));
+  });
+}
+
+for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
+  test(`${language}: playwright.config is a self-contained standard config; --update never overwrites it`, (t) => {
+    const root = project(t);
+    assert.equal(init(root, '--language', language).code, 0);
+    const file = path.join(root, 'automation', `playwright.config.${ext}`);
+    const scaffolded = readFileSync(file, 'utf8');
+    assert.match(scaffolded, /import \{ defineConfig, devices \} from '@playwright\/test';/);
+    assert.doesNotMatch(scaffolded, /dependencies|loadConfig|playwright-settings/, 'no link back to the pipeline engine');
+    assert.doesNotMatch(scaffolded, /https?:\/\//, 'no base URL is invented before the user approves one');
+
+    // Saving settings fills the file with them.
+    const cfg = {
+      schemaVersion: 1, language, packageManager: 'npm', app: { baseUrl: 'https://qa.example.com', environment: 'qa' },
+      input: { testCasesPath: 'input/test-cases' }, browsers: ['chromium'],
+      evidence: { video: 'off', screenshot: 'only-on-failure', trace: 'off' }, reporters: ['json'],
+      auth: { approach: 'none', credentialEnvVars: [] }, exploration: { tool: 'none' },
+      execution: { workers: null, retries: 2, timeoutMs: 20000 }, healing: { maxAttemptsPerTest: 2 }, retention: { keepRuns: null },
+    };
+    const cfgFile = path.join(root, 'cfg.json');
+    writeFileSync(cfgFile, JSON.stringify(cfg));
+    const cli = (...args) => spawnSync(process.execPath, [path.join(root, 'dependencies', 'engine', 'cli', 'pipeline.ts'), ...args, '--root', path.join(root, 'automation')], { encoding: 'utf8' });
+    const saved = cli('config', 'save', '--file', cfgFile);
+    assert.equal(saved.status, 0, saved.stdout + saved.stderr);
+    assert.equal(JSON.parse(saved.stdout).playwrightConfig.status, 'written');
+    const filled = readFileSync(file, 'utf8');
+    assert.match(filled, /qa\.example\.com/);
+    assert.match(filled, /timeout: 20000,/);
+
+    // --update leaves the user's file alone, and a later save keeps a hand edit.
+    writeFileSync(file, filled.replace('fullyParallel: true', 'fullyParallel: false'));
+    assert.equal(init(root, '--update').code, 0);
+    assert.match(readFileSync(file, 'utf8'), /fullyParallel: false/);
+    assert.equal(JSON.parse(cli('config', 'save', '--file', cfgFile).stdout).playwrightConfig.status, 'kept');
+    assert.equal(JSON.parse(cli('config', 'render', '--force').stdout).playwrightConfig.status, 'written');
+    assert.match(readFileSync(file, 'utf8'), /fullyParallel: true/);
+  });
+}
+
+test('migration: the thin playwright.config wrapper of 0.6.x is replaced and its engine module removed', (t) => {
+  const root = project(t);
+  assert.equal(init(root, '--language', 'typescript').code, 0);
+  const file = path.join(root, 'automation', 'playwright.config.ts');
+  writeFileSync(file, "import { playwrightSettings } from '../dependencies/engine/config/playwright-settings.ts';\n");
+  writeFileSync(path.join(root, 'dependencies', 'engine', 'config', 'playwright-settings.ts'), '// old\n');
+  const r = init(root, '--update');
+  assert.equal(r.code, 0, JSON.stringify(r.json));
+  assert.doesNotMatch(readFileSync(file, 'utf8'), /playwright-settings/);
+  assert.ok(!existsSync(path.join(root, 'dependencies', 'engine', 'config', 'playwright-settings.ts')));
+});

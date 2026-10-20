@@ -2,8 +2,8 @@
 
 This folder is the Playwright framework scaffolded by the `automation-builder` plugin. It has its own `package.json`
 and `node_modules`. It holds the framework and nothing else: the pipeline engine, docs, test-case input and run state
-live in the sibling **`../dependencies/`** folder. Keep the two folders together (`playwright.config.{{EXT}}` and
-`fixtures/` import the config loader from `../dependencies/engine/`). Run every command below from this folder
+live in the sibling **`../dependencies/`** folder. Keep the two folders together (`fixtures/` imports the config loader
+from `../dependencies/engine/`; `playwright.config.{{EXT}}` has no such link). Run every command below from this folder
 (`cd automation`).
 
 Language: **{{LANGUAGE}}** (chosen at `/automation-builder:init`; fixed for this project).
@@ -17,9 +17,9 @@ tests/                  every test (*.spec.{{EXT}}). Files the pipeline wrote st
 helpers/                reusable utilities shared by tests and pages (test-data.{{EXT}}: requireEnv, uniqueSuffix, redact)
 fixtures/               the shared `test` / `expect` (test.{{EXT}}) — import these, never @playwright/test directly
 config/                 automation.config.json: approved, non-secret choices (base URL, browsers, evidence, reporters)
-reports/<run-id>/       reporter output per pipeline run (html, json, junit, allure); reports/adhoc/ for plain `npm test` (git-ignored)
+reports/<run-id>/       reporter output per pipeline run (html, json, junit, allure, and evidence-report/ with the evidence PDF); reports/adhoc/ for plain `npm test` (git-ignored)
 test-results/<run-id>/  screenshots, video, traces per pipeline run; test-results/adhoc/ for plain `npm test` (git-ignored)
-playwright.config.{{EXT}}   thin wrapper: every value comes from config/automation.config.json (+ PW_* env overrides)
+playwright.config.{{EXT}}   standard Playwright config; the pipeline fills it from config/automation.config.json, edit it freely (PW_BASE_URL, PW_RETRIES, PW_WORKERS override at run time)
 package.json  .gitignore  .env.example  README.md
 ```
 
@@ -37,7 +37,7 @@ Where the rest went (`../dependencies/`, not part of the framework):
 engine/                 the pipeline engine (TypeScript run by Node 24+). Plugin-managed: refresh it with
                         /automation-builder:init --update instead of editing it
 docs/                   test-case format and run-artifact reference
-input/test-cases/       your Markdown / CSV test cases (the pipeline's input)
+input/test-cases/       your test cases in the pipeline's Markdown format (imported from wherever you keep them)
 runs/<run-id>/          per-run manifest, specs, exploration, healing log, summary (git-ignored)
 state/                  scaffold.json (chosen language), dependency-log.json (approved installs)
 ```
@@ -46,7 +46,7 @@ state/                  scaffold.json (chosen language), dependency-log.json (ap
 
 | Task | Command |
 |---|---|
-| Run the whole pipeline (from the project root) | `/automation-builder:playwright-pipeline dependencies/input/test-cases` |
+| Run the whole pipeline (from the project root) | `/automation-builder:playwright-pipeline` (asks where your test cases are and converts them into `dependencies/input/test-cases/`) |
 | Run the tests directly | `npm test` (Playwright, all projects) · `npm run test:headed` · `npm run test:ui` |
 | Open the last plain-run HTML report | `npm run report` |
 | Pipeline CLI (from `dependencies/`) | `npm run pipeline -- run list` |

@@ -7,7 +7,9 @@
 //   --root is the framework folder (default: the sibling automation/ folder). Test files are relative to it
 //   ("tests/login.spec.ts"); test-case input paths are relative to dependencies/ ("input/test-cases").
 //   preflight
-//   config check | show | save --file <json>
+//   config check | show | save --file <json> | render [--force]
+//                                                save writes the choices and refreshes automation/playwright.config.* from them;
+//                                                render redoes only that file (it never overwrites a hand-edited one without --force)
 //   run create --command <cmd> [--input <path>]... [--from-run <runId>]
 //   run list | show <runId> | resume [<runId>] [--command <cmd>]   (no id = newest resumable run)
 //   run resumable [--command <cmd>]                                 (checkpoints, newest first)
@@ -18,6 +20,15 @@
 //   run finalize <runId>
 //   input validate <runId> [--path <p>]          specs parse <runId> [--path <p>]   (also writes credentials/emails found in the
 //                                                  test cases to automation/.env and reports env.missing; names only)
+//   input import --from <file-or-folder> [--overwrite]
+//                                                convert the user's test cases (any path, any supported layout) into the pipeline's
+//                                                Markdown, one file per module, under dependencies/input/test-cases/; credentials found
+//                                                go to automation/.env (names only in the output); the original is only read
+//   input inspect [--path <p>]                   how CSV/Excel columns, sheets and modules are read (headers only, no cell values)
+//   input map <file> [--sheet S] [--column field="Header"]... [--header-row N] [--module M] [--module-from section|sheet|title-prefix] [--skip] [--clear]
+//                                                save how a table's columns map to test-case fields (fields: id, title, module,
+//                                                preconditions, steps, expected, data, priority, tags)
+//   specs modules <runId>                        the module plan: one test file per module, specs to generate and to hold back
 //   env check <runId>                            names the specs need that have no value in .env or the environment
 //   env run -- <command> [args...]               run a command with automation/.env loaded; secret values masked in the
 //                                                JSON output (use single quotes so the child shell expands $VAR, e.g.
@@ -36,6 +47,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { loadConfig, saveConfig } from '../config/load-config.ts';
+import { syncFromSavedConfig } from '../config/playwright-config.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
 import {
@@ -98,6 +110,16 @@ export function main(argv: string[]): number {
       attempt: { type: 'string' },
       status: { type: 'string' },
       note: { type: 'string' },
+      column: { type: 'string', multiple: true },
+      sheet: { type: 'string' },
+      'header-row': { type: 'string' },
+      module: { type: 'string' },
+      'module-from': { type: 'string' },
+      skip: { type: 'boolean' },
+      clear: { type: 'boolean' },
+      from: { type: 'string' },
+      overwrite: { type: 'boolean' },
+      force: { type: 'boolean' },
     },
   });
   const root = path.resolve(values.root ?? DEFAULT_ROOT);
@@ -121,9 +143,15 @@ export function main(argv: string[]): number {
       }
       if (action === 'save') {
         const result = saveConfig(root, readJsonArg(values.file));
-        return out(result, result.ok ? 0 : 2);
+        // The saved choices also go into playwright.config.* (unless it was edited by hand).
+        return out(result.ok ? { ...result, playwrightConfig: syncFromSavedConfig(root) } : result, result.ok ? 0 : 2);
       }
-      throw new UsageError('config <check|show|save>');
+      if (action === 'render') {
+        const result = syncFromSavedConfig(root, { force: values.force === true });
+        if (!result) return out(loadConfig(root, { env: {} }), 2);
+        return out({ ok: result.status !== 'kept', playwrightConfig: result }, result.status === 'kept' ? 2 : 0);
+      }
+      throw new UsageError('config <check|show|save|render [--force]>');
     }
 
     case 'run': {

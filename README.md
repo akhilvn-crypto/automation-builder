@@ -23,7 +23,7 @@ artifacts, before the next one starts:
 | 9 | failure_triage | Classifies each failure: script defect, application defect, environment, test data or flaky. |
 | 10 | healing | Repairs **only** confirmed script defects, at most 2 attempts per test. A guard rejects any patch that weakens assertions. Patches that don't fix the test are reverted. |
 | 11 | regression_validation | Re-runs the healed tests with retries off. |
-| 12 | report_generation | Generates HTML / JSON / JUnit / Allure reports (whichever you chose) and `summary.md`. |
+| 12 | report_generation | Generates HTML / JSON / JUnit / Allure reports (whichever you chose) and `summary.md`. Choose **evidence-pdf** for the custom evidence report: one PDF with every executed step next to the screenshot taken when it ended (see below). |
 | 13 | finalization | Sets the final outcomes: `passed`, `failed`, `flaky`, `healed`, `blocked`, `skipped`. |
 
 Each run's state lives on disk in `dependencies/runs/<run-id>/`, so a stopped or blocked run can be resumed. Application
@@ -105,11 +105,11 @@ automation/                       the framework only
   config/                         approved settings (automation.config.json)
   reports/  test-results/         generated per run: <run-id>/<label>/ (reports; screenshots, video, traces)
   auth/  test-data/               created only when a test needs them (storage-state login; non-sensitive data)
-  playwright.config.{ts,js}       config wrapper (values come from config/automation.config.json)
+  playwright.config.{ts,js}       standard Playwright config, filled from config/automation.config.json; yours to edit
   package.json  .gitignore  .env.example  README.md  tsconfig.json | jsconfig.json
 dependencies/                     not framework
   engine/  docs/                  the pipeline engine and reference (plugin-managed)
-  input/test-cases/               your Markdown / CSV test cases
+  input/test-cases/               your test cases, converted to Markdown (one file per module)
   runs/                           per-run state (git-ignored)
   state/                          scaffold.json (language), dependency-log.json
   package.json  tsconfig.json     [demo/  engine-tests/ with the optional flags]
@@ -119,10 +119,17 @@ The only project-root change is a rules block in `CLAUDE.md`. Init shows a dry r
 files, and **installs nothing**. Optional flags: `--with-demo` (local demo app), `--with-pipeline-tests`, `--update`,
 `--force`.
 
-### 2. Write test cases
+### 2. Point the pipeline at your test cases
 
-Put Markdown (`.md`) or CSV (`.csv`, e.g. exported from Excel) files in `dependencies/input/test-cases/`. Each case needs an ID
-or a title, steps, and an expected result. Examples are in `dependencies/docs/examples/`:
+Keep them wherever you like: Markdown (`.md`), CSV (`.csv`) or Excel (`.xlsx`), **in whatever column layout you already use**.
+`/automation-builder:playwright-pipeline` asks where they are, converts them to the pipeline's own Markdown format (one file per
+test case, named after its ID, so a single case is easy to find and edit) and saves them in `dependencies/input/test-cases/`; your original is only read, never changed. Credentials in them go to
+`automation/.env`. You can also run it yourself: `node dependencies/engine/cli/pipeline.ts input import --from <file-or-folder>`
+(re-running is harmless; a changed file is only replaced with `--overwrite`). Each case needs an ID or a title, steps, and an expected result. Column names are matched flexibly (`TC No`,
+`Scenario`, `Procedure`, `Expected Outcome` …), a title block above the table is skipped, and one sheet per module works. If a layout
+isn't recognised, Claude asks which of your headers is which and remembers the answer (`input inspect` / `input map`); you never
+have to reformat the file. Columns that match nothing (Status, Actual Result, …) are listed, never silently dropped. The same cases are written
+back in the pipeline's own format to `runs/<run-id>/normalized-input/`. Examples are in `dependencies/docs/examples/`:
 
 ```markdown
 ## TC-001: Valid user can sign in
@@ -152,10 +159,16 @@ pipeline asks you for nothing it can already see: when a value is genuinely miss
 `env:TEST_ADMIN_EMAIL` and nothing sets it), it lists the names to fill in `automation/.env` and waits. A value already in
 your `.env` is never overwritten. Write `literal:<value>` for a deliberately fake value (a wrong password) to keep it out of `.env`.
 
+**Modules.** Test cases belong to modules (Login, Create Project, …): a Markdown `# heading`, an Excel sheet name, or a
+`Module` / `Feature` column, with the file name as the fallback. Tests are generated module by module: `automation/tests/login.spec.ts`,
+`automation/tests/create-project.spec.ts`, … , one file per module and never several modules in one file. A module's file is
+never written over a handwritten test of the same name (the module then gets `<module>.generated.spec.ts`).
+
 ### 3. Run the pipeline
 
 ```
-/automation-builder:playwright-pipeline dependencies/input/test-cases/login.md
+/automation-builder:playwright-pipeline                       # asks where your test cases are
+/automation-builder:playwright-pipeline D:\QA\cases.xlsx      # or give the path up front
 ```
 
 On the first run, Claude asks for the missing settings and asks for approval before each install
@@ -186,6 +199,7 @@ dependencies/runs/<run-id>/              pipeline state
   healing/                 before-snapshots, diffs, guard results, rerun outcomes
   summary.md               final counts, unresolved failures, links to the HTML/JUnit/Allure reports
 automation/reports/<run-id>/<label>/     HTML / JSON / JUnit / Allure reporter output
+automation/reports/<run-id>/evidence-report/  evidence-report.pdf (+ the self-contained .html it is printed from), if chosen
 automation/test-results/<run-id>/<label>/  screenshots, videos, traces
 ```
 
@@ -198,6 +212,27 @@ automation/test-results/<run-id>/<label>/  screenshots, videos, traces
 Then run `npm run demo:app` from `dependencies/` (serves on `http://localhost:4173`) and `/automation-builder:playwright-pipeline
 dependencies/demo/test-cases`, using base URL `http://localhost:4173` and environment `demo`. DEMO-1 and DEMO-2 pass. DEMO-3
 fails as an **application defect** (the cart total bug is deliberate), and the pipeline reports it without healing it.
+
+## Custom evidence report (`evidence-pdf`)
+
+For QA sign-off you often need proof of *what was executed*, not just a pass/fail count. Pick **evidence-pdf** among the
+reporters during setup and the run ends with `automation/reports/<run-id>/evidence-report/evidence-report.pdf`:
+
+- a cover page with the run, environment, counts, a clickable list of tests, and any **evidence gaps**;
+- per test: the module, preconditions, the steps of the test case, then **every executed step with its screenshot**
+  (taken the moment the step ended, also when it failed), its result and duration, the error of a failed step, and a
+  final-state screenshot after the last assertion (or at the failure);
+- retries and the regression re-run appear as their own attempts, so a flaky test shows the failing attempt too;
+- the test case's expected results, with the test's overall result.
+
+How it is made: the shared `fixtures/test.*` records each `test.step` and its screenshot while the tests run (only when
+this reporter is chosen); `report build` lays them out as one self-contained HTML file and prints it with the project's own
+Playwright + Chromium, so there is **no extra package**. Chromium must be installed (preflight asks to approve it if you
+only run Firefox/WebKit). Generated tests wrap each expected result in `test.step('Expected: …')`, so every check has its own
+screenshot. Cost: a JPEG per step for every test, passing ones included.
+
+Existing project? Run `/automation-builder:init --update`: an unmodified `fixtures/test.*` is refreshed; a customised one
+is left alone and you get the exact snippet to copy.
 
 ## Repository layout
 

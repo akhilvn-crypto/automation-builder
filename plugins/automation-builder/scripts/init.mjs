@@ -14,8 +14,10 @@
 //   --language  required the first time (the caller must ask the user; it is never defaulted). Afterwards it is read
 //               from dependencies/state/scaffold.json and cannot be changed.
 //   --update    overwrite plugin-owned files (dependencies/engine, dependencies/docs, dependencies/tsconfig.json,
-//               automation/playwright.config.*, automation/tsconfig.json|jsconfig.json) with this plugin version; user
-//               files (fixtures, pages, helpers, tests, README) are left alone
+//               automation/tsconfig.json|jsconfig.json) with this plugin version; user files (playwright.config.*,
+//               fixtures, pages, helpers, tests, README) are left alone. playwright.config.* is an ordinary Playwright
+//               config that the pipeline fills from automation.config.json (see engine/config/playwright-config.ts);
+//               only the thin wrapper written by plugin 0.6.x and earlier is replaced.
 //   --force     overwrite every scaffolded file
 //
 // A project scaffolded by plugin 0.2.x kept everything in automation/ (engine/, docs/, input/, output/, utils/, ...).
@@ -26,6 +28,8 @@
 import {
   copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -89,6 +93,52 @@ function copyEntry(srcRel, baseDir, destRel, overwrite) {
     if (exists && !overwrite) { summary.skipped.push(rel(dest)); continue; }
     if (!dry) { mkdirSync(path.dirname(dest), { recursive: true }); copyFileSync(file, dest); }
     (exists ? summary.overwritten : summary.created).push(rel(dest));
+  }
+}
+
+// SHA-256 (line endings normalised to LF) of every fixtures/test.* this plugin shipped before the stepEvidence fixture.
+// A project whose copy still matches one of them was never edited, so --update may replace it with the current one.
+const SHIPPED_FIXTURES = {
+  ts: ['aef3bb04840a93179755eeb453c5f78db33e5a2efadb592b48ec611424c1cbc0', '297e0fa4e75528b3e8d10798007f0be5adf86149b897760294fe9e4599c3f561',
+    'de171ef8e565c78196c56b7d0239922ffb21d1461e1d0078768eca3747449fd1', 'a603275b0f744dd54d1c01f4de9c52022c2590f1c3632a018a352236b9255805'],
+  js: ['6cdd6a23697dd5f5b263ae070004ded839bbd02e113854c2d1fa0616833ae91d', 'c0c13b128c70c3454dad6d067ff7e2402d9f001fe51017f1b9fcf46ef8700953',
+    'b7c0c9e751dbee22f2246e4e7d490198d8d18869076a8d3aa618443756bfa0d1'],
+};
+
+// fixtures/test.* gained the stepEvidence fixture that the evidence-pdf reporter needs. --update brings an unmodified older
+// copy up to date; a customised copy is never touched, but the user is told how to get the fixture.
+function refreshShippedFixture(language, ext) {
+  const dest = path.join(fw, 'fixtures', `test.${ext}`);
+  if (!existsSync(dest) || values.force || !values.update) return;
+  const text = readFileSync(dest, 'utf8').replace(/\r\n/g, '\n');
+  if (text.includes('stepEvidence')) return;
+  if (SHIPPED_FIXTURES[ext].includes(createHash('sha256').update(text).digest('hex'))) {
+    copyEntry(`framework/${language}/fixtures/test.${ext}`, fw, `fixtures/test.${ext}`, true);
+  } else {
+    summary.warnings.push(`${rel(dest)} was customised, so it was not updated. The evidence-pdf reporter needs the stepEvidence fixture: copy it from ${path.join(TEMPLATE, 'framework', language, 'fixtures', `test.${ext}`)} into your file (or run init --force to replace the file).`);
+  }
+}
+
+// playwright.config.* is a normal Playwright config the user may edit, so it is created once and never refreshed by --update.
+// The thin wrapper of plugin 0.6.x and earlier (it imported dependencies/engine/config/playwright-settings.ts) is replaced,
+// and the engine module it needed is removed. If settings were already saved, the new file is filled from them straight away.
+function scaffoldPlaywrightConfig(tpl, ext) {
+  const dest = path.join(fw, `playwright.config.${ext}`);
+  const oldWrapper = existsSync(dest) && readFileSync(dest, 'utf8').includes('playwright-settings');
+  copyEntry(`${tpl}/playwright.config.${ext}`, fw, `playwright.config.${ext}`, values.force || oldWrapper);
+  if (oldWrapper) summary.warnings.push(`${rel(dest)} was the thin wrapper from an older plugin version; it is now a standard Playwright config filled from config/automation.config.json.`);
+
+  const stale = path.join(dep, 'engine', 'config', 'playwright-settings.ts');
+  if (existsSync(stale) && (values.update || values.force || oldWrapper)) {
+    if (!dry) rmSync(stale);
+    summary.removed.push(rel(stale));
+  }
+
+  const saved = path.join(fw, 'config', 'automation.config.json');
+  const written = summary.created.includes(rel(dest)) || summary.overwritten.includes(rel(dest));
+  if (!dry && written && existsSync(saved) && existsSync(path.join(dep, 'engine', 'cli', 'pipeline.ts'))) {
+    const r = spawnSync(process.execPath, [path.join(dep, 'engine', 'cli', 'pipeline.ts'), 'config', 'render', '--root', fw], { encoding: 'utf8', windowsHide: true });
+    if (r.status !== 0) summary.warnings.push(`${rel(dest)} could not be filled from the saved settings yet; run: node dependencies/engine/cli/pipeline.ts config render`);
   }
 }
 
@@ -424,7 +474,7 @@ try {
   const overwriteOwned = values.update || values.force || legacy;
   copyEntry('dependencies/engine', dep, 'engine', overwriteOwned);
   copyEntry('dependencies/docs', dep, 'docs', overwriteOwned);
-  copyEntry(`${tpl}/playwright.config.${ext}`, fw, `playwright.config.${ext}`, overwriteOwned);
+  scaffoldPlaywrightConfig(tpl, ext);
   if (language === 'typescript') {
     copyEntry(`${tpl}/tsconfig.json`, fw, 'tsconfig.json', overwriteOwned);
     copyEntry('dependencies/tsconfig.json', dep, 'tsconfig.json', overwriteOwned);
@@ -437,6 +487,7 @@ try {
   if (values['with-demo']) copyEntry('dependencies/demo', dep, 'demo', values.force);
 
   // Framework, user-extensible: created once, overwritten only with --force.
+  refreshShippedFixture(language, ext);
   for (const d of ['fixtures', 'pages', 'helpers']) copyEntry(`${tpl}/${d}`, fw, d, values.force);
   copyEntry('framework/common/.env.example', fw, '.env.example', values.force);
 
@@ -464,7 +515,7 @@ try {
       ? 'Nothing was installed. Dev tooling (installed only with your approval, one by one, into automation/): typescript, @types/node, @playwright/test, browser(s).'
       : 'Nothing was installed. Dev tooling (installed only with your approval, one by one, into automation/): @playwright/test, browser(s). TypeScript is not needed for a JavaScript project.',
     `Dependencies install into ${FRAMEWORK}/ (its own package.json and node_modules); ${DEPENDENCIES}/ has no node_modules.`,
-    `Put test cases in ${DEPENDENCIES}/input/test-cases/, then run /automation-builder:playwright-pipeline ${DEPENDENCIES}/input/test-cases — preflight will ask for each missing dependency and setting.`,
+    `Run /automation-builder:playwright-pipeline — it asks where your test cases are (any path, any Excel/CSV/Markdown layout), converts them into ${DEPENDENCIES}/input/test-cases/, then asks for each missing dependency and setting.`,
   ];
   process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
 } catch (err) {

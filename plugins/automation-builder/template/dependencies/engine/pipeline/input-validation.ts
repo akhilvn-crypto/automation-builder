@@ -6,6 +6,7 @@ import path from 'node:path';
 import { isAbsoluteOrEscaping } from '../config/schema.ts';
 import { sha256File, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { ARTIFACTS } from './artifact-manager.ts';
+import type { InputMappings, TableReport } from './input-table.ts';
 import { detectFormat, listInputFiles, parseInputs, type ParseError } from './test-case-parser.ts';
 import type { InputFormat } from './test-spec.ts';
 
@@ -18,11 +19,13 @@ export interface InputValidationReport {
   files: { path: string; format: InputFormat | null; sha256: string; copiedTo: string | null }[];
   unsupported: string[];
   errors: ParseError[];
+  tables: TableReport[]; // how each CSV file / worksheet was read
+  moduleCounts: { module: string; cases: number }[];
   caseCount: number;
   ok: boolean;
 }
 
-export function validateInput(baseDir: string, runDirectory: string, inputPath: string, now = new Date()): InputValidationReport {
+export function validateInput(baseDir: string, runDirectory: string, inputPath: string, now = new Date(), mappings?: InputMappings): InputValidationReport {
   const base: Omit<InputValidationReport, 'ok'> = {
     schemaVersion: INPUT_VALIDATION_SCHEMA_VERSION,
     validatedAt: now.toISOString(),
@@ -30,6 +33,8 @@ export function validateInput(baseDir: string, runDirectory: string, inputPath: 
     files: [],
     unsupported: [],
     errors: [],
+    tables: [],
+    moduleCounts: [],
     caseCount: 0,
   };
   if (isAbsoluteOrEscaping(inputPath)) {
@@ -39,7 +44,7 @@ export function validateInput(baseDir: string, runDirectory: string, inputPath: 
     return finish(runDirectory, { ...base, errors: [{ path: inputPath, message: 'input path does not exist' }] });
   }
   const files = listInputFiles(baseDir, inputPath);
-  const parsed = parseInputs(baseDir, files, now);
+  const parsed = parseInputs(baseDir, files, now, mappings);
   const copyRoot = path.join(runDirectory, ARTIFACTS.inputCopyDir);
   const entries = files.map((abs) => {
     const rel = toPosixRelative(baseDir, abs);
@@ -55,9 +60,14 @@ export function validateInput(baseDir: string, runDirectory: string, inputPath: 
   });
   const errors = [...parsed.errors];
   if (entries.every((e) => e.format === null)) {
-    errors.push({ path: inputPath, message: `no supported test-case files (supported: .md, .csv; found ${entries.length} file(s))` });
+    errors.push({ path: inputPath, message: `no supported test-case files (supported: .md, .csv, .xlsx; found ${entries.length} file(s))` });
   }
-  return finish(runDirectory, { ...base, files: entries, unsupported: parsed.unsupported, errors, caseCount: parsed.document.specs.length });
+  const counts = new Map<string, { module: string; cases: number }>();
+  for (const s of parsed.document.specs) counts.set(s.moduleSlug, { module: s.module, cases: (counts.get(s.moduleSlug)?.cases ?? 0) + 1 });
+  return finish(runDirectory, {
+    ...base, files: entries, unsupported: parsed.unsupported, errors, tables: parsed.tables,
+    moduleCounts: [...counts.values()], caseCount: parsed.document.specs.length,
+  });
 }
 
 function finish(runDirectory: string, r: Omit<InputValidationReport, 'ok'>): InputValidationReport {

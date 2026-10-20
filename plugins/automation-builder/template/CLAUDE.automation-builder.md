@@ -50,12 +50,13 @@ automation/
   auth/                  only for auth.approach = storage-state: *.setup.* login + storage-state.json (git-ignored)
   test-data/             only when needed: non-sensitive data files
   reports/<run-id>/<label>/       reporter output (html/json/junit/allure); reports/adhoc/ for plain `npm test`
+  reports/<run-id>/evidence-report/  the evidence PDF (every step + its screenshot), when the evidence-pdf reporter is chosen
   test-results/<run-id>/<label>/  screenshots, video, traces; test-results/adhoc/ for plain `npm test`
-  playwright.config.*    thin wrapper over dependencies/engine/config/playwright-settings.ts
+  playwright.config.*    standard Playwright config; values filled from config/automation.config.json on `config save`, hand edits are kept
 dependencies/
   engine/                pipeline engine: cli/ config/ pipeline/ tools/ utils/ (update with /automation-builder:init --update)
   docs/                  test-case format and run-artifact reference
-  input/test-cases/      Markdown / CSV test cases
+  input/test-cases/      test cases in the pipeline's Markdown format (`input import --from <path>` converts Markdown / CSV / Excel in any layout)
   runs/<run-id>/         per-run manifest, specs, exploration, healing log, summary.json/md (git-ignored)
   state/                 scaffold.json (language), dependency-log.json
 ```
