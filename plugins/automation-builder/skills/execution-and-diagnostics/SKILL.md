@@ -7,7 +7,7 @@ user-invocable: false
 # Execution and diagnostics
 
 ## Running
-`node src/cli/pipeline.ts exec run <runId> --label <label> [--test-file f]... [--test-id ID]... [--project p]... [--retries n]`
+`node automation/engine/cli/pipeline.ts exec run <runId> --label <label> [--test-file f]... [--test-id ID]... [--project p]... [--retries n]`
 
 - Spawns the project-local Playwright CLI with `PIPELINE_RUN_DIR`/`PIPELINE_LABEL`, so output goes to
   `reports/<label>/` (raw `results.json`, `html/`, `junit.xml`, `allure-results/`, `runner.log`) and

@@ -7,9 +7,9 @@ user-invocable: false
 # Test data management
 
 ## Credentials and secrets
-- Specs reference secrets as `env:VAR_NAME`. Values live only in `.env` (git-ignored) or the real environment.
-  `.env.example` lists names with empty values.
-- In tests: `requireEnv('VAR_NAME')` from `src/utils/test-data.ts`. It fails with a clear message when the
+- Specs reference secrets as `env:VAR_NAME`. Values live only in `automation/.env` (git-ignored) or the real environment.
+  `automation/.env.example` lists names with empty values.
+- In tests: `requireEnv('VAR_NAME')` from `utils/test-data.<ext>`. It fails with a clear message when the
   variable is unset, and the failure is classified as `test_data_or_precondition`, not a script defect.
 - Never write a secret into tests, config, logs, reports, exploration files, commit messages or chat output.
   `config.auth.credentialEnvVars` lists the variable **names** so runner logs and diagnostics get redacted.
@@ -19,7 +19,7 @@ user-invocable: false
 ## Auth approaches (`config.auth.approach`)
 - `none`: no login.
 - `ui-login`: each test logs in through the UI with `requireEnv` credentials. Simplest; use while suites are small.
-- `storage-state`: a `tests/auth.setup.ts` setup project logs in once and saves `.auth/storage-state.json`
+- `storage-state`: a `tests/setup/auth.setup.<ext>` setup project logs in once and saves `.auth/storage-state.json`
   (git-ignored); browser projects depend on it. If the state looks expired (redirect to login), re-run setup.
   Never commit or copy that file.
 

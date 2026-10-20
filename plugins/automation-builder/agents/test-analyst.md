@@ -13,7 +13,7 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
 
 **Permitted work**
 - Read the input files and `output/runs/<runId>/input-validation.json`.
-- Run `node src/cli/pipeline.ts specs parse <runId> [--path <p>]`. This is the only way `test-specs.json` is written.
+- Run `node automation/engine/cli/pipeline.ts specs parse <runId> [--path <p>]`. This is the only way `test-specs.json` is written.
 - Read the resulting `test-specs.json` and judge whether the deterministic parse matches the source wording.
 
 **Not permitted**

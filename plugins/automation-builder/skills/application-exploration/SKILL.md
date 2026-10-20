@@ -15,10 +15,13 @@ Read `exploration.tool` from the run config and the `@playwright/cli` preflight 
 | Situation | Do |
 |---|---|
 | `playwright-cli` and the CLI is installed (project or global) | use the Playwright CLI (below) |
-| CLI missing, install not approved, `@playwright/test` + a browser installed | fallback: `node src/tools/aria-snapshot.ts` (read-only page snapshots) |
+| CLI missing, install not approved, `@playwright/test` + a browser installed | fallback: `node automation/engine/tools/aria-snapshot.ts` (read-only page snapshots) |
 | neither | stop; the stage is `blocked`. Do not install anything or try other tools |
 
 ## Playwright CLI
+
+The framework is the `automation/` folder: run a project-local CLI from there (`cd automation && npx playwright-cli …`),
+and evidence paths (`output/runs/<runId>/exploration/…`, also what `exploration.json` records) are relative to it.
 
 Check the installed version's syntax first: `playwright-cli --help` (or `npx playwright-cli --help` for a
 project-local install). Don't assume flags. Typical flow:
@@ -38,7 +41,7 @@ role+name or test id; **medium** = text/label that could repeat; **low** = needs
 
 ## Fallback: aria snapshot
 
-`node src/tools/aria-snapshot.ts --url <baseUrl><path> --out output/runs/<runId>/exploration/<page>` writes
+`node automation/engine/tools/aria-snapshot.ts --url <baseUrl><path> --out output/runs/<runId>/exploration/<page>` writes
 `<page>.aria.yml` + `<page>.png` for one page (navigation only, no interaction). Use it for each page the steps
 reach directly by URL. Record `tool: "aria-snapshot-fallback"` and mark specs needing interaction as `partial`,
 with the reason in `uncertainties`.
@@ -51,6 +54,6 @@ with the reason in `uncertainties`.
 
 ## Record
 
-Write `exploration/exploration.json` (schema in `src/pipeline/exploration.ts`): pages (url, title, evidence paths,
+Write `exploration/exploration.json` (schema in `engine/pipeline/exploration.ts`): pages (url, title, evidence paths,
 elements with `candidateLocator` + confidence), per-spec steps with the observation and the locators used, and
-`uncertainties`. Validate with `node src/cli/pipeline.ts explore validate <runId>`.
+`uncertainties`. Validate with `node automation/engine/cli/pipeline.ts explore validate <runId>`.

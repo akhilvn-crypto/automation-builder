@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ERRORS, pwReport, tmpRoot, validConfig, writeFile, type FakeTest } from './helpers.ts';
 
-const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'cli', 'pipeline.ts');
+const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'engine', 'cli', 'pipeline.ts');
 
 const FAKE_PLAYWRIGHT = `import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -74,7 +74,7 @@ const CASES = `# Demo
 1. Do something
 `;
 
-const SPEC_FILE = `import { test, expect } from '../../src/fixtures/test.js';
+const SPEC_FILE = `import { test, expect } from '../../fixtures/test.js';
 
 test('[TC-1] Home page shows its heading', { annotation: { type: 'testId', description: 'TC-1' } }, async ({ page }) => {
   await page.goto('/');

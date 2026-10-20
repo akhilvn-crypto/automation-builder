@@ -1,17 +1,22 @@
 // Shared Playwright Test fixtures. Generated and handwritten tests import { test, expect } from here.
 //
-//   import { test, expect } from '../../src/fixtures/test.ts';
+//   import { test, expect } from '../../fixtures/test.ts';
 //   test('[TC-001] Valid user can sign in', { annotation: { type: 'testId', description: 'TC-001' } }, async ({ page }) => { ... });
 //
 // `diagnostics` (auto): collects console errors, page errors and failed requests, and attaches them
 // (secret-redacted) only when the test does not end with its expected status.
+//
+// Add project-wide fixtures here (e.g. an authenticated API client) with test.extend; keep them app-agnostic.
 
+import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
-import { loadConfig } from '../config/load-config.ts';
+import { loadConfig } from '../engine/config/load-config.ts';
 import { redact, secretValues } from '../utils/test-data.ts';
 
+const ROOT = path.resolve(import.meta.dirname, '..');
+
 function credentialEnvVars(): string[] {
-  const state = loadConfig(process.cwd());
+  const state = loadConfig(ROOT);
   return state.status === 'valid' ? state.config.auth.credentialEnvVars : [];
 }
 

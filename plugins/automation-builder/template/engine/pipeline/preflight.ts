@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, type ConfigState } from '../config/load-config.ts';
+import { readScaffold, type Scaffold } from '../config/scaffold.ts';
 import type { AutomationConfig } from '../config/schema.ts';
 import { readJson } from '../utils/fs.ts';
 
@@ -30,6 +31,7 @@ export interface PreflightReport {
   platform: string;
   ready: boolean; // every required check is ok and config is valid
   checks: PreflightCheck[];
+  scaffold: Scaffold | null; // language chosen at init; null for an unscaffolded/legacy folder
   config: { status: ConfigState['status']; issues: { path: string; kind: string; message: string }[]; sources: string[] };
 }
 
@@ -150,7 +152,8 @@ export function runPreflight(rootDir: string, deps: PreflightDeps = defaultDeps)
     detail: existsSync(path.join(rootDir, 'package-lock.json')) ? 'package-lock.json present' : 'no lockfile yet',
   });
 
-  const usesTs = (config?.language ?? 'typescript') === 'typescript';
+  const scaffold = readScaffold(rootDir);
+  const usesTs = (config?.language ?? scaffold?.language ?? 'typescript') === 'typescript';
   const tsVersion = localPackageVersion(rootDir, 'typescript');
   checks.push({
     id: 'typescript',
@@ -234,6 +237,7 @@ export function runPreflight(rootDir: string, deps: PreflightDeps = defaultDeps)
     checkedAt: new Date().toISOString(),
     rootDir,
     platform: `${process.platform}-${process.arch}`,
+    scaffold,
     ready: configOk && checks.every((c) => !c.required || c.status === 'ok'),
     checks,
     config: {

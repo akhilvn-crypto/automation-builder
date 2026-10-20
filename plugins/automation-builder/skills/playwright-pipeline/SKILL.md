@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # /automation-builder:playwright-pipeline — orchestrator
 
-> **Project setup:** if `src/cli/pipeline.ts` does not exist in the project root, stop and tell the user to run
+> **Project setup:** if `automation/engine/cli/pipeline.ts` does not exist, stop and tell the user to run
 > `/automation-builder:init` first (it scaffolds the framework; it installs nothing).
 
 You (the main session) are the **pipeline orchestrator**. Orchestration runs in the main session, not in a
@@ -24,11 +24,11 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
 
 ## Start or resume
 
-- `$ARGUMENTS` starts with `resume <run-id>` → `node src/cli/pipeline.ts run resume <run-id>`. If `ok: false`, show
+- `$ARGUMENTS` starts with `resume <run-id>` → `node automation/engine/cli/pipeline.ts run resume <run-id>`. If `ok: false`, show
   the issues and stop (do not "fix" the manifest). Otherwise continue from `next`, and mention any `recovered`
   (interrupted) stages: they will be re-run from scratch.
-- Otherwise → `node src/cli/pipeline.ts run create --command playwright-pipeline` and note the `runId`. An optional
-  test-case path in `$ARGUMENTS` is passed as `--path` to `input validate` and to the test-analyst for this run only.
+- Otherwise → `node automation/engine/cli/pipeline.ts run create --command playwright-pipeline` and note the `runId`. An optional
+  test-case path in `$ARGUMENTS` (relative to the project root or to `automation/`) is passed as `--path` to `input validate` and to the test-analyst for this run only.
 
 ## Run the stages
 

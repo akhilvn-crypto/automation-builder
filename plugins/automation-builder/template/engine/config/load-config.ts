@@ -1,7 +1,7 @@
 // Resolves the effective configuration.
 //
 // Precedence (lowest -> highest):
-//   1. DEFAULTS (non-material settings only)
+//   1. DEFAULTS (non-material settings only) + the language chosen at init (config/scaffold.json)
 //   2. config/automation.config.json (approved, persisted choices)
 //   3. environment variables (see ENV_OVERRIDES)
 //   4. explicit command arguments
@@ -11,6 +11,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { readJson, writeJsonAtomic } from '../utils/fs.ts';
+import { readScaffold } from './scaffold.ts';
 import { DEFAULTS, validateConfig, type AutomationConfig, type ConfigIssue } from './schema.ts';
 
 export const CONFIG_RELATIVE_PATH = 'config/automation.config.json';
@@ -53,6 +54,11 @@ export function loadConfig(rootDir: string, opts: LoadOptions = {}): ConfigState
     return { status: 'invalid', issues: [{ path: '', kind: 'invalid', message: file.message }], sources };
   }
   let merged: Json = structuredClone(DEFAULTS) as unknown as Json;
+  const scaffold = readScaffold(rootDir);
+  if (scaffold) {
+    merged.language = scaffold.language;
+    sources.push('config/scaffold.json');
+  }
   if (file.ok) {
     if (!isPlainObject(file.value)) {
       return { status: 'invalid', issues: [{ path: '', kind: 'invalid', message: 'config file must contain a JSON object' }], sources };
@@ -72,19 +78,33 @@ export function loadConfig(rootDir: string, opts: LoadOptions = {}): ConfigState
     sources.push('arguments');
   }
   const result = validateConfig(merged);
-  if (result.ok) return { status: 'valid', config: result.config, sources };
-  return { status: file.ok ? 'invalid' : 'absent', issues: result.issues, sources };
+  const drift = scaffold && merged.language !== scaffold.language ? [languageDrift(scaffold.language)] : [];
+  if (result.ok && drift.length === 0) return { status: 'valid', config: result.config, sources };
+  return { status: file.ok ? 'invalid' : 'absent', issues: [...(result.ok ? [] : result.issues), ...drift], sources };
 }
 
 // Persist approved choices. Validates the full config first; never writes an invalid file.
 export function saveConfig(rootDir: string, candidate: unknown): { ok: true } | { ok: false; issues: ConfigIssue[] } {
-  const merged = isPlainObject(candidate) ? deepMerge(structuredClone(DEFAULTS) as unknown as Json, candidate) : candidate;
+  const scaffold = readScaffold(rootDir);
+  const seed = structuredClone(DEFAULTS) as unknown as Json;
+  if (scaffold) seed.language = scaffold.language;
+  const merged = isPlainObject(candidate) ? deepMerge(seed, candidate) : candidate;
   const result = validateConfig(merged);
-  if (!result.ok) return { ok: false, issues: result.issues };
+  const drift = scaffold && isPlainObject(merged) && merged.language !== scaffold.language ? [languageDrift(scaffold.language)] : [];
+  if (!result.ok || drift.length > 0) return { ok: false, issues: [...(result.ok ? [] : result.issues), ...drift] };
   const target = configPath(rootDir);
   mkdirSync(path.dirname(target), { recursive: true });
   writeJsonAtomic(target, result.config);
   return { ok: true };
+}
+
+// The scaffolded files (fixtures, playwright.config, page objects) are in one language; config must match them.
+function languageDrift(scaffolded: string): ConfigIssue {
+  return {
+    path: 'language',
+    kind: 'invalid',
+    message: `language is fixed by the scaffold (${scaffolded}); to switch, scaffold a fresh automation/ folder with the other language`,
+  };
 }
 
 function isPlainObject(v: unknown): v is Json {

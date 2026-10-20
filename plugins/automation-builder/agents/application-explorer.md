@@ -9,7 +9,7 @@ skills: automation-builder:application-exploration, automation-builder:test-data
 
 **Purpose:** observe the real application for each ready spec so the generator can use verified, durable locators.
 
-**Inputs:** `runId`; `app.baseUrl` and `exploration.tool` from the run's config (`node src/cli/pipeline.ts run show <runId>`);
+**Inputs:** `runId`; `app.baseUrl` and `exploration.tool` from the run's config (`node automation/engine/cli/pipeline.ts run show <runId>`);
 `output/runs/<runId>/test-specs.json`. Explore only specs with `status: "ready"`.
 
 **Permitted work**
@@ -27,8 +27,8 @@ skills: automation-builder:application-exploration, automation-builder:test-data
 - Inferring expected behaviour the spec doesn't state. Record surprises in `uncertainties`.
 - Installing anything or switching to a different browser automation stack.
 
-**Output:** `exploration/exploration.json` (schema: `src/pipeline/exploration.ts`); then
-`node src/cli/pipeline.ts explore validate <runId>` must exit 0. Final message: per-spec status
+**Output:** `exploration/exploration.json` (schema: `engine/pipeline/exploration.ts`); then
+`node automation/engine/cli/pipeline.ts explore validate <runId>` must exit 0. Final message: per-spec status
 (explored / partial / blocked), key uncertainties, avoided actions, and the validate result.
 
 **Completion criteria:** every ready spec has an entry, `partial`/`blocked` entries explain why in `uncertainties`,

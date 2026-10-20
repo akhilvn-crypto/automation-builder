@@ -50,9 +50,11 @@ function hasSecretLiteral(line: string): boolean {
   return SECRET_WORD.test(line) && /\.(?:fill|type|pressSequentially)\(\s*['"`][^'"`]{4,}['"`]/.test(line);
 }
 const TEST_CALL = /\btest\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g;
-const SHARED_FIXTURE_IMPORT = /from\s+['"][^'"]*src\/fixtures\/test(?:\.ts|\.js)?['"]/;
+const SHARED_FIXTURE_IMPORT = /from\s+['"][^'"]*fixtures\/test(?:\.ts|\.js)?['"]/;
 
-export function reviewSource(file: string, source: string): ReviewFinding[] {
+// kind "support" = page objects written by the generator: only the line-level safety rules apply
+// (no tests, titles or fixture import are expected there).
+export function reviewSource(file: string, source: string, kind: 'test' | 'support' = 'test'): ReviewFinding[] {
   const findings: Omit<ReviewFinding, 'id'>[] = [];
   const lines = source.split(/\r?\n/);
   lines.forEach((text, i) => {
@@ -65,8 +67,10 @@ export function reviewSource(file: string, source: string): ReviewFinding[] {
     }
   });
 
+  if (kind === 'support') return withIds(file, findings);
+
   if (!SHARED_FIXTURE_IMPORT.test(source)) {
-    findings.push({ severity: 'major', file, line: null, rule: 'use-shared-fixtures', message: 'import { test, expect } from src/fixtures/test, not directly from @playwright/test', status: 'open', source: 'static' });
+    findings.push({ severity: 'major', file, line: null, rule: 'use-shared-fixtures', message: 'import { test, expect } from fixtures/test, not directly from @playwright/test', status: 'open', source: 'static' });
   }
 
   // Per-test checks: every test has a "[ID] " title prefix and at least one assertion.
@@ -85,11 +89,18 @@ export function reviewSource(file: string, source: string): ReviewFinding[] {
     }
   });
 
+  return withIds(file, findings);
+}
+
+function withIds(file: string, findings: Omit<ReviewFinding, 'id'>[]): ReviewFinding[] {
   return findings.map((f, i) => ({ ...f, id: `S${String(i + 1).padStart(3, '0')}-${path.basename(file)}` }));
 }
 
-export function reviewFiles(rootDir: string, files: string[]): ReviewFinding[] {
-  return files.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8')));
+export function reviewFiles(rootDir: string, files: string[], supportFiles: string[] = []): ReviewFinding[] {
+  return [
+    ...files.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8'))),
+    ...supportFiles.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8'), 'support')),
+  ];
 }
 
 export const REVIEW_SCHEMA_VERSION = 1;

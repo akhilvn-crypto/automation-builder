@@ -6,7 +6,7 @@ user-invocable: false
 
 # Test-case input and the test-spec schema
 
-Parser: `src/pipeline/test-case-parser.ts`. Schema and validator: `src/pipeline/test-spec.ts`. Full reference:
+Parser: `engine/pipeline/test-case-parser.ts`. Schema and validator: `engine/pipeline/test-spec.ts`. Full reference:
 `docs/test-spec-schema.md`. Examples: `docs/examples/`.
 
 ## Supported formats (by extension)

@@ -4,12 +4,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { saveConfig } from '../../src/config/load-config.ts';
-import { appendDependencyChange, readDependencyLog } from '../../src/pipeline/dependency-log.ts';
-import { runPreflight, type PreflightDeps } from '../../src/pipeline/preflight.ts';
+import { saveConfig } from '../../engine/config/load-config.ts';
+import { appendDependencyChange, readDependencyLog } from '../../engine/pipeline/dependency-log.ts';
+import { runPreflight, type PreflightDeps } from '../../engine/pipeline/preflight.ts';
 import { tmpRoot, validConfig, writeFile } from './helpers.ts';
 
-const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'cli', 'pipeline.ts');
+const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'engine', 'cli', 'pipeline.ts');
 
 // Fake environment: nothing installed, no external commands found. Records every command run.
 function fakeDeps(calls: string[], available: Record<string, string> = {}): PreflightDeps {

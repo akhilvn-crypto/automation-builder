@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { configPath, loadConfig, saveConfig } from '../../src/config/load-config.ts';
-import { validateConfig } from '../../src/config/schema.ts';
+import { configPath, loadConfig, saveConfig } from '../../engine/config/load-config.ts';
+import { validateConfig } from '../../engine/config/schema.ts';
 import { tmpRoot, validConfig, writeFile } from './helpers.ts';
 
 test('valid config passes validation', () => {
@@ -94,6 +94,31 @@ test('saveConfig persists only valid config and fills non-material defaults', (t
   assert.equal(bad.ok, false);
   // previous valid file untouched
   assert.equal(JSON.parse(readFileSync(configPath(root), 'utf8')).language, 'typescript');
+});
+
+test('scaffold language is the single source: seeded when absent, locked when saved', (t) => {
+  const root = tmpRoot(t);
+  writeFile(root, 'config/scaffold.json', JSON.stringify({ pluginVersion: '0.2.0', language: 'javascript' }));
+
+  // No config file yet: language is not reported missing because init already asked.
+  const absent = loadConfig(root, { env: {} });
+  assert.equal(absent.status, 'absent');
+  assert.ok('issues' in absent && !absent.issues.some((i) => i.path === 'language'));
+  assert.ok(absent.sources.includes('config/scaffold.json'));
+
+  // A candidate without a language inherits the scaffold's; a conflicting one is rejected.
+  const { language, ...partial } = validConfig();
+  assert.deepEqual(saveConfig(root, partial), { ok: true });
+  assert.equal(JSON.parse(readFileSync(configPath(root), 'utf8')).language, 'javascript');
+  const conflict = saveConfig(root, { ...partial, language: 'typescript' });
+  assert.equal(conflict.ok, false);
+  assert.ok(!conflict.ok && conflict.issues.some((i) => i.path === 'language' && /fixed by the scaffold/.test(i.message)));
+
+  // A config file edited out from under the scaffold is flagged on load.
+  writeFile(root, 'config/automation.config.json', JSON.stringify({ ...partial, language: 'typescript' }));
+  const drifted = loadConfig(root, { env: {} });
+  assert.equal(drifted.status, 'invalid');
+  assert.ok('issues' in drifted && drifted.issues.some((i) => i.path === 'language'));
 });
 
 test('precedence: defaults < file < env < arguments', (t) => {

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   STAGES, TransitionError, applyTransition, deriveRunStatus, initialStages, nextStage, recoverInterrupted,
   type StageMap,
-} from '../../src/pipeline/state-manager.ts';
+} from '../../engine/pipeline/state-manager.ts';
 
 const NOW = '2026-10-19T08:00:00.000Z';
 

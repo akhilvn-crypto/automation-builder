@@ -4,8 +4,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   listInputFiles, mapColumns, parseCsv, parseCsvRecords, parseInputs, parseMarkdown,
-} from '../../src/pipeline/test-case-parser.ts';
-import { validateTestSpecDocument } from '../../src/pipeline/test-spec.ts';
+} from '../../engine/pipeline/test-case-parser.ts';
+import { validateTestSpecDocument } from '../../engine/pipeline/test-spec.ts';
 import { tmpRoot, writeFile } from './helpers.ts';
 
 const PROJECT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');

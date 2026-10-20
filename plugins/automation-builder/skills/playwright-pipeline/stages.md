@@ -1,6 +1,11 @@
 # Stage playbook (shared by /automation-builder:playwright-pipeline, /automation-builder:generate-tests, /automation-builder:run-tests, /automation-builder:heal-tests)
 
-CLI: `node src/cli/pipeline.ts …` (abbreviated `pl` below). JSON on stdout; exit 0 ok, 2 not ready/invalid, 1 error.
+CLI: `node automation/engine/cli/pipeline.ts …` (abbreviated `pl` below), run from the project root. JSON on stdout; exit 0 ok, 2 not ready/invalid, 1 error.
+
+The framework is the self-contained `automation/` folder. Every path in artifacts, config and CLI arguments is relative to it
+(`input/test-cases`, `tests/generated/x.spec.ts`, `output/runs/<runId>/…`); a path written from the project root
+(`automation/input/test-cases/login.md`) is accepted and normalized by the CLI. Package installs and `npx` tools run inside it
+(`cd automation && …`). Generated code uses the language chosen at init (`language` in the run config).
 
 Every stage follows the same pattern:
 

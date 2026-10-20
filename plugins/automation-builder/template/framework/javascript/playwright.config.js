@@ -1,10 +1,10 @@
 // Single Playwright Test configuration. All values come from config/automation.config.json
-// (+ env overrides) through src/config/playwright-settings.ts — change settings there, not here.
+// (+ env overrides) through engine/config/playwright-settings.ts — change settings there, not here.
 
 import { createRequire } from 'node:module';
 import { defineConfig, devices } from '@playwright/test';
-import { loadConfig } from './src/config/load-config.ts';
-import { playwrightSettings } from './src/config/playwright-settings.ts';
+import { loadConfig } from './engine/config/load-config.ts';
+import { playwrightSettings } from './engine/config/playwright-settings.ts';
 
 const rootDir = import.meta.dirname;
 
@@ -19,7 +19,7 @@ const state = loadConfig(rootDir);
 if (state.status !== 'valid') {
   throw new Error(
     `config/automation.config.json is ${state.status}: ${state.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}. ` +
-      'Run /playwright-pipeline (or the pipeline-setup skill) to configure it.',
+      'Run /automation-builder:playwright-pipeline (or the pipeline-setup skill) to configure it.',
   );
 }
 

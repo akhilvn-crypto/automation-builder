@@ -2,18 +2,20 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { playwrightSettings } from '../../src/config/playwright-settings.ts';
-import { runDir } from '../../src/pipeline/artifact-manager.ts';
-import { buildPlaywrightArgs, normalizeReport, runPlaywright, type ExecutionResults } from '../../src/pipeline/execution.ts';
-import { checkLocatorExpression, validateExplorationRecord } from '../../src/pipeline/exploration.ts';
-import { buildFailureAnalysis, classifyResult, reclassify } from '../../src/pipeline/failure-classifier.ts';
-import { validateGenerationManifest } from '../../src/pipeline/generation.ts';
-import { guardPatch, lineDiff, matcherCalls } from '../../src/pipeline/healing-guard.ts';
-import { validateInput } from '../../src/pipeline/input-validation.ts';
-import { computeFinalTests, countOutcomes } from '../../src/pipeline/reporting.ts';
-import { createRun, updateStage } from '../../src/pipeline/run-manager.ts';
-import { reviewSource } from '../../src/pipeline/static-review.ts';
-import { redact, requireEnv } from '../../src/utils/test-data.ts';
+import { pathToFileURL } from 'node:url';
+import { playwrightSettings } from '../../engine/config/playwright-settings.ts';
+import { runDir } from '../../engine/pipeline/artifact-manager.ts';
+import { buildPlaywrightArgs, normalizeReport, runPlaywright, type ExecutionResults } from '../../engine/pipeline/execution.ts';
+import { checkLocatorExpression, validateExplorationRecord } from '../../engine/pipeline/exploration.ts';
+import { buildFailureAnalysis, classifyResult, reclassify } from '../../engine/pipeline/failure-classifier.ts';
+import { validateGenerationManifest } from '../../engine/pipeline/generation.ts';
+import { guardPatch, lineDiff, matcherCalls } from '../../engine/pipeline/healing-guard.ts';
+import { validateInput } from '../../engine/pipeline/input-validation.ts';
+import { computeFinalTests, countOutcomes } from '../../engine/pipeline/reporting.ts';
+import { createRun, updateStage } from '../../engine/pipeline/run-manager.ts';
+import { reviewSource } from '../../engine/pipeline/static-review.ts';
+import { redact } from '../../engine/utils/redact.ts';
+import { toRootRelative } from '../../engine/utils/paths.ts';
 import { ERRORS, pwReport, tmpRoot, validConfig, writeFile, type FakeTest } from './helpers.ts';
 
 const NOW = new Date('2026-10-20T00:00:00Z');
@@ -46,10 +48,35 @@ test('storage-state auth adds a setup project the browser projects depend on', (
   assert.equal(s.outputDir, path.join('/p', 'test-results'), 'plain runs use Playwright defaults');
 });
 
-test('test-data helpers: requireEnv never returns empty and redact masks values', () => {
-  assert.throws(() => requireEnv('X_PW', {}), /Missing required environment variable X_PW/);
-  assert.equal(requireEnv('X_PW', { X_PW: 'v' }), 'v');
+test('redact masks secret values', () => {
   assert.equal(redact('user hunter2 logged hunter2', ['hunter2', '']), 'user *** logged ***');
+});
+
+test('scaffolded test-data helpers (framework twin): requireEnv never returns empty and redact matches the engine', async () => {
+  // The framework helpers exist in the language the project was scaffolded with.
+  const dir = path.resolve(import.meta.dirname, '..', '..', 'utils');
+  const file = existsSync(path.join(dir, 'test-data.ts')) ? 'test-data.ts' : 'test-data.js';
+  const h = (await import(pathToFileURL(path.join(dir, file)).href)) as {
+    requireEnv: (name: string, env?: Record<string, string>) => string;
+    redact: (text: string, secrets: string[]) => string;
+    uniqueSuffix: (prefix?: string) => string;
+  };
+  assert.throws(() => h.requireEnv('X_PW', {}), /Missing required environment variable X_PW/);
+  assert.equal(h.requireEnv('X_PW', { X_PW: 'v' }), 'v');
+  assert.equal(h.redact('user hunter2 logged hunter2', ['hunter2', '']), redact('user hunter2 logged hunter2', ['hunter2', '']));
+  assert.notEqual(h.uniqueSuffix('a'), h.uniqueSuffix('a'));
+});
+
+test('toRootRelative accepts paths written from the project root, absolute, or root-relative', (t) => {
+  const root = tmpRoot(t);
+  const cwd = path.dirname(root);
+  writeFile(root, 'input/test-cases/a.md', '# x');
+  const name = path.basename(root);
+  assert.equal(toRootRelative(root, 'input/test-cases/a.md', cwd), 'input/test-cases/a.md');
+  assert.equal(toRootRelative(root, `${name}/input/test-cases/a.md`, cwd), 'input/test-cases/a.md');
+  assert.equal(toRootRelative(root, path.join(root, 'input', 'test-cases', 'a.md'), cwd), 'input/test-cases/a.md');
+  assert.equal(toRootRelative(root, '../outside.md', cwd), '../outside.md', 'escaping paths are left for validation to reject');
+  assert.equal(toRootRelative(root, 'missing/x.md', cwd), 'missing/x.md');
 });
 
 // ---------- input validation ----------
@@ -113,8 +140,8 @@ test('generation manifest enforces location, traceability and no generation of b
 
 // ---------- static review ----------
 
-const GOOD_TEST = `import { test, expect } from '../../src/fixtures/test.ts';
-import { requireEnv } from '../../src/utils/test-data.ts';
+const GOOD_TEST = `import { test, expect } from '../../fixtures/test.ts';
+import { requireEnv } from '../../utils/test-data.ts';
 
 test('[TC-001] Valid user can sign in', { annotation: { type: 'testId', description: 'TC-001' } }, async ({ page }) => {
   await page.goto('/login');
@@ -126,6 +153,18 @@ test('[TC-001] Valid user can sign in', { annotation: { type: 'testId', descript
 
 test('static review passes a conventional test', () => {
   assert.deepEqual(reviewSource('tests/generated/a.spec.ts', GOOD_TEST), []);
+});
+
+test('page objects get the line-level safety rules only (no fixture import, title or assertion requirements)', () => {
+  const page = `import { BasePage } from './BasePage.ts';
+export class CartPage extends BasePage {
+  readonly path = '/cart';
+  readonly total = this.page.getByTestId('cart-total');
+  async settle() { await this.page.waitForTimeout(500); }
+}`;
+  const rules = reviewSource('pages/CartPage.ts', page, 'support').map((f) => f.rule);
+  assert.deepEqual(rules, ['no-wait-for-timeout'], 'only the sleep is flagged; a page object needs no test(), title or expect()');
+  assert.ok(reviewSource('pages/CartPage.ts', page).some((f) => f.rule === 'no-tests'), 'the same file reviewed as a test is rejected');
 });
 
 test('static review flags skips, sleeps, CLI refs, secrets, missing IDs and missing assertions', () => {

@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023", "dom"],
+    "types": ["node"],
+    "checkJs": false,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "playwright.config.js",
+    "fixtures/**/*.js",
+    "pages/**/*.js",
+    "utils/**/*.js",
+    "engine/config/**/*.ts",
+    "tests/generated/**/*.js",
+    "tests/handwritten/**/*.js",
+    "tests/setup/**/*.js"
+  ]
+}

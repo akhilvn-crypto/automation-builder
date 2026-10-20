@@ -3,7 +3,7 @@
 //
 // Exit codes: 0 = ok, 1 = usage/runtime error, 2 = validation failed / not ready.
 //
-// Usage: node src/cli/pipeline.ts <group> <action> [args] [--root <dir>]
+// Usage: node automation/engine/cli/pipeline.ts <group> <action> [args] [--root <dir>]
 //   preflight
 //   config check | show | save --file <json>
 //   run create --command <cmd> [--input <path>]... [--from-run <runId>]
@@ -36,6 +36,7 @@ import {
 } from '../pipeline/run-manager.ts';
 import { StageContractError } from '../pipeline/stage-contracts.ts';
 import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command } from '../pipeline/state-manager.ts';
+import { toRootRelative } from '../utils/paths.ts';
 import { UsageError, stageCommand } from './stage-commands.ts';
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -91,6 +92,10 @@ export function main(argv: string[]): number {
   });
   const root = path.resolve(values.root ?? DEFAULT_ROOT);
   const [group, action, ...rest] = positionals;
+  // Accept paths written relative to the caller's cwd (e.g. "automation/input/test-cases/x.md").
+  if (values.path) values.path = toRootRelative(root, values.path);
+  if (values.input) values.input = values.input.map((p) => toRootRelative(root, p));
+  if (values['test-file']) values['test-file'] = values['test-file'].map((p) => toRootRelative(root, p));
 
   switch (group) {
     case 'preflight': {

@@ -1,4 +1,4 @@
-// Test-data helpers shared by generated tests. No Playwright import, so the pipeline can test them.
+// Test-data helpers shared by generated and handwritten tests. No Playwright import.
 
 import { randomBytes } from 'node:crypto';
 

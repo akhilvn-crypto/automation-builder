@@ -1,7 +1,7 @@
 # Test-spec schema (`test-specs.json`, schemaVersion 1)
 
-Produced by `node src/cli/pipeline.ts specs parse <runId>` from the configured input. Source:
-`src/pipeline/test-spec.ts` (types + validator) and `src/pipeline/test-case-parser.ts` (parser).
+Produced by `node automation/engine/cli/pipeline.ts specs parse <runId>` from the configured input. Source:
+`engine/pipeline/test-spec.ts` (types + validator) and `engine/pipeline/test-case-parser.ts` (parser).
 Input formats are described in `.claude/skills/test-case-parser/SKILL.md`; examples are in `docs/examples/`.
 
 ```jsonc
@@ -51,14 +51,14 @@ Input formats are described in `.claude/skills/test-case-parser/SKILL.md`; examp
 
 | File | Schema source |
 |---|---|
-| `manifest.json` | `src/pipeline/run-manager.ts` |
-| `input-validation.json` | `src/pipeline/input-validation.ts` |
-| `exploration/exploration.json` | `src/pipeline/exploration.ts` |
-| `generation-manifest.json` | `src/pipeline/generation.ts` |
-| `review-report.json` | `src/pipeline/static-review.ts` |
-| `execution-results.json`, `regression-results.json`, `reruns/*.json` | `src/pipeline/execution.ts` |
-| `failure-analysis.json` | `src/pipeline/failure-classifier.ts` |
-| `healing-log.json` | `src/pipeline/healing.ts` |
-| `reports/summary.json` | `src/pipeline/reporting.ts` |
+| `manifest.json` | `engine/pipeline/run-manager.ts` |
+| `input-validation.json` | `engine/pipeline/input-validation.ts` |
+| `exploration/exploration.json` | `engine/pipeline/exploration.ts` |
+| `generation-manifest.json` | `engine/pipeline/generation.ts` |
+| `review-report.json` | `engine/pipeline/static-review.ts` |
+| `execution-results.json`, `regression-results.json`, `reruns/*.json` | `engine/pipeline/execution.ts` |
+| `failure-analysis.json` | `engine/pipeline/failure-classifier.ts` |
+| `healing-log.json` | `engine/pipeline/healing.ts` |
+| `reports/summary.json` | `engine/pipeline/reporting.ts` |
 
-Stage → required artifacts: `src/pipeline/stage-contracts.ts`.
+Stage → required artifacts: `engine/pipeline/stage-contracts.ts`.

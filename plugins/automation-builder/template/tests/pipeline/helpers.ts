@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AutomationConfig } from '../../src/config/schema.ts';
+import type { AutomationConfig } from '../../engine/config/schema.ts';
 
 export function tmpRoot(t: { after: (fn: () => void) => void }): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'pw-pipeline-test-'));

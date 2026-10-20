@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { runDir } from '../../src/pipeline/artifact-manager.ts';
+import { runDir } from '../../engine/pipeline/artifact-manager.ts';
 import {
   HealingLimitError, createRun, generateRunId, listRuns, loadManifest, manifestPath, prepareResume,
   recordHealingAttempt, setRunConfig, setTestCounts, updateStage, validateTestCounts,
-} from '../../src/pipeline/run-manager.ts';
+} from '../../engine/pipeline/run-manager.ts';
 import { fakeClock, tmpRoot, validConfig, writeFile } from './helpers.ts';
 
 test('run ids are well-formed and unique', () => {

@@ -13,7 +13,7 @@ skills: automation-builder:execution-and-diagnostics
 orchestrator gives (`--test-file`, `--test-id`, `--project`, `--retries`).
 
 **Permitted work**
-- `node src/cli/pipeline.ts exec run <runId> --label <label> [...]`. Inside the pipeline, never call
+- `node automation/engine/cli/pipeline.ts exec run <runId> --label <label> [...]`. Inside the pipeline, never call
   `npx playwright test` directly: the CLI sets the run-scoped output directories and writes normalized results.
 - Read the normalized results, `reports/<label>/runner.log` and the attachment paths to summarize failures.
 

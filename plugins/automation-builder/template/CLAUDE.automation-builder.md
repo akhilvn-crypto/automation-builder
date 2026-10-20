@@ -1,35 +1,43 @@
 <!-- automation-builder:start -->
 # Automation Builder — agentic Playwright pipeline (plugin: automation-builder)
 
+The whole test framework lives in **`automation/`**: a self-contained Playwright project (own `package.json`,
+`node_modules`, config, tests, evidence). Paths below are relative to `automation/` unless they start with it.
 Commands: `/automation-builder:playwright-pipeline`, `/automation-builder:generate-tests`,
 `/automation-builder:run-tests`, `/automation-builder:heal-tests`, `/automation-builder:init --update`.
 
 ## Hard rules
 
 - **No unapproved installs.** Never install packages, browsers, CLIs or skills without an explicit yes for
-  *that specific* dependency. Record every decision with `node src/cli/pipeline.ts deps record ...`.
+  *that specific* dependency. Installs run inside `automation/` (`cd automation && npm install …`). Record every
+  decision with `node automation/engine/cli/pipeline.ts deps record ...`.
 - Never invent base URLs, credentials, test steps or expected results.
-- Never write secrets to config, tests, logs or reports. Secrets live in `.env` (git-ignored).
+- Never write secrets to config, tests, logs or reports. Secrets live in `automation/.env` (git-ignored).
 - Never weaken/delete assertions or skip tests to get a pass. Retry-only passes are `flaky`, not `passed`.
 - All pipeline state changes go through the CLI. Do not hand-edit manifests or the config file.
+- The language (TypeScript or JavaScript) is the user's choice, made once at `/automation-builder:init` and stored in
+  `config/scaffold.json`. Never default it, never convert files to the other language.
 
 ## Stack
 
-- Node 24+ runs TypeScript directly (type stripping) — use only erasable syntax (no enums/namespaces/
-  parameter properties), and import local files with the `.ts` extension.
-- Type check: `npm run typecheck`; framework + generated tests: `npm run typecheck:framework`.
-- `tsconfig.json` = pipeline code (no Playwright import allowed); `tsconfig.framework.json` = `playwright.config.ts`,
-  `src/fixtures`, `src/pages`, `src/tools`, generated tests.
+- Node 24+ runs the pipeline engine (TypeScript, type stripping) directly. The engine is plugin-managed.
+- The framework is TypeScript (`*.ts`, `npm run typecheck`) or JavaScript (`*.js`, JSDoc types) per the scaffold.
+  TypeScript framework code uses only erasable syntax (no enums/namespaces/parameter properties) and imports local
+  files with the `.ts` extension; JavaScript is ES modules and imports with `.js`.
+- Package manager: npm, exact-pinned devDependencies.
 
-## Layout
+## Layout (`automation/`)
 
 ```
-src/cli/ src/config/ src/pipeline/ src/tools/   pipeline engine (managed by the plugin; update with /automation-builder:init --update)
-src/fixtures/test.ts   shared `test`/`expect` (auto diagnostics fixture)
-src/utils/             fs.ts, test-data.ts (requireEnv, uniqueSuffix, redact)
-playwright.config.ts   thin wrapper over src/config/playwright-settings.ts
+engine/                pipeline engine: cli/ config/ pipeline/ tools/ utils/ (update with /automation-builder:init --update)
+playwright.config.*    thin wrapper over engine/config/playwright-settings.ts
+fixtures/test.*        shared `test`/`expect` (auto diagnostics fixture) — tests import this, not @playwright/test
+pages/                 page objects: BasePage + one class per page/component
+utils/test-data.*      requireEnv, uniqueSuffix, redact
 tests/generated/       generator output only; tests/handwritten/ is never modified by the pipeline
-config/                automation.config.json (approved non-secret choices), dependency-log.json
+tests/setup/           *.setup.* login for auth.approach = storage-state
+config/                automation.config.json (approved non-secret choices), dependency-log.json, scaffold.json
+input/test-cases/      Markdown / CSV test cases
 output/runs/<id>/      per-run manifest and artifacts (git-ignored)
 ```
 

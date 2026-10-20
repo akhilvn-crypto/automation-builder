@@ -8,6 +8,7 @@ import type { TestSpecDocument } from './test-spec.ts';
 
 export const GENERATION_SCHEMA_VERSION = 1;
 export const GENERATED_TESTS_DIR = 'tests/generated';
+export const PAGE_OBJECTS_DIR = 'pages';
 
 export function specFileExtension(language: Language): string {
   return language === 'typescript' ? '.spec.ts' : '.spec.js';

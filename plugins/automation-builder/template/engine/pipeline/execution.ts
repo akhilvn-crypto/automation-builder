@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
-import { redact } from '../utils/test-data.ts';
+import { redact } from '../utils/redact.ts';
 import { ARTIFACTS, assertExecutionLabel, reportsDirFor } from './artifact-manager.ts';
 
 export const EXECUTION_SCHEMA_VERSION = 1;

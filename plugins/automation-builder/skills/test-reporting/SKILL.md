@@ -8,13 +8,13 @@ user-invocable: false
 
 ## Where reporters are configured
 Only in `config/automation.config.json` → `reporters` (changed through the pipeline-setup skill). The Playwright
-reporter list is built in `src/config/playwright-settings.ts`. `json` is mandatory: the pipeline reads raw JSON, not HTML.
+reporter list is built in `engine/config/playwright-settings.ts`. `json` is mandatory: the pipeline reads raw JSON, not HTML.
 Allure is wired in only when `allure-playwright` is installed (approved); otherwise it is listed as `missing_dependency`.
 Extent Reports is not wired in: there's no verified maintained Playwright integration. Offer it only after checking
 for one, then add it the same way with separate approval.
 
 ## Build and verify
-`node src/cli/pipeline.ts report build <runId>`:
+`node automation/engine/cli/pipeline.ts report build <runId>`:
 - Computes the final outcome per test: `passed`, `failed`, `flaky` (retry-only pass), `healed` (failed, guarded fix,
   rerun passed, regression didn't fail), `blocked` (not runnable: needs clarification, excluded, no result),
   `skipped`. A regression failure overrides everything.
@@ -26,7 +26,7 @@ for one, then add it the same way with separate approval.
   reason. Never claim a report exists unless `status: generated`.
 
 ## Finalization
-`node src/cli/pipeline.ts run finalize <runId>` copies the counts onto the manifest and applies `retention.keepRuns`
+`node automation/engine/cli/pipeline.ts run finalize <runId>` copies the counts onto the manifest and applies `retention.keepRuns`
 (only when configured). Then complete `finalization`. The final message shows: counts table, failure categories,
 healing attempts and results, unresolved tests with reasons, report paths (`reports/initial/html/index.html`,
 the Allure report, `reports/summary.md`) and the evidence directory.

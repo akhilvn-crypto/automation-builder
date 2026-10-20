@@ -5,7 +5,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { AutomationConfig } from '../config/schema.ts';
+import { isAbsoluteOrEscaping, type AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
@@ -14,7 +14,7 @@ import {
   CATEGORIES, CONFIDENCES, buildFailureAnalysis, reclassify, saveFailureAnalysis, validateFailureAnalysis,
   type Category, type Confidence, type FailureAnalysis,
 } from '../pipeline/failure-classifier.ts';
-import { validateGenerationManifest, type GenerationManifest } from '../pipeline/generation.ts';
+import { PAGE_OBJECTS_DIR, validateGenerationManifest, type GenerationManifest } from '../pipeline/generation.ts';
 import {
   checkAttempt, eligibleFailure, ensureHealingLog, healLabel, readHealingLog, recordAttempt, revertAttempt, snapshotForAttempt,
 } from '../pipeline/healing.ts';
@@ -323,6 +323,15 @@ function loadReview(r: RunCtx): ReviewReport {
   return existing;
 }
 
+// Page objects the generator added or changed (manifest.sharedFilesChanged). Reviewed with the line-level rules only.
+function supportFiles(r: RunCtx): string[] {
+  const g = readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest);
+  const files = (g?.sharedFilesChanged ?? []).map((f) => String(f).replace(/\\/g, '/'));
+  return [...new Set(files)]
+    .filter((f) => f.startsWith(`${PAGE_OBJECTS_DIR}/`) && /\.(?:ts|js)$/.test(f) && !isAbsoluteOrEscaping(f) && existsSync(path.join(r.root, f)))
+    .sort();
+}
+
 function generatedFiles(r: RunCtx): string[] {
   const g = readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest);
   if (!g) throw new Error(`no ${ARTIFACTS.generationManifest}; generation has not produced a manifest`);
@@ -338,13 +347,15 @@ export function typecheckGenerated(root: string, language: AutomationConfig['lan
   }
   const tsc = path.join(root, 'node_modules', 'typescript', 'bin', 'tsc');
   if (!existsSync(tsc)) return { ran: false, ok: null, output: 'typescript is not installed' };
-  const r = spawnSync(process.execPath, [tsc, '--noEmit', '-p', 'tsconfig.framework.json'], { cwd: root, encoding: 'utf8', windowsHide: true });
+  const r = spawnSync(process.execPath, [tsc, '--noEmit', '-p', 'tsconfig.json'], { cwd: root, encoding: 'utf8', windowsHide: true });
   return { ran: true, ok: r.status === 0, output: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().slice(0, 8000) || null };
 }
 
 function reviewStatic(r: RunCtx): Result {
-  const files = generatedFiles(r);
-  const fresh = reviewFiles(r.root, files);
+  const testFiles = generatedFiles(r);
+  const support = supportFiles(r);
+  const files = [...testFiles, ...support];
+  const fresh = reviewFiles(r.root, testFiles, support);
   const prev = readArtifact<ReviewReport>(r.dir, ARTIFACTS.reviewReport);
   const freshKeys = new Set(fresh.map(findingKey));
   // Static findings from an earlier pass that no longer reproduce are marked fixed (kept for the audit trail).
