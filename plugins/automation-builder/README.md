@@ -14,6 +14,10 @@ Install: `/plugin marketplace add akhilvn-crypto/automation-builder` then `/plug
 | `/automation-builder:run-tests [files...] \| resume [<run-id>]` | execute existing tests → triage → report (no edits) |
 | `/automation-builder:heal-tests <run-id> \| resume [<run-id>]` | repair eligible script defects → regression check → report |
 
+Every pipeline command takes `resume` with or without a run id. Bare `resume` continues the newest unfinished
+(`in_progress`, `blocked` or `failed`) run of that command; `node dependencies/engine/cli/pipeline.ts run resumable` lists the
+candidates. Details are in the root README, "Resuming a run".
+
 Knowledge skills (loaded automatically by Claude and the agents): `pipeline-setup`, `test-case-parser`,
 `playwright-framework`, `application-exploration`, `test-data-management`, `execution-and-diagnostics`,
 `auto-healing`, `test-reporting`.

@@ -185,7 +185,40 @@ runs. If you decline something the run stops as `blocked` and tells you how to r
 | `/automation-builder:run-tests [files...]` | Execute existing tests → triage → report (no edits). |
 | `/automation-builder:heal-tests <run-id>` | Repair eligible script defects from an earlier run → regression check → report. |
 
-Each command also accepts `resume [<run-id>]` to continue a stopped run from its on-disk checkpoint. Without an id it picks the newest unfinished run of that command, shows where it stopped (completed stages, the stage it resumes at, and why it stopped) and carries on. Completed stages are not repeated; a stage that was interrupted mid-way is re-run from scratch.
+Each command also accepts `resume [<run-id>]` to continue a stopped run from its on-disk checkpoint (see below).
+
+### Resuming a run (you don't need the run ID)
+
+Run state is on disk, so a run survives a closed terminal, a crash, a declined install or a blocked stage. To pick it up,
+open Claude Code in the project and run the same command you started with, followed by `resume` and **no id**:
+
+```
+/automation-builder:playwright-pipeline resume
+/automation-builder:generate-tests resume
+/automation-builder:run-tests resume
+/automation-builder:heal-tests resume
+```
+
+Without an id the pipeline picks the **newest unfinished run of that command**: one whose status is `in_progress`, `blocked`
+or `failed`. Runs that are `completed` or `cancelled` are never resumed. Before doing anything it shows you where the run
+stopped: the run id, the stages already completed, the stage it resumes at, and why it stopped. Completed stages are never
+repeated; a stage that was still `running` when the process died is treated as interrupted and re-run from scratch.
+
+- **Several unfinished runs?** It resumes the newest and tells you how many others exist. To pick another, list them and pass its id.
+- **Nothing to resume?** It says so and offers to start a new run.
+- **Resume is per command.** `/automation-builder:run-tests resume` only looks at runs started by `run-tests`.
+
+To look for run ids yourself (the newest is listed first; ids start with the UTC start time):
+
+```bash
+node dependencies/engine/cli/pipeline.ts run resumable                            # unfinished runs, with the stage each resumes at and why it stopped
+node dependencies/engine/cli/pipeline.ts run resumable --command run-tests        # only runs of one command
+node dependencies/engine/cli/pipeline.ts run list                                 # every run, finished or not
+ls dependencies/runs/                                                             # the folder names are the run ids
+```
+
+Then `/automation-builder:playwright-pipeline resume <run-id>`. Resuming restores the pipeline run, not the chat: it does not need
+the earlier Claude Code conversation, because everything it needs is in `dependencies/runs/<run-id>/manifest.json`.
 
 ### Results
 
