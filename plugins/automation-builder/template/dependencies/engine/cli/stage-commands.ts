@@ -127,7 +127,12 @@ export function stageCommand(root: string, group: string, action: string | undef
       const report = validateInput(inputBaseDir(root), r.dir, inputPath, new Date(), loadMappings(root));
       // Record input files and hashes on the manifest for traceability.
       saveManifest(root, { ...r.manifest, inputs: report.files.map((f) => ({ path: f.path, sha256: f.sha256 })) });
-      return { value: { ok: report.ok, artifact: ARTIFACTS.inputValidation, report }, code: report.ok ? 0 : 2 };
+      // The full report (with every file hash) is saved as the artifact; the session only needs what to act on.
+      const shown = {
+        inputPath: report.inputPath, files: report.files.map((f) => f.path), unsupported: report.unsupported, errors: report.errors,
+        tables: report.tables, moduleCounts: report.moduleCounts, caseCount: report.caseCount, ok: report.ok,
+      };
+      return { value: { ok: report.ok, artifact: ARTIFACTS.inputValidation, report: shown }, code: report.ok ? 0 : 2 };
     }
 
     // Converts the user's test cases, wherever they are, into the pipeline's format under dependencies/input/test-cases/.

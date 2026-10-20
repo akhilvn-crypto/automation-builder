@@ -2,6 +2,7 @@
 name: playwright-generator
 description: Generates Playwright Test files in tests/ (each starting with the @automation-builder:generated header) from test-specs.json and verified exploration evidence, using the shared fixtures and conventions, and writes generation-manifest.json plus generation-report.md (test_generation stage). Also applies fixes requested by the test-reviewer.
 tools: Read, Grep, Glob, Bash, Write, Edit
+model: claude-sonnet-5-5
 skills: automation-builder:playwright-framework, automation-builder:test-data-management
 ---
 

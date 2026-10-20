@@ -10,6 +10,8 @@
 //   config check | show | save --file <json> | render [--force]
 //                                                save writes the choices and refreshes automation/playwright.config.* from them;
 //                                                render redoes only that file (it never overwrites a hand-edited one without --force)
+// Output is compact JSON (add --pretty to indent). `run create|stage|set-config|counts` print a short status line
+// ({ok, runId, status, currentStage, stage}); the full manifest is `run show <runId>`.
 //   run create --command <cmd> [--input <path>]... [--from-run <runId>]
 //   run list | show <runId> | resume [<runId>] [--command <cmd>]   (no id = newest resumable run)
 //   run resumable [--command <cmd>]                                 (checkpoints, newest first)
@@ -51,11 +53,11 @@ import { syncFromSavedConfig } from '../config/playwright-config.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
 import {
-  HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt,
+  HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt, type RunManifest,
   recordSetupChange, resumeLatest, setRunConfig, setTestCounts, updateStage, type TestCounts,
 } from '../pipeline/run-manager.ts';
 import { StageContractError } from '../pipeline/stage-contracts.ts';
-import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command } from '../pipeline/state-manager.ts';
+import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command, type StageName } from '../pipeline/state-manager.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { toRootRelative } from '../utils/paths.ts';
 import { UsageError, stageCommand } from './stage-commands.ts';
@@ -63,9 +65,21 @@ import { UsageError, stageCommand } from './stage-commands.ts';
 // dependencies/engine/cli -> dependencies -> <project>/automation
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'automation');
 
+// Output is read by agents, so it is compact; --pretty (or PIPELINE_PRETTY=1) indents it for a human.
+let pretty = process.env.PIPELINE_PRETTY === '1';
+
 function out(value: unknown, code = 0): number {
-  process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+  process.stdout.write(JSON.stringify(value, null, pretty ? 2 : undefined) + '\n');
   return code;
+}
+
+// What a state change prints back. The full manifest is `run show <runId>`; echoing it after every
+// transition would repeat all 13 stages, the config and the input hashes into the session each time.
+function brief(m: RunManifest, stage?: StageName): Record<string, unknown> {
+  return {
+    ok: true, runId: m.runId, status: m.status, currentStage: m.currentStage,
+    ...(stage ? { stage: { name: stage, status: m.stages[stage].status, message: m.stages[stage].message, artifacts: m.stages[stage].artifacts } } : {}),
+  };
 }
 
 function readJsonArg(file: string | undefined): unknown {
@@ -120,8 +134,10 @@ export function main(argv: string[]): number {
       from: { type: 'string' },
       overwrite: { type: 'boolean' },
       force: { type: 'boolean' },
+      pretty: { type: 'boolean' },
     },
   });
+  if (values.pretty) pretty = true;
   const root = path.resolve(values.root ?? DEFAULT_ROOT);
   const [group, action, ...rest] = positionals;
   // Accept paths written relative to the caller's cwd (e.g. "dependencies/input/test-cases/x.md" from the project root).
@@ -159,7 +175,8 @@ export function main(argv: string[]): number {
         case 'create': {
           const command = need(values.command, '--command') as Command;
           if (!COMMANDS.includes(command)) throw new UsageError(`--command must be one of: ${COMMANDS.join(', ')}`);
-          return out(createRun(root, { command, inputPaths: values.input ?? [], sourceRunId: values['from-run'] ?? null }));
+          const m = createRun(root, { command, inputPaths: values.input ?? [], sourceRunId: values['from-run'] ?? null });
+          return out({ ...brief(m), command: m.command, sourceRunId: m.sourceRunId ?? null, inputFiles: m.inputs.length });
         }
         case 'list':
           return out(listRuns(root));
@@ -190,15 +207,17 @@ export function main(argv: string[]): number {
             if (eq <= 0) throw new UsageError(`--artifact must be name=relPath (got "${a}")`);
             artifacts[a.slice(0, eq)] = a.slice(eq + 1);
           }
-          return out(updateStage(root, need(runId, 'runId'), stage, status, { message: values.message, artifacts }));
+          return out(brief(updateStage(root, need(runId, 'runId'), stage, status, { message: values.message, artifacts }), stage));
         }
         case 'set-config': {
           const state = loadConfig(root);
           if (state.status !== 'valid') return out(state, 2);
-          return out(setRunConfig(root, need(rest[0], 'runId'), state.config));
+          return out(brief(setRunConfig(root, need(rest[0], 'runId'), state.config)));
         }
-        case 'counts':
-          return out(setTestCounts(root, need(rest[0], 'runId'), readJsonArg(values.file) as TestCounts));
+        case 'counts': {
+          const m = setTestCounts(root, need(rest[0], 'runId'), readJsonArg(values.file) as TestCounts);
+          return out({ ...brief(m), testCounts: m.testCounts });
+        }
         case 'healing-attempt':
           try {
             return out(recordHealingAttempt(root, need(rest[0], 'runId'), need(rest[1], 'testId')));

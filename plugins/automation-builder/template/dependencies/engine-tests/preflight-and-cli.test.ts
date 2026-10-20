@@ -123,6 +123,25 @@ test('CLI: config check -> save -> run lifecycle', (t) => {
   assert.equal(limit.json.limitReached, true);
 });
 
+test('CLI: state changes print a short status, compact; the full manifest is only in `run show`', (t) => {
+  const root = tmpRoot(t);
+  const created = cli(root, 'run', 'create', '--command', 'run-tests');
+  assert.deepEqual(Object.keys(created.json).sort(), ['command', 'currentStage', 'inputFiles', 'ok', 'runId', 'sourceRunId', 'status']);
+  const runId: string = created.json.runId;
+
+  const raw = spawnSync(process.execPath, [CLI, 'run', 'stage', runId, 'preflight', 'running', '--root', root], { encoding: 'utf8' }).stdout;
+  assert.equal(raw.trim().split('\n').length, 1, 'one line of JSON, not indented');
+  assert.ok(raw.length < 400, `stage reply is short (${raw.length} bytes)`);
+  const reply = JSON.parse(raw);
+  assert.equal(reply.stage.name, 'preflight');
+  assert.equal(reply.stage.status, 'running');
+  assert.equal('stages' in reply, false, 'no per-stage dump');
+
+  const pretty = spawnSync(process.execPath, [CLI, 'run', 'stage', runId, 'preflight', 'completed', '--pretty', '--root', root], { encoding: 'utf8' }).stdout;
+  assert.ok(pretty.split('\n').length > 3, '--pretty indents');
+  assert.ok(Object.keys(cli(root, 'run', 'show', runId).json.manifest.stages).length > 10, 'run show still has the whole manifest');
+});
+
 test('CLI: config save refuses invalid input and keeps the existing file', (t) => {
   const root = tmpRoot(t);
   const good = writeFile(root, 'good.json', JSON.stringify(validConfig()));

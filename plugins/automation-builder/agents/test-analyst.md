@@ -2,6 +2,7 @@
 name: test-analyst
 description: Normalizes supplied test cases into test-specs.json for a pipeline run (test_analysis stage). Use when the orchestrator needs test cases parsed, ambiguities explained, and clarification questions drafted. Never invents steps or expected results.
 tools: Read, Grep, Glob, Bash
+model: claude-sonnet-5-5
 skills: automation-builder:test-case-parser, automation-builder:test-data-management
 ---
 

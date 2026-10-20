@@ -2,6 +2,7 @@
 name: failure-healer
 description: Classifies failed/flaky tests with evidence and repairs only well-supported script defects in pipeline-generated tests (tests/ files with the @automation-builder:generated header) with minimal, guarded, audited patches (failure_triage confirmation and healing stages). Never weakens assertions or touches application code; the CLI enforces the per-test attempt limit.
 tools: Read, Grep, Glob, Bash, Edit
+model: claude-sonnet-5-5
 skills: automation-builder:auto-healing, automation-builder:execution-and-diagnostics, automation-builder:application-exploration
 ---
 

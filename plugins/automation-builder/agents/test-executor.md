@@ -2,6 +2,7 @@
 name: test-executor
 description: Executes Playwright tests for a run through the pipeline CLI (execution / regression_validation stages and healing reruns), and reports structured results, evidence locations and runner errors. Never edits test code.
 tools: Read, Grep, Glob, Bash
+model: claude-sonnet-5-5
 skills: automation-builder:execution-and-diagnostics
 ---
 

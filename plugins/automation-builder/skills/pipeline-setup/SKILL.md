@@ -26,6 +26,11 @@ Run `node dependencies/engine/cli/pipeline.ts preflight`. It never installs anyt
 
 Run `node dependencies/engine/cli/pipeline.ts config check`.
 
+Precedence, low → high: built-in defaults (non-material only: browsers=chromium, retries=1, timeout, healing cap=2) →
+`automation/config/automation.config.json` → env vars `PW_BASE_URL`, `PW_ENVIRONMENT`, `PW_BROWSERS` (comma list),
+`PW_WORKERS`, `PW_RETRIES` → explicit command arguments. Material choices (language, evidence, reporters, base URL,
+input path, auth) are never defaulted silently.
+
 - `status: "valid"` and no `--reconfigure` → **reuse it**. Show a 3–5 line summary. Do not re-ask.
 - `absent` / `invalid` → ask **only** for the fields listed in `issues` (plus any the user wants to change).
 

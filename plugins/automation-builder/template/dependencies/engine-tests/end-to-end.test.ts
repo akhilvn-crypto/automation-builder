@@ -251,7 +251,7 @@ test('end to end: a passing test, a healed broken locator, a genuine failure kep
   must(root, 'run', 'finalize', runId);
   const done = stage(root, runId, 'finalization', 'completed');
   assert.equal(done.status, 'completed');
-  assert.equal(done.testCounts.healed, 1);
+  assert.equal(must(root, 'run', 'show', runId).manifest.testCounts.healed, 1);
 
   const md = readFileSync(path.join(dependenciesDir(root), `runs/${runId}/summary.md`), 'utf8');
   assert.match(md, /\| 5 \| 1 \| 1 \| 1 \| 1 \| 1 \| 0 \| 1 \|/);
@@ -352,7 +352,7 @@ test('declined installation is recorded, blocks the run, and the run resumes lat
   must(root, 'deps', 'record', '--dependency', 'browser:chromium', '--action', 'declined', '--reason', 'Run generated tests', '--run', runId);
   const m = must(root, 'run', 'stage', runId, 'preflight', 'blocked', '--message', 'chromium browser install declined');
   assert.equal(m.status, 'blocked');
-  assert.equal(m.setupChanges[0].action, 'declined');
+  assert.equal(must(root, 'run', 'show', runId).manifest.setupChanges[0].action, 'declined');
   const resumed = must(root, 'run', 'resume', runId);
   assert.equal(resumed.next, 'preflight');
   stage(root, runId, 'preflight', 'running');

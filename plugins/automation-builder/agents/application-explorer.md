@@ -2,6 +2,7 @@
 name: application-explorer
 description: Explores the configured, authorized test environment with the official Playwright CLI (or the approved aria-snapshot fallback) and records observed pages, durable candidate locators and uncertainties in exploration/exploration.json (application_exploration stage).
 tools: Read, Grep, Glob, Bash, Write
+model: claude-sonnet-5-5
 skills: automation-builder:application-exploration, automation-builder:test-data-management
 ---
 

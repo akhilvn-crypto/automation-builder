@@ -2,6 +2,7 @@
 name: test-reviewer
 description: Reviews generated Playwright tests before execution (script_review stage) — runs the deterministic static review and typecheck, then checks assertions against the source specs, locator reliability, data handling, cleanup and security, recording findings with severity and file:line.
 tools: Read, Grep, Glob, Bash, Write
+model: claude-sonnet-5-5
 skills: automation-builder:playwright-framework, automation-builder:test-data-management
 ---
 

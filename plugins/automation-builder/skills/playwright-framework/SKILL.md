@@ -8,65 +8,58 @@ user-invocable: false
 
 One framework for every agent. Do not create parallel configs, fixtures or helpers.
 
-All paths are relative to the **`automation/`** folder (the framework, with its own `package.json`). The pipeline engine,
-test-case input and run state live in the sibling `dependencies/` folder; never put them in `automation/`.
-`<ext>` is `ts` or `js` — the language the user chose at `/automation-builder:init`, recorded as `language` in
-`dependencies/state/scaffold.json` and in the run's config (`node dependencies/engine/cli/pipeline.ts run show <runId>`).
+Paths are relative to **`automation/`** (the framework, with its own `package.json`). The engine, test-case input and run state
+live in the sibling `dependencies/`; never put them in `automation/`. `<ext>` is `ts` or `js`: the language chosen at
+`/automation-builder:init` (`language` in `dependencies/state/scaffold.json` and in `run show <runId>`).
 **Write only that language.** Never mix, never convert.
 
 ## Layout
 
-The structure follows `playwright_framework_structure.md`: **`pages/`, `tests/`, `helpers/` are mandatory**; `fixtures/`,
-`config/`, `test-data/`, `auth/`, `reports/`, `test-results/` exist only when they have a clear responsibility. Do not add other
-top-level folders to `automation/`.
+`pages/`, `tests/`, `helpers/` are mandatory; `fixtures/`, `config/`, `test-data/`, `auth/`, `reports/`, `test-results/` exist
+only with a clear responsibility. No other top-level folders in `automation/`.
 
 | Path | Owner | Notes |
 |---|---|---|
-| `playwright.config.<ext>` | framework (user-editable) | standard `defineConfig` with literal values written from `config/automation.config.json` by `config save` / `config render`; a hand-edited file is never overwritten without `--force`. Do not edit it from generated tests or healing |
+| `playwright.config.<ext>` | framework (user-editable) | standard `defineConfig`, literal values written from `config/automation.config.json` by `config save`/`config render`; a hand-edited file is never overwritten without `--force`. Don't edit it from generated tests or healing |
 | `fixtures/test.<ext>` | framework | exports `test`, `expect`; auto `diagnostics` fixture attaches console/page/network errors on failure; auto `stepEvidence` fixture (only with the `evidence-pdf` reporter) screenshots every `test.step` and the final state |
-| `helpers/test-data.<ext>` | framework | `requireEnv(name)`, `uniqueSuffix(prefix)`, `redact()`. Generic, app-agnostic helpers only; page-specific behaviour belongs in `pages/` |
-| `test-data/` | humans | only when needed: non-sensitive data files (JSON/CSV). Never credentials |
-| `pages/BasePage.<ext>` | framework | base class for page objects (`path`, `open()`, `byTestId()`) |
-| `pages/<Name>Page.<ext>` | generator | page objects extending `BasePage` (see policy below); named for the page, shared across modules |
-| `tests/<module>.spec.<ext>` | generator + humans | one folder for every test, **one file per module** (see below). A file the pipeline wrote starts with the header `// @automation-builder:generated` and is the only kind it regenerates or heals; files without it are handwritten and never modified. Never overwrite a file lacking the header: choose another name |
-| `auth/*.setup.<ext>` | generator | only for `auth.approach = storage-state`: logs in once and saves `auth/storage-state.json` (git-ignored; never commit it) |
-| `reports/`, `test-results/` | generated | Playwright output per run (`<runId>/<label>/`); never write source code here |
-| `../dependencies/engine/` | plugin | pipeline engine — never edit |
+| `helpers/test-data.<ext>` | framework | `requireEnv(name)`, `uniqueSuffix(prefix)`, `redact()`; generic helpers only, page behaviour belongs in `pages/` |
+| `test-data/` | humans | non-sensitive data files only, never credentials |
+| `pages/BasePage.<ext>` | framework | base class (`path`, `open()`, `byTestId()`) |
+| `pages/<Name>Page.<ext>` | generator | page objects extending `BasePage`, named for the page, shared across modules |
+| `tests/<module>.spec.<ext>` | generator + humans | every test, **one file per module**. A pipeline-written file starts with `// @automation-builder:generated` and is the only kind it regenerates or heals; files without it are handwritten and never modified. Never overwrite a file lacking the header: choose another name |
+| `auth/*.setup.<ext>` | generator | only for `auth.approach = storage-state`: logs in once, saves `auth/storage-state.json` (git-ignored, never commit) |
+| `reports/`, `test-results/` | generated | output per run (`<runId>/<label>/`); never write source here |
+| `../dependencies/engine/` | plugin | never edit |
 
-Type check (TypeScript projects): `npm run typecheck` (needs `@playwright/test`). JavaScript projects are syntax-checked
-and reviewed statically. Import specifiers carry the real extension: `.ts` in TypeScript projects, `.js` in JavaScript
-ones. TypeScript uses only erasable syntax (no enums, namespaces or parameter properties).
+TypeScript projects type-check with `npm run typecheck` (needs `@playwright/test`); JavaScript ones are syntax-checked and
+reviewed statically. Import specifiers carry the real extension (`.ts` / `.js`). TypeScript uses only erasable syntax (no enums,
+namespaces or parameter properties).
 
 ## Modules: one test file per module
 
-The test cases belong to modules (feature areas such as Login or Create Project; `module` / `moduleSlug` in
-`test-specs.json`). Tests are organised the same way: **every module has its own file, and a file holds one module only.**
-Never put several modules in one `*.spec.*` file.
+Specs belong to modules (`module`/`moduleSlug` in `test-specs.json`). **Every module has its own file and a file holds one module
+only.** Get the plan from `node dependencies/engine/cli/pipeline.ts specs modules <runId>`: per module the file to write
+(`tests/<moduleSlug>.spec.<ext>`, or `tests/<moduleSlug>.generated.spec.<ext>` when a handwritten test has that name), the spec IDs
+to generate and the ones to hold back. Use exactly those names. Wrap the tests in one `test.describe('<module name>', …)`.
 
-- Get the plan from `node dependencies/engine/cli/pipeline.ts specs modules <runId>`: per module, the file to write
-  (`tests/<moduleSlug>.spec.<ext>`; if a handwritten test already has that name the plan gives `tests/<moduleSlug>.generated.spec.<ext>`
-  instead), the spec IDs to generate and the ones to hold back. Use exactly those file names.
-- The file wraps its tests in one `test.describe('<module name>', …)`.
-- A module's page objects are named for the page (`LoginPage`, `ProjectFormPage`), not the module, because pages are shared:
-  when two modules use the same page, both import the one class. A flow that spans modules (log in, then create a project)
-  uses the other module's page object, never a copy of its locators.
-- `generate validate` fails when a file mixes modules or a module is split over files, so a mistake is caught before review.
+Page objects are named for the page (`LoginPage`, `ProjectFormPage`), not the module; two modules using one page import the one
+class, and a cross-module flow uses the other module's page object, never a copy of its locators. `generate validate` fails
+when a file mixes modules or a module is split over files.
 
-## Page objects (policy)
+## Page objects
 
-- Use a page object when the same page's locators/actions appear in **two or more** tests or specs, or one page has
-  three or more interactions. Otherwise keep the locators inline in the test.
-- One class per page or component in `pages/<Name>Page.<ext>`, extending `BasePage`: `readonly` locator properties built
-  from `this.page` with the standard locator order, and methods for user *actions* (`signIn()`, `addToCart()`).
-- **Assertions never go in page objects.** They stay in the test, mirroring the spec's expected results.
-- Build locators only from exploration evidence. Navigate with a relative `path`; never an absolute URL.
-- Every page object added or changed is listed in the generation manifest's `sharedFilesChanged`. The reviewer applies
-  the line-level safety rules to it. The healer does **not** auto-patch page objects (they are shared); a defect found
-  there is reported for the user to approve.
+- Use one when the same page's locators/actions appear in **two or more** tests, or one page has three or more interactions;
+  otherwise keep locators inline.
+- One class per page/component in `pages/<Name>Page.<ext>`, extending `BasePage`: `readonly` locator properties built from
+  `this.page` in the standard locator order, and methods for user *actions* (`signIn()`, `addToCart()`).
+- **Assertions never go in page objects**; they stay in the test, mirroring the spec's expected results.
+- Build locators only from exploration evidence. Navigate with a relative `path`, never an absolute URL.
+- List every page object added or changed in the generation manifest's `sharedFilesChanged`; the reviewer applies the
+  line-level safety rules to it. The healer does **not** auto-patch page objects (shared): report the defect for user approval.
 
 ## Test shape
 
-TypeScript (`tests/login.spec.ts`; first line is the ownership header):
+TypeScript (`tests/login.spec.ts`; the first line is the ownership header):
 
 ```ts
 import { test, expect } from '../fixtures/test.ts';
@@ -88,35 +81,28 @@ test.describe('Login', () => {            // one describe per file: the module's
 });
 ```
 
-JavaScript is identical minus the types, with `.js` import specifiers (`'../fixtures/test.js'`,
-`'../pages/LoginPage.js'`, `'../helpers/test-data.js'`); page objects declare `path = '/login'` as a class field and
-use JSDoc (`/** @param {string} email */`) instead of annotations.
+JavaScript is identical minus the types, with `.js` specifiers; page objects declare `path = '/login'` as a class field and use
+JSDoc (`/** @param {string} email */`).
 
 Rules:
-- Title **starts with `[<testId>] `** and the `testId` annotation is set. Results, triage and healing rely on it.
-- Import `test`/`expect` from `fixtures/test.<ext>`, never directly from `@playwright/test`.
-- One `test.step` per spec step, using the spec's wording. Put the spec's expected result as a comment above each assertion.
-- When `reporters` includes `evidence-pdf` (check `run show <runId>`), also put each expected result's assertions inside
-  `await test.step('Expected: <the expected result, spec wording>', async () => { … })`. The evidence PDF then shows that
-  check as its own step with the screenshot taken right after it. The assertion itself is unchanged (same locator, same
-  matcher, same text); only the wrapper is added. Without that reporter keep the plain comment-above-assertion form.
-  Always use `test.step` from the shared fixture (never `test.step` of `@playwright/test`), and never take screenshots by hand
-  for the PDF: the fixture does it.
-- Spec tags → Playwright `tag` (`@smoke`). Priority can go in an annotation.
-- Locators, in order of preference: `getByRole` (with name) → `getByLabel` → `getByPlaceholder`/`getByText` →
-  `getByTestId` (`data-testid`) → a scoped `locator()` as a last resort, with a comment saying why. Never XPath,
-  never structural CSS, never CLI refs (`e12`).
-- Web-first assertions (`await expect(locator).toBeVisible()`, `toHaveText`, `toHaveURL`). No `waitForTimeout`; no
-  `isVisible()` checked inside an `if`.
-- Assertions must match the spec's expected results exactly: same quoted text, same URL fragments. Don't add
-  assertions for unstated behaviour.
+- Title **starts with `[<testId>] `** and the `testId` annotation is set; results, triage and healing rely on it.
+- Import `test`/`expect` from `fixtures/test.<ext>`, never from `@playwright/test`.
+- One `test.step` per spec step, in the spec's wording; the spec's expected result as a comment above each assertion.
+- With the `evidence-pdf` reporter (check `run show <runId>`), wrap each expected result's assertions in
+  `await test.step('Expected: <expected result, spec wording>', async () => { … })` so the PDF shows that check with the
+  screenshot taken right after it. The assertion itself is unchanged; only the wrapper is added. Without that reporter keep
+  the comment-above-assertion form. Use `test.step` from the shared fixture, and never take screenshots by hand: the fixture does.
+- Spec tags → Playwright `tag` (`@smoke`); priority may go in an annotation.
+- Locators in order: `getByRole` (with name) → `getByLabel` → `getByPlaceholder`/`getByText` → `getByTestId` → a scoped
+  `locator()` as a last resort, with a comment saying why. Never XPath, structural CSS or CLI refs (`e12`).
+- Web-first assertions (`toBeVisible`, `toHaveText`, `toHaveURL`). No `waitForTimeout`; no `isVisible()` inside an `if`.
+- Assertions match the spec's expected results exactly (same quoted text, same URL fragments); add none for unstated behaviour.
 - No `.only`, `test.skip`, `test.fixme`, `test.fail`, `@ts-ignore`, or `force: true` (unless evidence is noted in a comment).
-- Each test is independent: no order dependence, no shared mutable state, a fresh context per test (the Playwright default).
-- Create data with `uniqueSuffix()` and clean it up in the test, or in `afterEach` when a cleanup path exists.
-  Never delete data the test didn't create.
+- Each test is independent: no order dependence, no shared mutable state, a fresh context per test.
+- Create data with `uniqueSuffix()` and clean it up in the test (or `afterEach` when a cleanup path exists); never delete data
+  the test didn't create.
 
-## Execution settings (from config)
+## Execution settings
 
-`use.baseURL`, `video`, `screenshot`, `trace`, `retries`, `workers`, `timeout` and browser projects all come from
-`config/automation.config.json` (plus `PW_*` env overrides). Don't hard-code them in tests. To change one, go through
-the pipeline-setup skill.
+`use.baseURL`, `video`, `screenshot`, `trace`, `retries`, `workers`, `timeout` and browser projects come from
+`config/automation.config.json` (plus `PW_*` env overrides). Don't hard-code them in tests; change them via the pipeline-setup skill.
