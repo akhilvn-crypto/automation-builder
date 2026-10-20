@@ -11,14 +11,16 @@
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import { loadConfig } from '../../dependencies/engine/config/load-config.ts';
+import { redactionEnvVars } from '../../dependencies/engine/pipeline/env-file.ts';
 import { redact, secretValues } from '../helpers/test-data.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 
+// Configured credential variables plus the ones the pipeline created in .env from the test cases.
 /** @returns {string[]} */
 function credentialEnvVars() {
   const state = loadConfig(ROOT);
-  return state.status === 'valid' ? state.config.auth.credentialEnvVars : [];
+  return redactionEnvVars(ROOT, state.status === 'valid' ? state.config.auth.credentialEnvVars : []);
 }
 
 export const test = base.extend({

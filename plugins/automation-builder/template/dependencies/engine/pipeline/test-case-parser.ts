@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { sha256File, toPosixRelative } from '../utils/fs.ts';
+import { quoteEnvValue } from './env-file.ts';
 import {
   TEST_ID_PATTERN, TEST_SPEC_SCHEMA_VERSION, specStatus,
   type Ambiguity, type InputFormat, type SourceFile, type SpecStep, type TestDataRef, type TestSpec, type TestSpecDocument,
@@ -37,7 +38,10 @@ function draft(line: number, suite: string | null, originalId: string | null, ti
 
 const ID_TITLE = /^\[?([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*)\]?\s*(?:[:–—-]\s*|\s+)(.+)$/;
 const ENV_REF = /^(?:env:\s*|\$\{)([A-Z_][A-Z0-9_]*)\}?$/;
-const SECRET_NAME = /pass(word)?|pwd|secret|token|api[_-]?key|credential/i;
+const SECRET_NAME = /passw(?:or)?d|pass(?:code|phrase)|\bpass\b|pwd|secret|token|api[_-]?key|credential/i;
+const IDENTITY_NAME = /e-?mail|user[ _-]?(?:name|id)|^user$|^login$|^account$/i;
+const EMAIL_VALUE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const INLINE_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 const VAGUE = /\b(?:works?|working|functions?)\s+(?:correctly|properly|fine|as expected)\b|^as expected$|\bshould be (?:ok|fine|correct)\b/i;
 const STEP_EXPECTED = /\s*(?:->|=>|→|\|)\s*expected(?:\s+result)?\s*:\s*/i;
 
@@ -57,6 +61,64 @@ export function parseDataItem(text: string): TestDataRef | null {
   // "literal:" declares a deliberately non-secret value (e.g. a wrong password for a negative test).
   const literal = /^literal:\s*(.*)$/.exec(raw);
   return { name, value: literal ? literal[1]! : raw, envVar: null, declaredLiteral: literal !== null };
+}
+
+// A literal that is a credential or account detail: a password/token-style field, a username/email field, or any email address.
+// Written as "literal:<value>" it is treated as deliberately fake and left alone (e.g. a wrong password for a negative test).
+export function isCredentialData(d: TestDataRef): boolean {
+  if (d.envVar !== null || d.declaredLiteral || d.value === null || d.value === '') return false;
+  return SECRET_NAME.test(d.name) || IDENTITY_NAME.test(d.name) || EMAIL_VALUE.test(d.value);
+}
+
+export interface DetectedCredential {
+  envVar: string;
+  value: string; // in memory only: handed to the caller that writes .env, never stored in test-specs.json
+}
+
+// Picks env var names for detected values: TEST_<DATA_NAME>, then TEST_<DATA_NAME>_<CASE_ID> when two cases need the same
+// name for different values. Names the user wrote as env:VAR are reserved, so a detected value never lands in them.
+class EnvAllocator {
+  readonly values = new Map<string, string>();
+  private readonly reserved: Set<string>;
+  constructor(reserved: Iterable<string>) { this.reserved = new Set(reserved); }
+
+  assign(dataName: string, value: string, caseKey: string): string {
+    const token = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const base = `TEST_${token(dataName).replace(/^TEST_/, '') || 'VALUE'}`;
+    const suffix = token(caseKey);
+    for (let n = 0; ; n++) {
+      const name = n === 0 ? base : n === 1 ? `${base}_${suffix}` : `${base}_${suffix}_${n}`;
+      if (this.reserved.has(name)) continue;
+      const held = this.values.get(name);
+      if (held === undefined) { this.values.set(name, value); return name; }
+      if (held === value) return name;
+    }
+  }
+}
+
+// Replaces credential literals with env var references, and inline email addresses in steps with a {name} placeholder
+// backed by a new Test Data entry. Values that cannot be stored in a .env file are left for checkCase to flag.
+function extractCredentials(c: DraftCase, caseKey: string, alloc: EnvAllocator): void {
+  const nameOfValue = new Map<string, string>(); // raw value -> data name, so inline repeats reuse the entry
+  c.testData = c.testData.map((d) => {
+    if (!isCredentialData(d) || quoteEnvValue(d.value!) === null) return d;
+    nameOfValue.set(d.value!, d.name);
+    return { name: d.name, value: null, envVar: alloc.assign(d.name, d.value!, caseKey), declaredLiteral: false };
+  });
+  const defined = new Set(c.testData.map((d) => d.name.toLowerCase()));
+  const swap = (text: string): string => text.replace(INLINE_EMAIL, (email) => {
+    let name = nameOfValue.get(email);
+    if (!name) {
+      name = 'email';
+      for (let n = 2; defined.has(name.toLowerCase()); n++) name = `email ${n}`;
+      defined.add(name.toLowerCase());
+      nameOfValue.set(email, name);
+      c.testData.push({ name, value: null, envVar: alloc.assign(name, email, caseKey), declaredLiteral: false });
+    }
+    return `{${name}}`;
+  });
+  c.steps = c.steps.map((s) => ({ action: swap(s.action), expected: s.expected === null ? null : swap(s.expected) }));
+  c.expectedResults = c.expectedResults.map(swap);
 }
 
 function splitAction(text: string): { action: string; expected: string | null } {
@@ -317,9 +379,10 @@ function checkCase(c: DraftCase): Ambiguity[] {
       }
     }
   });
+  // Credentials are moved to env vars before this runs, so what is left here could not be stored in a .env file.
   for (const d of c.testData) {
-    if (d.value !== null && d.value !== '' && !d.declaredLiteral && SECRET_NAME.test(d.name)) {
-      out.push({ kind: 'possible_secret_literal', message: `test data "${d.name}" looks like a credential; use env:VAR_NAME instead of a literal`, stepIndex: null });
+    if (isCredentialData(d)) {
+      out.push({ kind: 'possible_secret_literal', message: `test data "${d.name}" looks like a credential but could not be moved to .env automatically (multi-line or unquotable value); put it in .env yourself and write env:VAR_NAME`, stepIndex: null });
     }
   }
   return out;
@@ -379,12 +442,22 @@ export function listInputFiles(baseDir: string, inputPath: string): string[] {
     .sort();
 }
 
-export function parseInputs(baseDir: string, files: string[], now: Date = new Date()): { document: TestSpecDocument; errors: ParseError[]; unsupported: string[] } {
+export interface ParsedInputs {
+  document: TestSpecDocument;
+  errors: ParseError[];
+  unsupported: string[];
+  // Credential/email literals found in the input, already replaced by env var names in `document`.
+  // Contains values: the caller writes them to .env and must not print or store them elsewhere.
+  credentials: DetectedCredential[];
+}
+
+export function parseInputs(baseDir: string, files: string[], now: Date = new Date()): ParsedInputs {
   const sources: SourceFile[] = [];
   const specs: TestSpec[] = [];
   const errors: ParseError[] = [];
   const unsupported: string[] = [];
   const seen = new Map<string, TestSpec[]>();
+  const parsed: { rel: string; drafts: DraftCase[] }[] = [];
   for (const abs of files) {
     const rel = toPosixRelative(baseDir, abs);
     const format = detectFormat(abs);
@@ -397,14 +470,21 @@ export function parseInputs(baseDir: string, files: string[], now: Date = new Da
         continue;
       }
       sources.push({ path: rel, sha256: sha256File(abs), format });
-      specs.push(...normalizeCases(drafts, rel, seen));
+      parsed.push({ rel, drafts });
     } catch (err) {
       errors.push({ path: rel, message: (err as Error).message });
     }
+  }
+  // After every file is read, so names the user wrote as env:VAR anywhere in the input are reserved first.
+  const alloc = new EnvAllocator(parsed.flatMap((p) => p.drafts.flatMap((c) => c.testData.flatMap((d) => (d.envVar ? [d.envVar] : [])))));
+  for (const { rel, drafts } of parsed) {
+    for (const c of drafts) extractCredentials(c, c.originalId ?? autoId(rel, c.title), alloc);
+    specs.push(...normalizeCases(drafts, rel, seen));
   }
   return {
     document: { schemaVersion: TEST_SPEC_SCHEMA_VERSION, generatedAt: now.toISOString(), sources, specs },
     errors,
     unsupported,
+    credentials: [...alloc.values].map(([envVar, value]) => ({ envVar, value })),
   };
 }

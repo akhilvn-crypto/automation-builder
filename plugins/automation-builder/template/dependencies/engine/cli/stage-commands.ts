@@ -5,11 +5,13 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { loadConfig } from '../config/load-config.ts';
 import { isAbsoluteOrEscaping, type AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
+import { missingEnvMessage, missingEnvVars, readEnvValues, referencedEnvVars, secretValuesFor, syncEnvFiles } from '../pipeline/env-file.ts';
 import { validateExplorationRecord } from '../pipeline/exploration.ts';
 import {
   CATEGORIES, CONFIDENCES, buildFailureAnalysis, reclassify, saveFailureAnalysis, validateFailureAnalysis,
@@ -29,6 +31,7 @@ import {
 } from '../pipeline/static-review.ts';
 import { listInputFiles, parseInputs } from '../pipeline/test-case-parser.ts';
 import { validateTestSpecDocument, type TestSpecDocument } from '../pipeline/test-spec.ts';
+import { redact } from '../utils/redact.ts';
 
 export class UsageError extends Error {}
 
@@ -116,20 +119,59 @@ export function stageCommand(root: string, group: string, action: string | undef
       const r = run(root, rest[0]);
       const inputPath = inputPathOf(r, v);
       const base = inputBaseDir(root);
-      const { document, errors, unsupported } = parseInputs(base, listInputFiles(base, inputPath));
+      const { document, errors, unsupported, credentials } = parseInputs(base, listInputFiles(base, inputPath));
       writeJsonAtomic(path.join(r.dir, ARTIFACTS.testSpecs), document);
       const issues = validateTestSpecDocument(document);
       const ready = document.specs.filter((s) => s.status === 'ready');
       const blocked = document.specs.filter((s) => s.status === 'needs_clarification');
+      // Credentials and emails found in the test cases go to automation/.env; only names leave this function.
+      const env = syncEnvFiles(root, new Map(credentials.map((c) => [c.envVar, c.value])), referencedEnvVars(document));
       const value = {
         ok: issues.length === 0 && errors.length === 0 && ready.length > 0,
         artifact: ARTIFACTS.testSpecs,
         counts: { total: document.specs.length, ready: ready.length, needsClarification: blocked.length },
         needsClarification: blocked.map((s) => ({ id: s.id, title: s.title, source: s.source, ambiguities: s.ambiguities })),
         warnings: document.specs.flatMap((s) => s.ambiguities.filter((a) => a.kind === 'vague_expected_result').map((a) => ({ id: s.id, ...a }))),
+        env: {
+          ...env,
+          detected: credentials.map((c) => ({ envVar: c.envVar, usedBy: document.specs.filter((s) => s.testData.some((d) => d.envVar === c.envVar)).map((s) => s.id) })),
+          action: missingEnvMessage(root, env.missing),
+        },
         errors, unsupported, issues,
       };
       return { value, code: value.ok ? 0 : 2 };
+    }
+
+    // Run a command with automation/.env loaded into its environment (the real environment wins). The shell the agent
+    // works in does not load .env, and sourcing it in a shell would expand `$` and backticks inside values. Output is
+    // returned as JSON with every known secret value masked.
+    case 'env run': {
+      const [command, ...args] = rest;
+      if (!command) throw new UsageError('env run -- <command> [args...]  (quote $VAR with single quotes so the child shell expands it)');
+      const real = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v));
+      const state = loadConfig(root);
+      const configured = state.status === 'valid' ? state.config.auth.credentialEnvVars : [];
+      const r = spawnSync(command, args, {
+        env: { ...Object.fromEntries(readEnvValues(root)), ...real }, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60_000,
+      });
+      const secrets = secretValuesFor(root, configured);
+      const value = {
+        ok: r.status === 0 && !r.error,
+        exitCode: r.status,
+        stdout: redact(r.stdout ?? '', secrets),
+        stderr: redact(r.stderr ?? '', secrets),
+        error: r.error ? redact(r.error.message, secrets) : null,
+      };
+      return { value, code: value.ok ? 0 : 2 };
+    }
+
+    case 'env check': {
+      const r = run(root, rest[0]);
+      const specs = artifactWithSource<TestSpecDocument>(r, ARTIFACTS.testSpecs).value;
+      if (!specs) return notReady({ ok: false, issues: [`no ${ARTIFACTS.testSpecs} in this run or its source run; run "specs parse" first`] });
+      const names = referencedEnvVars(specs);
+      const missing = missingEnvVars(root, names);
+      return { value: { ok: missing.length === 0, required: names, missing, action: missingEnvMessage(root, missing) }, code: missing.length ? 2 : 0 };
     }
 
     case 'explore validate': {

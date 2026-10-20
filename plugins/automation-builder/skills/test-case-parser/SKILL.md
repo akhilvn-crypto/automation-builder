@@ -33,6 +33,7 @@ Tags: smoke, auth
 - email: env:TEST_USER_EMAIL       (env var NAME; the value lives in .env)
 - password: literal:wrong-pass-1   (explicitly non-secret literal)
 - plan: Premium                    (plain literal)
+- username: qa-admin               (credential-looking literal: `specs parse` moves it to .env as TEST_USERNAME)
 ### Steps
 1. Enter {email} in the Email field          ({name} must be defined in Test Data)
 2. Click "Sign in" -> Expected: ...          (inline step expectation; also "| Expected:")
@@ -54,6 +55,12 @@ case level (never guessed).
 Blocking (case → `needs_clarification`, never generated): `missing_expected_result`, `missing_steps`, `empty_step`,
 `duplicate_id`, `undefined_data_reference`, `possible_secret_literal`.
 Warning only: `vague_expected_result` ("works correctly"). Mention it, but the case stays `ready`.
+
+`possible_secret_literal` is now rare: credentials, usernames and emails written as literals are **moved to
+`automation/.env` automatically** (see the test-data-management skill), so the spec holds `envVar: "TEST_PASSWORD"` and the
+case stays `ready`. The kind remains only for values that cannot be stored in a `.env` file. Inline email addresses in step
+or expected-result text are the one place wording is changed: `Enter qa@x.com in Email` becomes `Enter {email} in Email`,
+with a matching Test Data entry. Use `literal:` to keep a deliberately fake value as is.
 
 Resolving a blocking ambiguity means the **user edits the source file** (or answers, and you show them the exact
 line to change). Then re-run `specs parse`. Never patch `test-specs.json`.

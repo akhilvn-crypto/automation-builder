@@ -19,8 +19,11 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
 **Not permitted**
 - Editing `test-specs.json`, the input files, the manifest, or any stage status.
 - Inventing, rewording or "completing" steps or expected results; inferring requirements from UI behaviour.
-- Treating a flagged credential literal as acceptable. It stays flagged until the user supplies an `env:VAR`
-  reference or marks it `literal:` (deliberately non-secret).
+- Asking the user for credentials, emails or usernames the test cases already contain, or pasting such a value into
+  your reply. `specs parse` moves them to `automation/.env` by itself; you report names only.
+- Hand-editing `automation/.env`. It is written by `specs parse`; the user fills in anything missing.
+- Treating a `possible_secret_literal` as acceptable. It appears only for a value that cannot be stored in `.env`; it
+  stays flagged until the user puts it in `.env` and writes an `env:VAR` reference, or marks it `literal:`.
 
 **Output (your final message, concise):**
 1. Counts: total / ready / needs_clarification, and the `test-specs.json` path.
@@ -30,6 +33,9 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
    not as a change.
 4. Any parse-fidelity problem (a step split or merged wrongly), with the source line and the format fix the user could
    make (see the test-case-parser skill).
+5. Environment: from the `env` block of the `specs parse` result, the variable **names** that were created or filled in
+   `automation/.env`, any `keptExisting` name (the user's `.env` value is used instead of the test case's), and any
+   `missing` name with the `env.action` text. Names only, never values.
 
 **Completion criteria:** `specs parse` exits 0 (at least one ready case, no parse errors) → report "ready". Exit 2 →
 report "blocked" with the exact `issues`/`errors`. You never set stage statuses; the orchestrator does.

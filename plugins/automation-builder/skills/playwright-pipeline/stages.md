@@ -39,8 +39,8 @@ listed. Agents return a summary. Verify their claims with the CLI validators bef
 | 1 | `preflight` | — | pipeline-setup skill §1 | — | Node too old → `failed` |
 | 2 | `configuration` | preflight | pipeline-setup §2–3 (ask only missing fields, one approval per dependency); `pl run set-config <runId>` while running | — | install declined / info missing → `blocked` |
 | 3 | `input_validation` | config, optional path arg | `pl input validate <runId> [--path p]` | `inputValidation=input-validation.json` | exit 2 → show `report.errors`, `blocked` |
-| 4 | `test_analysis` | input-validation | Agent **test-analyst** | `testSpecs=test-specs.json` | relay its clarification questions to the user (AskUserQuestion). If they fix the source, re-run the stage. If no case is ready → `blocked`. Cases still needing clarification proceed as `blocked` tests |
-| 5 | `application_exploration` | test-specs, config | Agent **application-explorer**. Before delegating, ask the user about any destructive step the specs require and pass the answer on | `exploration=exploration/exploration.json` | app unreachable/login fails → `blocked` (environment). `exploration.tool = none` → `skipped` with reason; the generator then marks locators low-confidence |
+| 4 | `test_analysis` | input-validation | Agent **test-analyst**. `specs parse` also moves credentials, usernames and emails found in the test cases into `automation/.env` (see "Credentials" below) | `testSpecs=test-specs.json` | relay its clarification questions to the user (AskUserQuestion); never ask for credentials the test cases already contain. If they fix the source, re-run the stage. If no case is ready → `blocked`. Cases still needing clarification proceed as `blocked` tests |
+| 5 | `application_exploration` | test-specs, config | First `pl env check <runId>`: exit 2 → set the stage `blocked` and tell the user which names to fill in `automation/.env` (the `action` text), then stop. Then Agent **application-explorer**; before delegating, ask the user about any destructive step the specs require and pass the answer on | `exploration=exploration/exploration.json` | app unreachable/login fails → `blocked` (environment). `exploration.tool = none` → `skipped` with reason; the generator then marks locators low-confidence |
 | 6 | `test_generation` | specs, exploration | Agent **playwright-generator** | `generationManifest=generation-manifest.json`, `generationReport=generation-report.md` | |
 | 7 | `script_review` | generated files | Agent **test-reviewer**; if critical findings or typecheck errors → **playwright-generator** fixes (pass the findings) → reviewer re-checks. Max 3 rounds | `reviewReport=review-report.json` | still failing after 3 rounds → `failed`, list the findings |
 | 8 | `execution` | reviewed tests | Agent **test-executor**, label `initial` (all generated tests, or the paths given) | `executionResults=execution-results.json` | `runnerError` → `failed` (not a test failure) |
@@ -49,6 +49,16 @@ listed. Agents return a summary. Verify their claims with the CLI validators bef
 | 11 | `regression_validation` | healing log | nothing healed → `skipped`. Else Agent **test-executor**, label `regression`, `--test-file` for each healed file | `regressionResults=regression-results.json` | runner error → `failed` |
 | 12 | `report_generation` | everything above | `pl report build <runId>` | `summary=summary.json`, `summaryMarkdown=summary.md` | exit 2 (reporter failed / runner error) → `failed` with the reporter details; the summary files still exist for the user |
 | 13 | `finalization` | summary | `pl run finalize <runId>` | — | refused until counts are recorded |
+
+### Credentials
+
+Credentials, emails and usernames are never asked for in chat. `pl specs parse` takes them from the test cases, writes
+them to `automation/.env` and puts only variable names in `test-specs.json`. Tell the user in one line what happened
+(names only, e.g. "Added TEST_EMAIL and TEST_PASSWORD to automation/.env from the test cases"). The only time you involve
+the user is when `env.missing` / `env check` lists names with no value anywhere: say which names to fill in `automation/.env`
+(the empty entries are already there), mark the stage `blocked`, and give the resume command. After they confirm, run
+`pl env check <runId>` again before continuing. Execution (stage 8) is gated the same way if `env check` still exits 2.
+If `env.keptExisting` is non-empty, mention it: the value already in `.env` is used instead of the one in the test case.
 
 Progress line after each stage: `[n/13] <stage> … <status> — <short note>`.
 

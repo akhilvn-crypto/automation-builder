@@ -8,6 +8,7 @@ import type { AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { redact } from '../utils/redact.ts';
 import { ARTIFACTS, assertExecutionLabel, reportsDirFor } from './artifact-manager.ts';
+import { secretValuesFor } from './env-file.ts';
 
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const OUTCOMES = ['passed', 'failed', 'flaky', 'skipped'] as const;
@@ -98,7 +99,7 @@ export function runPlaywright(rootDir: string, config: AutomationConfig, o: RunO
   const runnerLogAbs = path.join(reportsDir, 'runner.log');
   const rawReportAbs = path.join(reportsDir, 'results.json');
   const args = buildPlaywrightArgs(o);
-  const secrets = config.auth.credentialEnvVars.map((n) => env[n]).filter((v): v is string => !!v);
+  const secrets = secretValuesFor(rootDir, config.auth.credentialEnvVars, env);
 
   if (!existsSync(cli)) {
     writeFileSync(runnerLogAbs, `@playwright/test is not installed (${cli} missing)\n`);

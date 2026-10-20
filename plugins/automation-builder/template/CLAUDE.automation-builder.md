@@ -21,6 +21,8 @@ Commands: `/automation-builder:playwright-pipeline`, `/automation-builder:genera
   decision with `node dependencies/engine/cli/pipeline.ts deps record ...`.
 - Never invent base URLs, credentials, test steps or expected results.
 - Never write secrets to config, tests, logs or reports. Secrets live in `automation/.env` (git-ignored).
+  Credentials/emails found in test cases are moved there by `specs parse` (don't ask the user for them); if a value is
+  missing, tell the user which names to add to `automation/.env`, never ask for the value in chat.
 - Never weaken/delete assertions or skip tests to get a pass. Retry-only passes are `flaky`, not `passed`.
 - All pipeline state changes go through the CLI. Do not hand-edit manifests or the config file.
 - The language (TypeScript or JavaScript) is the user's choice, made once at `/automation-builder:init` and stored in

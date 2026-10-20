@@ -71,4 +71,4 @@ test-case path, browsers, evidence, reporters, auth) and saves them to `automati
 dependency (`typescript` for TypeScript projects only, `@playwright/test`, browsers, `@playwright/cli`, Allure) is offered separately with the
 exact command and installed only on an explicit yes, into `automation/`; decisions are logged in `dependencies/state/dependency-log.json`.
 
-Secrets go in `automation/.env` (git-ignored; copy `.env.example`). Test cases go in `dependencies/input/test-cases/`. Run state lives in `dependencies/runs/<run-id>/`; reports and evidence in `automation/reports/<run-id>/` and `automation/test-results/<run-id>/`.
+Secrets go in `automation/.env` (git-ignored; copy `.env.example`). Credentials, usernames and emails found in your test cases are moved there automatically (`TEST_<NAME>` variables; `literal:<value>` opts a fake value out); you only fill in values the pipeline reports as missing. Test cases go in `dependencies/input/test-cases/`. Run state lives in `dependencies/runs/<run-id>/`; reports and evidence in `automation/reports/<run-id>/` and `automation/test-results/<run-id>/`.

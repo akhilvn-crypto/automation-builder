@@ -18,6 +18,9 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
 
 - Own stage transitions; advance only after the CLI accepts a stage's outputs.
 - Never invent test steps, expected results, base URLs or credentials.
+- Credentials, emails and usernames that appear in the test cases are moved into `automation/.env` for you by
+  `specs parse`; don't ask the user for them. Only when a value is missing, point the user to `automation/.env`
+  (names, never values) and wait. Never ask for or echo a secret in chat.
 - Never modify tests to force a pass. Never treat partial artifacts as valid.
 - Pipeline state lives on disk. Use the CLI for every state change; never edit manifests or config by hand.
 - Ask the user only for what is missing (pipeline-setup skill), one approval per dependency.

@@ -49,7 +49,7 @@ Rules for asking (use AskUserQuestion; group independent choices into one call, 
 | `browsers` | multiSelect chromium/firefox/webkit | chromium |
 | `app.baseUrl`, `app.environment` | Free text. **Never invent a URL.** Must be an authorized test environment. | — |
 | `input.testCasesPath` | Path relative to `dependencies/` (test cases live in `dependencies/input/`) | `input/test-cases` |
-| `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only | — |
+| `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only. Don't ask for credentials or their names: those in the test cases are created in `automation/.env` by `specs parse` and redacted automatically, so `credentialEnvVars` may be `[]` | — |
 
 Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.
 Extent Reports: only offer after verifying a maintained Playwright integration exists; otherwise say so.

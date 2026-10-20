@@ -145,6 +145,13 @@ Tags: smoke, auth
 
 Secrets go in `automation/.env` (git-ignored; copy `automation/.env.example`). Test cases and config refer to env var **names** only.
 
+You don't have to set that up by hand. Credentials, usernames and emails written in your test cases (a `password:` or
+`email:` line under Test Data, or an email address typed in a step) are moved into `automation/.env` by the pipeline as
+`TEST_<NAME>` variables; the specs and generated tests only reference the names (`requireEnv('TEST_PASSWORD')`). The
+pipeline asks you for nothing it can already see: when a value is genuinely missing (for example you wrote
+`env:TEST_ADMIN_EMAIL` and nothing sets it), it lists the names to fill in `automation/.env` and waits. A value already in
+your `.env` is never overwritten. Write `literal:<value>` for a deliberately fake value (a wrong password) to keep it out of `.env`.
+
 ### 3. Run the pipeline
 
 ```

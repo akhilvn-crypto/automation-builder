@@ -38,11 +38,15 @@ Produced by `node dependencies/engine/cli/pipeline.ts specs parse <runId>` from 
 - IDs match `PREFIX-REST` and are unique. Duplicate source IDs are flagged on every occurrence and suffixed `-dup2`, …
 - Steps are numbered 1..n. Wording is copied verbatim from the source.
 - Each `testData` entry has exactly one of `value` / `envVar`; `envVar` is a variable **name**.
+- Credential-looking literals (password/token/secret/API-key fields, username/email fields, any email address) are
+  never stored: the parser writes `envVar: "TEST_<NAME>"` and `specs parse` puts the value in `automation/.env`.
+  Email addresses typed inside steps become `{email}` placeholders with a Test Data entry. `literal:<value>` keeps a value as is.
 - `status` must agree with the ambiguities, so a case can't be marked ready by hand:
 
 | Ambiguity kind | Blocking? |
 |---|---|
-| `missing_expected_result`, `missing_steps`, `empty_step`, `duplicate_id`, `undefined_data_reference`, `possible_secret_literal` | yes → `needs_clarification` |
+| `missing_expected_result`, `missing_steps`, `empty_step`, `duplicate_id`, `undefined_data_reference` | yes → `needs_clarification` |
+| `possible_secret_literal` (only for a value that cannot be stored in a `.env` file) | yes → `needs_clarification` |
 | `vague_expected_result` | no (warning) |
 
 - The `test_analysis` stage completes only if the document is valid and at least one spec is ready. Specs that need

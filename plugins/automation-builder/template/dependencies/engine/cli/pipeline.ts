@@ -16,7 +16,12 @@
 //   run counts <runId> --file <json>
 //   run healing-attempt <runId> <testId>
 //   run finalize <runId>
-//   input validate <runId> [--path <p>]          specs parse <runId> [--path <p>]
+//   input validate <runId> [--path <p>]          specs parse <runId> [--path <p>]   (also writes credentials/emails found in the
+//                                                  test cases to automation/.env and reports env.missing; names only)
+//   env check <runId>                            names the specs need that have no value in .env or the environment
+//   env run -- <command> [args...]               run a command with automation/.env loaded; secret values masked in the
+//                                                JSON output (use single quotes so the child shell expands $VAR, e.g.
+//                                                env run -- sh -c 'playwright-cli fill e5 "$TEST_PASSWORD"')
 //   explore validate <runId>                     generate validate <runId>
 //   review static <runId> | add <runId> --file <json> | resolve <runId> <id> --status fixed|accepted
 //   exec run <runId> [--label L] [--test-file f]... [--test-id id]... [--project p]... [--retries n]
@@ -198,14 +203,14 @@ export function main(argv: string[]): number {
       return out({ ok: true, recorded: change });
     }
 
-    case 'input': case 'specs': case 'explore': case 'generate': case 'review':
+    case 'input': case 'specs': case 'env': case 'explore': case 'generate': case 'review':
     case 'exec': case 'triage': case 'heal': case 'report': {
       const r = stageCommand(root, group, action, rest, values);
       return out(r.value, r.code);
     }
 
     default:
-      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|explore|generate|review|exec|triage|heal|report> ...');
+      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report> ...');
   }
 }
 

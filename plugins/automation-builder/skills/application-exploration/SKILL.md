@@ -31,7 +31,12 @@ Check the installed version's syntax first: `playwright-cli --help` (or the same
 1. Open a named, isolated session at the base URL, e.g. `playwright-cli -s=explore-<runId> open <baseUrl>`.
 2. `snapshot` → read the accessibility tree (roles, names, element refs like `e12`).
 3. For each ready spec, perform its steps in order using refs (`click e12`, `fill e5 "text"`), taking a snapshot after
-   each state change. Use `$ENV_VAR` for credentials in the shell. Never type a literal secret.
+   each state change. Never type a literal secret. Credential values live in `automation/.env` (filled in by
+   `specs parse`; `env check <runId>` already confirmed every needed name has a value), and your shell does not load that file.
+   Run the step through the pipeline CLI instead, which loads `.env` for that one command and masks the values in its
+   output, and keep `$VAR` inside single quotes so the child shell expands it, not yours:
+   `node ../dependencies/engine/cli/pipeline.ts env run -- sh -c 'playwright-cli -s=explore-<runId> fill e5 "$TEST_PASSWORD"'`
+   (adjust the path to the CLI to where you run it from). Never print or echo a value to check it. Do not `source` the file.
 4. Save evidence that matters into `dependencies/runs/<runId>/exploration/` (`<page>.aria.yml`, `<page>.png`).
    Don't save pages showing secrets or personal data.
 5. Close the session (`close` / `session-stop` per `--help`). Always close it, even after an error.

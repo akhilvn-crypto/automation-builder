@@ -16,7 +16,9 @@ skills: automation-builder:application-exploration, automation-builder:test-data
 - Drive the browser with the tool named in the config, following the application-exploration skill: one named
   session `explore-<runId>`, a snapshot before acting, each spec's steps in order, and the session closed at the end.
 - Use credentials only through the environment variables named in a spec's `testData[].envVar`. Never echo them,
-  write them to files, or keep them in saved snapshots.
+  write them to files, or keep them in saved snapshots. Their values are in `automation/.env`, which your shell does not
+  load: run steps that need them with `pipeline.ts env run -- sh -c '… "$VAR" …'` (see the application-exploration skill).
+  If a name has no value, stop and report it: the orchestrator tells the user to fill it in `automation/.env`.
 - Write only under `dependencies/runs/<runId>/exploration/`: `exploration.json`, `*.aria.yml` snapshots, `*.png` screenshots.
   Run the Playwright CLI from `dependencies/`, never from `automation/` (the framework folder stays free of session files).
 

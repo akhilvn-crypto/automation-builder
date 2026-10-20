@@ -49,7 +49,7 @@ test('markdown labels ("Steps:", "Expected Result:") work as well as headings', 
   assert.deepEqual(c!.expectedResults, ['Home is shown']);
 });
 
-test('missing expected results, undefined data and secret literals are flagged, not invented', (t) => {
+test('missing expected results and undefined data are flagged, not invented; credentials move to env vars', (t) => {
   const root = tmpRoot(t);
   const f = writeFile(root, 'in/a.md', [
     '## TC-9: Something', '### Test Data', '- password: hunter2', '### Steps', '1. Type {password}', '2. Type {username}',
@@ -60,7 +60,8 @@ test('missing expected results, undefined data and secret literals are flagged, 
   assert.deepEqual(validateTestSpecDocument(document), []);
   const [a, b, c] = document.specs;
   const kinds = a!.ambiguities.map((x) => x.kind).sort();
-  assert.deepEqual(kinds, ['missing_expected_result', 'possible_secret_literal', 'undefined_data_reference']);
+  assert.deepEqual(kinds, ['missing_expected_result', 'undefined_data_reference'], 'a credential literal is moved to .env, not blocked');
+  assert.deepEqual(a!.testData, [{ name: 'password', value: null, envVar: 'TEST_PASSWORD', declaredLiteral: false }]);
   assert.equal(a!.status, 'needs_clarification');
   assert.deepEqual(b!.ambiguities.map((x) => x.kind), ['vague_expected_result']);
   assert.equal(b!.status, 'ready', 'vague is a warning, not a blocker');
