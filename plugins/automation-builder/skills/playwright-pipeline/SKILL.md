@@ -8,7 +8,11 @@ disable-model-invocation: true
 # /automation-builder:playwright-pipeline — orchestrator
 
 > **Project setup:** if `dependencies/engine/cli/pipeline.ts` does not exist, stop and tell the user to run
-> `/automation-builder:init` first (it scaffolds the framework; it installs nothing).
+> `/automation-builder:init` first (it scaffolds the framework; it installs nothing), or use `/automation-builder:do-automation`,
+> which scaffolds and then runs this whole pipeline.
+>
+> **Claude Code and Claude Cowork:** read [environment.md](environment.md) first. It says how to ask the user (dialog, or a numbered
+> chat question when the dialog does not appear), where the plugin and project files are, and what differs in Cowork.
 
 You (the main session) are the **pipeline orchestrator**. Orchestration runs in the main session, not in a
 subagent, because it must ask the user setup/approval questions and delegate to stage subagents (subagents cannot
@@ -41,7 +45,7 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
   a specific one (`run resumable` lists them). Then continue from `next`; completed stages are never repeated.
 - Otherwise → a new run. **Ask where the test cases are before creating it**:
   1. **Where are they?** If `$ARGUMENTS` holds a path, that is the answer. Otherwise ask. First look at
-     `dependencies/input/test-cases/`: if it already holds supported files (`.md`, `.csv`, `.xlsx`), ask with AskUserQuestion
+     `dependencies/input/test-cases/`: if it already holds supported files (`.md`, `.csv`, `.xlsx`), ask as a choice (dialog or numbered chat question, see environment.md)
      (*Use the N files already in `input/test-cases` (Recommended)* / *Import test cases from another path*; the user types the
      path via Other). If it is empty, ask in plain chat: "Where are your test cases? Give the path to a file (`.xlsx`, `.csv`
      or `.md`) or to a folder of them. Any location and any column layout is fine." Don't guess a path and don't search the

@@ -23,6 +23,8 @@ import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { checkSpecsAgainstCanonical, validateCanonicalDocument, type CanonicalDocument } from '../pipeline/canonical.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
 import { cleanupAll, cleanupRun, sweepRun } from '../pipeline/process-cleanup.ts';
+import { recordExternally, readCreatedData, summarizeData, updateRecords, type RecordStatus } from '../pipeline/created-data.ts';
+import { readSweepHistory, sweepData, sweepDataSafely } from '../pipeline/data-cleanup.ts';
 import { missingEnvMessage, missingEnvVars, readEnvValues, referencedEnvVars, secretValuesFor, syncEnvFiles } from '../pipeline/env-file.ts';
 import { validateExplorationRecord, type ExplorationRecord } from '../pipeline/exploration.ts';
 import {
@@ -62,6 +64,12 @@ import { redact } from '../utils/redact.ts';
 
 export class UsageError extends Error {}
 
+// The saved configuration (the one the test fixtures read), so the sweep and the in-test cleanup follow the same rules.
+export function savedConfig(root: string): AutomationConfig | null {
+  const state = loadConfig(root);
+  return state.status === 'valid' ? state.config : null;
+}
+
 export interface Values {
   path?: string;
   file?: string;
@@ -99,6 +107,9 @@ export interface Values {
   locator?: string;
   reason?: string;
   'dry-run'?: boolean;
+  entity?: string;
+  identifier?: string;
+  hint?: string;
 }
 
 export interface Result {
@@ -669,6 +680,49 @@ export function stageCommand(root: string, group: string, action: string | undef
       return { value: report, code: report.ok ? 0 : 2 };
     }
 
+    // ---- test data the run created (created-data.ts / data-cleanup.ts) ----
+
+    // Removes what the run's tests and explorer created and the tests did not already remove, through the ways config.cleanup declares,
+    // in an allowed non-production environment only. Leftovers are listed, never an error: the user decides what to do with them.
+    case 'cleanup data': {
+      const runId = need(rest[0], 'runId');
+      const report = sweepData(root, runId, savedConfig(root), { trigger: 'cleanup data', dryRun: v['dry-run'] === true });
+      return ok({ ok: true, ...report });
+    }
+
+    case 'cleanup status': {
+      const runId = need(rest[0], 'runId');
+      const summary = summarizeData(readCreatedData(runDir(root, runId)), savedConfig(root));
+      const last = readSweepHistory(runDir(root, runId)).at(-1);
+      return ok({ ok: true, ...summary, lastSweep: last ? { trigger: last.trigger, at: last.at, ran: last.ran } : null });
+    }
+
+    // The explorer (or anyone) registers a record they created while exploring, so it can be removed with the rest.
+    case 'cleanup record': {
+      const runId = need(rest[0], 'runId');
+      if (!existsSync(runDir(root, runId))) throw new UsageError(`no run folder for ${runId}`);
+      const entity = need(v.entity, '--entity');
+      const identifier = need(v.identifier, '--identifier');
+      try {
+        const rec = recordExternally(runDir(root, runId), { entity, identifier, hint: v.hint ?? null });
+        return ok({ ok: true, id: rec.id, entity: rec.entity, identifier: rec.identifier });
+      } catch (err) {
+        return notReady({ ok: false, issues: [(err as Error).message] });
+      }
+    }
+
+    // The data-cleaner agent reports the outcome of a deletion it did through the UI.
+    case 'cleanup resolve': {
+      const runId = need(rest[0], 'runId');
+      const id = need(rest[1], 'recordId');
+      const status = need(v.status, '--status');
+      if (status !== 'deleted' && status !== 'verified_gone' && status !== 'failed') throw new UsageError('--status must be deleted, verified_gone or failed');
+      if (status === 'failed' && !v.note) throw new UsageError('--note is required with --status failed (what went wrong)');
+      if (!readCreatedData(runDir(root, runId)).some((r) => r.id === id)) return notReady({ ok: false, issues: [`no record ${id} in run ${runId}`] });
+      updateRecords(runDir(root, runId), new Map([[id, { status: status as RecordStatus, removedBy: status === 'failed' ? null : 'ui-agent', error: status === 'failed' ? v.note! : null }]]));
+      return ok({ ok: true, id, status });
+    }
+
     case 'cleanup all': {
       const report = cleanupAll(root, { trigger: 'cleanup all', dryRun: v['dry-run'] === true });
       return { value: report, code: report.ok ? 0 : 2 };
@@ -797,7 +851,9 @@ export function stageCommand(root: string, group: string, action: string | undef
       // Nothing of this run may stay running: its browser sessions and anything the runner left behind are stopped here, and the
       // result says what was found. A failed cleanup never blocks finalization, but it is reported.
       const cleanup = sweepRun(root, r.runId, 'run finalize') ?? { trigger: 'run finalize', stopped: 0, sessions: [], stillRunning: [] };
-      return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null, metrics, cleanup });
+      // The same for test data: a last sweep, and the list of what is still there (informational: it never blocks finalization).
+      const data = sweepDataSafely(root, r.runId, savedConfig(root), { trigger: 'run finalize' });
+      return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null, metrics, cleanup, ...(data ? { data } : {}) });
     }
 
     case 'run metrics': {

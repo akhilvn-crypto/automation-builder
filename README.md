@@ -49,6 +49,9 @@ automation/       the Playwright framework: pages/, tests/, helpers/, fixtures/,
 dependencies/     everything the pipeline needs: engine/, docs/, input/test-cases/, runs/, state/
 ```
 
+**Or do steps 2 and 3 in one go:** `/automation-builder:do-automation` asks the language, scaffolds the project and runs
+every pipeline stage, stopping only for your choices and install approvals (see Commands).
+
 **3. Run the pipeline:**
 
 ```
@@ -104,11 +107,17 @@ wrong password) out of `.env`.
 
 | Command | Does |
 |---|---|
+| `/automation-builder:do-automation [path] [--language typescript|javascript] [--with-demo]` | Guided end to end: asks the language, scaffolds, then runs all 13 stages. Stops only for your choices, one-by-one install approvals, missing `.env` values and blockers. `resume [<run-id>]` continues. Works in Claude Code and Claude Cowork. |
 | `/automation-builder:init [--language typescript\|javascript] [--update] [--with-demo] [--force]` | Scaffold, update or migrate `automation/` and `dependencies/`. |
 | `/automation-builder:playwright-pipeline [path]` | The full 13-stage pipeline. |
 | `/automation-builder:generate-tests [path]` | Parse, explore, generate and review. Does not execute. |
 | `/automation-builder:run-tests [files...]` | Execute existing tests, triage failures, report. Edits nothing. |
 | `/automation-builder:heal-tests <run-id>` | Repair eligible script defects from an earlier run, re-validate, report. |
+
+**Claude Code and Claude Cowork.** Choices are shown as a dialog (`AskUserQuestion`). Where that dialog does not appear, as can
+happen in Cowork, Claude asks the same question as a numbered list in chat and waits for your reply; it never picks for you.
+Installs are still approved one dependency at a time. Cowork needs Node 24+ in its sandbox, runs tests headless, and can only reach apps
+the sandbox can reach. Details: `skills/playwright-pipeline/environment.md`.
 
 **Resuming.** Run state is saved on disk, so a closed terminal, crash or declined install doesn't lose the run. Repeat the
 command you started with, followed by `resume` (no run id needed): `/automation-builder:playwright-pipeline resume`. It

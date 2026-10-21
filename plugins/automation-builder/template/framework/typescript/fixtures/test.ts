@@ -11,7 +11,9 @@
 // journey itself is Playwright's own per-test video (evidence.video "on"), which report_generation embeds in the evidence PDF
 // next to the screenshot. Without that reporter nothing is captured, so normal runs pay nothing for it. Password inputs and
 // reporting.maskSelectors are masked in the screenshot.
-// evidence-fixture-revision: 2 (init --update uses this marker to tell a current copy from an older one)
+// evidence-fixture-revision: 3 (init --update uses this marker to tell a current copy from an older one)
+//
+// `cleanup` (opt-in): see its definition below.
 //
 // Add project-wide fixtures here (e.g. an authenticated API client) with test.extend; keep them app-agnostic.
 
@@ -19,7 +21,9 @@ import { mkdirSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import type { Page, TestInfo } from '@playwright/test';
+import type { CleanupSession } from '../../dependencies/engine/pipeline/created-data.ts';
 import { loadConfig } from '../../dependencies/engine/config/load-config.ts';
+import { startCleanup } from '../../dependencies/engine/pipeline/cleanup-fixture.ts';
 import { redactionEnvVars } from '../../dependencies/engine/pipeline/env-file.ts';
 import { redactSensitive } from '../../dependencies/engine/utils/redact.ts';
 import {
@@ -103,7 +107,7 @@ async function recordStep<T>(title: string, body: () => Promise<T> | T): Promise
   }
 }
 
-const extended = base.extend<{ diagnostics: void; stepEvidence: void }>({
+const extended = base.extend<{ diagnostics: void; stepEvidence: void; cleanup: CleanupSession }>({
   diagnostics: [
     async ({ page }, use, testInfo) => {
       const lines: string[] = [];
@@ -158,6 +162,21 @@ const extended = base.extend<{ diagnostics: void; stepEvidence: void }>({
     },
     { auto: true },
   ],
+  // `cleanup` (opt-in: a test lists it as a parameter): records what the test creates and removes it when the test ends, also when it
+  // failed or timed out. `cleanup.register({ entity, identifier, undo })` right after creating something; `undo` deletes it the way the
+  // app allows. Records are written to the run's created-data/ folder first, so the post-run sweep can still find them. Deleting only
+  // happens when config.cleanup allows it for this environment (never production). A cleanup problem is attached, never a test failure.
+  cleanup: async ({ page }, use, testInfo) => {
+    void page; // depends on the page so this fixture is torn down while the page is still open
+    const session = startCleanup(ROOT, testInfo, (text) => redactSensitive(redact(text, secretValues(credentialEnvVars()))));
+    await use(session);
+    const outcome = await session.run();
+    const problems = outcome.filter((o) => o.status !== 'deleted' && o.status !== 'verified_gone');
+    if (problems.length > 0) {
+      const body = problems.map((o) => `${o.entity} "${o.identifier}": ${o.status}${o.error ? ` (${o.error})` : ''}`).join('\n');
+      await testInfo.attach('data-cleanup', { body, contentType: 'text/plain' });
+    }
+  },
 });
 
 // Record every test.step when evidence is wanted (test.step.skip is kept as it is). Any other use of `test` is untouched.

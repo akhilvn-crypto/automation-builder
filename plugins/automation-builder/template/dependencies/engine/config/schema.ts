@@ -21,6 +21,12 @@ export const REPORT_MODES = ['standard', 'full', 'audit'] as const;
 export const ISOLATION_MODES = ['serial', 'shared-readonly', 'per-worker-accounts'] as const;
 export const AUTH_APPROACHES = ['none', 'ui-login', 'storage-state'] as const;
 export const EXPLORATION_TOOLS = ['playwright-cli', 'none'] as const;
+// What happens to data the tests created: nothing / each test removes it itself / that plus a sweep after the run (see created-data.ts).
+export const CLEANUP_MODES = ['off', 'in-test', 'in-test+sweep'] as const;
+export const CLEANUP_API_METHODS = ['DELETE', 'POST', 'PUT', 'PATCH'] as const;
+export const DEFAULT_MAX_DELETES_PER_RUN = 50;
+// Environments that data is never deleted in, whatever the config allows.
+export const PRODUCTION_ENVIRONMENT = /^(prod|production|prd|live)$/i;
 
 export const MAX_HEALING_ATTEMPTS_CAP = 2;
 
@@ -34,6 +40,19 @@ export type AuthApproach = (typeof AUTH_APPROACHES)[number];
 export type ExplorationTool = (typeof EXPLORATION_TOOLS)[number];
 export type ReportMode = (typeof REPORT_MODES)[number];
 export type IsolationMode = (typeof ISOLATION_MODES)[number];
+export type CleanupMode = (typeof CLEANUP_MODES)[number];
+
+// How one kind of created record can be removed. Declared by the user (or confirmed by them after the explorer observed it): endpoints
+// are never guessed. Without `api`, the sweep falls back to `ui`; without either, the record is reported as left behind.
+export interface CleanupEntity {
+  api?: {
+    method: (typeof CLEANUP_API_METHODS)[number];
+    path: string; // on the app's origin, with {id} where the record's identifier goes, e.g. /api/orders/{id}
+    headersFromEnv?: Record<string, string>; // header name -> env var NAME holding the value (never the value)
+    verifyPath?: string; // GET on this path (same {id}) must answer 404/410 once the record is gone
+  };
+  ui?: { hint: string }; // how a person or the data-cleaner agent removes it through the UI, taken from the app or the test case
+}
 
 export const DEFAULT_AUTH_STATE_MAX_AGE_HOURS = 8;
 
@@ -84,6 +103,14 @@ export interface AutomationConfig {
     stepScreenshots?: boolean;
     // CSS selectors masked in the final-state screenshot (password inputs are always masked).
     maskSelectors?: string[];
+  };
+  // Absent = no data cleanup (older configs stay valid). A material choice: asked in setup, never defaulted.
+  cleanup?: {
+    mode: CleanupMode;
+    // Environment names (app.environment) cleanup may run in. Never a production name; the run's environment must be listed.
+    allowedEnvironments: string[];
+    maxDeletesPerRun?: number; // safety cap for the sweep (default DEFAULT_MAX_DELETES_PER_RUN)
+    entities?: Record<string, CleanupEntity>;
   };
   healing: {
     maxAttemptsPerTest: number;
@@ -204,7 +231,7 @@ class Checker {
 
 const TOP_KEYS = [
   'schemaVersion', 'language', 'packageManager', 'app', 'input', 'browsers', 'evidence',
-  'reporters', 'auth', 'exploration', 'execution', 'healing', 'retention', 'reporting',
+  'reporters', 'auth', 'exploration', 'execution', 'healing', 'retention', 'reporting', 'cleanup',
 ] as const;
 
 export function validateConfig(raw: unknown): ValidationResult {
@@ -293,8 +320,62 @@ export function validateConfig(raw: unknown): ValidationResult {
     c.invalid('reporters', 'the evidence-pdf reporter belongs to reporting.mode "audit" with reporting.stepScreenshots true');
   }
 
+  if (raw.cleanup !== undefined) checkCleanup(c, raw);
+
   if (c.issues.length > 0) return { ok: false, issues: c.issues };
   return { ok: true, config: raw as unknown as AutomationConfig, issues: [] };
+}
+
+const ENTITY_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,40}$/;
+const HEADER_NAME = /^[A-Za-z][A-Za-z0-9-]{0,60}$/;
+const API_PATH = /^\/(?!\/)[^\s?#]*$/;
+
+function checkCleanup(c: Checker, raw: Obj): void {
+  const cleanup = c.object(raw, 'cleanup', 'cleanup', ['mode', 'allowedEnvironments', 'maxDeletesPerRun', 'entities']);
+  if (!cleanup) return;
+  c.oneOf(cleanup, 'mode', 'cleanup.mode', CLEANUP_MODES);
+  const envs = cleanup.allowedEnvironments;
+  if (envs === undefined) c.missing('cleanup.allowedEnvironments', 'cleanup.allowedEnvironments is required (the environment names data may be deleted in)');
+  else if (!Array.isArray(envs) || envs.some((e) => typeof e !== 'string' || e.trim() === '')) {
+    c.invalid('cleanup.allowedEnvironments', 'cleanup.allowedEnvironments must be a list of environment names');
+  } else {
+    if (cleanup.mode !== 'off' && envs.length === 0) c.invalid('cleanup.allowedEnvironments', 'cleanup.allowedEnvironments must list at least one non-production environment');
+    if (envs.some((e) => PRODUCTION_ENVIRONMENT.test((e as string).trim()))) c.invalid('cleanup.allowedEnvironments', 'test data is never deleted in a production environment');
+  }
+  if (cleanup.maxDeletesPerRun !== undefined) c.int(cleanup, 'maxDeletesPerRun', 'cleanup.maxDeletesPerRun', 1, 1_000);
+  if (cleanup.entities === undefined) return;
+  if (!isObj(cleanup.entities)) return c.invalid('cleanup.entities', 'cleanup.entities must be an object keyed by entity name');
+  for (const [name, entity] of Object.entries(cleanup.entities)) {
+    const at = `cleanup.entities.${name}`;
+    if (!ENTITY_NAME.test(name)) c.invalid(at, 'an entity name is a short word (letters, digits, - and _)');
+    if (!isObj(entity)) { c.invalid(at, `${at} must be an object`); continue; }
+    c.unknownKeys(entity, at, ['api', 'ui']);
+    if (entity.api === undefined && entity.ui === undefined) c.invalid(at, `${at} needs an "api" or a "ui" way to remove the record`);
+    if (entity.ui !== undefined) {
+      if (!isObj(entity.ui)) c.invalid(`${at}.ui`, `${at}.ui must be an object`);
+      else {
+        c.unknownKeys(entity.ui, `${at}.ui`, ['hint']);
+        if (typeof entity.ui.hint !== 'string' || entity.ui.hint.trim() === '') c.invalid(`${at}.ui.hint`, `${at}.ui.hint must describe how the record is removed in the UI`);
+      }
+    }
+    if (entity.api === undefined) continue;
+    const api = entity.api;
+    if (!isObj(api)) { c.invalid(`${at}.api`, `${at}.api must be an object`); continue; }
+    c.unknownKeys(api, `${at}.api`, ['method', 'path', 'headersFromEnv', 'verifyPath']);
+    c.oneOf(api, 'method', `${at}.api.method`, CLEANUP_API_METHODS);
+    if (typeof api.path !== 'string' || !API_PATH.test(api.path) || api.path.split('{id}').length !== 2) {
+      c.invalid(`${at}.api.path`, `${at}.api.path must be a path on the app starting with "/" and containing {id} once (no host, no query)`);
+    }
+    if (api.verifyPath !== undefined && (typeof api.verifyPath !== 'string' || !API_PATH.test(api.verifyPath) || api.verifyPath.split('{id}').length !== 2)) {
+      c.invalid(`${at}.api.verifyPath`, `${at}.api.verifyPath must be a path starting with "/" and containing {id} once`);
+    }
+    if (api.headersFromEnv !== undefined) {
+      const h = api.headersFromEnv;
+      if (!isObj(h) || Object.entries(h).some(([k, v]) => !HEADER_NAME.test(k) || typeof v !== 'string' || !ENV_VAR_NAME.test(v))) {
+        c.invalid(`${at}.api.headersFromEnv`, `${at}.api.headersFromEnv maps header names to environment variable NAMES (e.g. { "Authorization": "API_TOKEN" }), never values`);
+      }
+    }
+  }
 }
 
 function checkAuthState(c: Checker, auth: Obj): void {

@@ -26,13 +26,15 @@ TypeScript **or** JavaScript, as the user chooses.
    - If `dependencies/state/scaffold.json` exists (or, in an older project, `automation/config/scaffold.json`), the
      language was already chosen (read `language` from it); do not ask and do not pass `--language`. It cannot be
      changed in place.
-   - Otherwise, unless `$ARGUMENTS` already contains `--language`, ask with AskUserQuestion: *"Which language should
+   - Otherwise, unless `$ARGUMENTS` already contains `--language`, ask (how to ask in Claude Code and Cowork, and the chat
+     fallback when the dialog does not appear: [../playwright-pipeline/environment.md](../playwright-pipeline/environment.md)): *"Which language should
      the Playwright framework and generated tests use?"* with options **TypeScript (Recommended)** — typed
      fixtures/page objects, compile-time checks of generated tests (needs the `typescript` dev dependency) — and
      **JavaScript** — plain ES modules with JSDoc types, no compiler. Say that the choice is fixed for the project.
    - Pass the answer as `--language typescript|javascript`.
 
-2. Show what will happen with a dry run:
+2. Show what will happen with a dry run (if `${CLAUDE_PLUGIN_ROOT}` is not expanded or the script is not there, locate the plugin
+   as described in environment.md, "Where things are"):
 
    ```
    node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --dry-run --language <choice> $ARGUMENTS

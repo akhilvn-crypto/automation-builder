@@ -8,6 +8,7 @@ Install: `/plugin marketplace add akhilvn-crypto/automation-builder` then `/plug
 
 | Command | Does |
 |---|---|
+| `/automation-builder:do-automation [path] [--language typescript|javascript] [--with-demo] | resume [<run-id>]` | guided end to end (`commands/do-automation.md`): asks the language, scaffolds, then runs all 13 stages; stops only for your choices, per-dependency install approvals, missing `.env` values and blockers. Runs are ordinary `playwright-pipeline` runs |
 | `/automation-builder:init [--language typescript|javascript] [--update] [--with-demo] [--with-pipeline-tests] [--force]` | asks TypeScript or JavaScript, then scaffolds (or updates/migrates) `automation/` (framework) and `dependencies/` (pipeline); installs nothing |
 | `/automation-builder:playwright-pipeline [path] \| resume [<run-id>]` | full 13-stage pipeline; first asks where your test cases are and converts them into `dependencies/input/test-cases/` |
 | `/automation-builder:generate-tests [path] \| resume [<run-id>]` | parse → explore → generate → review (no execution) |
@@ -17,6 +18,9 @@ Install: `/plugin marketplace add akhilvn-crypto/automation-builder` then `/plug
 Every pipeline command takes `resume` with or without a run id. Bare `resume` continues the newest unfinished
 (`in_progress`, `blocked` or `failed`) run of that command; `node dependencies/engine/cli/pipeline.ts run resumable` lists the
 candidates. Details are in the root README, "Resuming a run".
+
+Claude Code and Claude Cowork: choices use the `AskUserQuestion` dialog and fall back to a numbered chat question when the dialog does
+not appear (`skills/playwright-pipeline/environment.md`, which also lists the Cowork specifics: plugin path lookup, Node 24+, headless, reachability).
 
 Knowledge skills (loaded automatically by Claude and the agents): `pipeline-setup`, `test-case-parser`,
 `playwright-framework`, `application-exploration`, `test-data-management`, `execution-and-diagnostics`,
@@ -82,6 +86,13 @@ dependencies/                                not framework
   (`explore-<run-id>`) and stops what is left of its browser. It runs by itself when exploration ends, when a stage fails/blocks/cancels, on
   `run resume` and in `run finalize`. Only processes recorded in `runs/<run-id>/processes.json` or sessions named with the run id are stopped
   (`engine/pipeline/process-cleanup.ts`, `engine/utils/process-tree.ts`); a process that cannot be stopped is reported, not hidden.
+- **Test data cleanup (0.15.0):** tests ask for the opt-in `cleanup` fixture and register each record they create (`cleanup.register({ entity, identifier,
+  undo })`); it is written to `runs/<run-id>/created-data/` first, undone after the test (also a failed or timed-out one), and `pipeline.ts cleanup data
+  <run-id> [--dry-run]` sweeps what is left (automatically after execution/healing/regression and at finalization). A sweep removes a record through an
+  API the user declared in `config.cleanup.entities` (endpoints are never guessed), or hands UI-only records to the `data-cleaner` agent; the rest is
+  listed in `summary.md` ("Test data") with how to delete it by hand. Only ledger records, only with `cleanup.mode` `in-test`/`in-test+sweep`, only in an
+  allowed non-production environment, at most `cleanup.maxDeletesPerRun` (50) per sweep (`engine/pipeline/created-data.ts`, `data-cleanup.ts`).
+  `init --update` refreshes an unmodified older `fixtures/test.*`; a customised one is left alone and the warning says how to add the fixture.
 - The template is organized as `template/dependencies` (engine, docs, demo, engine tests) and
   `template/framework/{common,typescript,javascript}`; the language-specific twins must stay functionally identical.
 

@@ -11,6 +11,7 @@ disable-model-invocation: true
 > `/automation-builder:init` first (it scaffolds the framework; it installs nothing).
 
 Same orchestrator role, shared modules and configuration as `/automation-builder:playwright-pipeline`.
+Read [../playwright-pipeline/environment.md](../playwright-pipeline/environment.md) first (asking the user in Claude Code and Cowork).
 
 1. If `$ARGUMENTS` starts with `resume`, skip this step: the source run is already stored in the resumed run's manifest.
    Otherwise the source run is `$ARGUMENTS`, or else the newest run from `node dependencies/engine/cli/pipeline.ts run list` whose

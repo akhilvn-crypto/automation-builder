@@ -230,7 +230,7 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('final-state screenshot')), JSON.stringify(kept.json.warnings));
 
     // A copy that already has the current fixture is left alone silently.
-    writeFileSync(fixture, `${custom}// evidence-fixture-revision: 2\n`);
+    writeFileSync(fixture, `${custom}// evidence-fixture-revision: 3\n`);
     const quiet = init(root, '--update');
     assert.ok(!quiet.json.warnings.some((w) => w.includes('customised')));
   });
@@ -260,12 +260,34 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
     assert.ok(init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
     const current = readFileSync(fixture, 'utf8');
-    assert.match(current, /evidence-fixture-revision: 2/);
+    assert.match(current, /evidence-fixture-revision: 3/);
     assert.doesNotMatch(current, /step-\$\{String\(index\)/, 'no screenshot per step any more');
     assert.match(current, /capture\(r, 'final'\)/, 'the final-state screenshot is still taken');
     assert.match(current, /input\[type="password"\]/);
     // The current fixture is then left alone.
     assert.ok(!init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
+  });
+
+  test(`${language}: --update brings the unmodified 0.14.0 fixtures/test.${ext} up to date (adds the opt-in cleanup fixture); a customised copy is told how`, (t) => {
+    const root = project(t);
+    assert.equal(init(root, '--language', language).code, 0);
+    const fixture = path.join(root, 'automation', 'fixtures', `test.${ext}`);
+    const shipped = readFileSync(path.join(DATA, `fixture-0.14.0.${ext}.txt`), 'utf8');
+    assert.match(shipped, /evidence-fixture-revision: 2/);
+    assert.doesNotMatch(shipped, /cleanup/);
+    writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
+    assert.ok(init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    const current = readFileSync(fixture, 'utf8');
+    assert.match(current, /evidence-fixture-revision: 3/);
+    assert.match(current, /startCleanup\(/);
+    assert.match(current, /cleanup\.register|cleanup: async/);
+    assert.match(current, /session\.run\(\)/, 'the undo functions run after the test');
+
+    // A customised 0.14.0 copy is never touched; the warning names the new fixture.
+    writeFileSync(fixture, `${shipped}\n// my own fixture\n`);
+    const kept = init(root, '--update');
+    assert.ok(!kept.json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('cleanup')), JSON.stringify(kept.json.warnings));
   });
 }
 

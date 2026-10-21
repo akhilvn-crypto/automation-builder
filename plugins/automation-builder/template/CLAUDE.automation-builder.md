@@ -9,7 +9,7 @@ pipeline needs (`engine/`, `docs/`, `input/test-cases/`, `runs/`, `state/`; no `
 Files in `automation/tests/` starting with `// @automation-builder:generated` are pipeline-owned; every other test file is
 handwritten and never modified by the pipeline.
 
-Commands: `/automation-builder:playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`, `init --update`. Their
+Commands: `/automation-builder:do-automation` (init + the whole pipeline), `/automation-builder:playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`, `init --update`. Their
 skills hold the stage playbook, framework conventions and config precedence; read them when you work on that part.
 
 ## Hard rules
@@ -35,6 +35,10 @@ skills hold the stage playbook, framework conventions and config precedence; rea
 - Leave nothing running: name browser sessions `explore-<runId>` / `heal-<runId>` and close them; the CLI stops the rest (`cleanup run <runId>`,
   automatic at stage end, resume and finalization). Only processes recorded for the run or sessions named with its run id are stopped;
   never `close-all`/`kill-all`, never a process chosen by name. Report `stillRunning` if the cleanup could not stop something.
+- Test data: tests register what they create with the `cleanup` fixture (`cleanup.register({ entity, identifier, undo })`); the CLI removes what is
+  left from the run's ledger (`cleanup data <runId>`, automatic after execution/healing/regression and at finalization), only when
+  `cleanup.mode` allows it, only in an allowed non-production environment. Never delete anything that is not in the ledger, never in bulk, never guess a
+  delete endpoint. Tell the user which records are still there and how they can be deleted; leftovers do not fail the run.
 - Reuse earlier work only through the CLI's cache decisions (`cache status <runId>` says why something was rebuilt); execution results are
   never reused. Use agents only where `agents plan <runId> <stage>` says judgment is needed. Trust saved login state only after the pipeline
   validated it; `automation/auth/` and `.env` stay git-ignored. Workers follow `exec plan`; judge any speed-up with `run compare`.

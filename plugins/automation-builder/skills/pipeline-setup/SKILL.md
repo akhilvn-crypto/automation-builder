@@ -34,7 +34,9 @@ input path, auth) are never defaulted silently.
 - `status: "valid"` and no `--reconfigure` → **reuse it**. Show a 3–5 line summary. Do not re-ask.
 - `absent` / `invalid` → ask **only** for the fields listed in `issues` (plus any the user wants to change).
 
-Rules for asking (use AskUserQuestion; group independent choices into one call, max 4 questions):
+Rules for asking (use the AskUserQuestion dialog; group independent choices into one call, max 4 questions). If the tool is
+not callable, is deferred, or fails, ask the same questions as a numbered list in chat and wait for the reply: see
+[../playwright-pipeline/environment.md](../playwright-pipeline/environment.md) ("Asking the user"), which also covers Claude Cowork.
 
 - **Every question needs 2–4 options** (the tool rejects the whole call otherwise, and the user never sees it).
   When there is only one candidate value — e.g. a base URL found in a test case — never send it as a one-option
@@ -57,6 +59,7 @@ Rules for asking (use AskUserQuestion; group independent choices into one call, 
 | `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only. Don't ask for credentials or their names: those in the test cases are created in `automation/.env` by `specs parse` and redacted automatically, so `credentialEnvVars` may be `[]` | — |
 | `auth.state` | Only for storage-state: `probePath` (a path on the app that needs login; ask the user, never guess; it lets the pipeline confirm a saved session is still accepted), `maxAgeHours` (default 8), `loggedOutPattern` (regex for a logout redirect). Optional | probePath if the user knows one |
 | `execution.isolation` | Only when more than one worker is wanted: `serial` (tests change shared data), `shared-readonly` (they never do), `per-worker-accounts` (one login per worker: `NAME_1..NAME_N` in `automation/.env`, needs ui-login). Unanswered = tests in a file run in order | serial if unsure |
+| `cleanup` | **Ask whether the tests should remove the data they create** (it is changed by running them, so ask once in setup; never default it): *Remove it in each test and sweep what is left after the run (Recommended)* = `mode: "in-test+sweep"`, *Remove it in each test only* = `"in-test"`, *Leave it* = `"off"` (the run still lists what it created). If not off: `allowedEnvironments` = the `app.environment` you are running against (confirm it is **not** production: the CLI refuses prod/production/prd/live whatever is configured). Do **not** ask for or guess delete endpoints: only if the user volunteers one, save it as `cleanup.entities.<entity>.api` (`method`, `path` with `{id}`, optional `headersFromEnv` = env var **names**, optional `verifyPath`); how to delete through the UI (`cleanup.entities.<entity>.ui.hint`) is added when the test cases or the explorer show it. Say what each choice does to the user's data before they pick. Saved with `config save` like any other field | in-test+sweep, if the environment is a test one |
 | `execution.workers` | Leave unset (a conservative default of 2) unless the user wants a number. More workers only after `run compare` shows no test got worse | unset |
 
 Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.

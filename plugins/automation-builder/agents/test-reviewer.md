@@ -22,7 +22,9 @@ unchanged since they were reviewed and are skipped), their test cases and the op
      checks something the spec doesn't state. Quoted text and URLs use the spec's exact values.
    - Locators are semantic, unique, and match the exploration evidence (not invented).
    - Data: credentials come from `requireEnv()`, unique data from `uniqueSuffix()`, there is no shared mutable state,
-     and created records are cleaned up.
+     and every created record is passed to `cleanup.register(...)` right after it is created (with an `undo` when the app can remove it). The
+     `undo` removes only that record: a bulk or search-based delete, or deleting something the test did not create, is a **critical** finding.
+     The static finding `register-created-data` may be accepted (with a note) only when the generation report says no cleanup path exists.
    - Structure: imports from the shared `fixtures/test.<ext>`, a `[ID]` title plus a `testId` annotation, no
      duplicated setup. The files are in the project language (`ts` or `js`) — flag any mixing.
    - Page objects listed in `sharedFilesChanged` (`pages/*`): they extend `BasePage`, hold locators and actions only —

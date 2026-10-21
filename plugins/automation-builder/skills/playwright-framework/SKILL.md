@@ -100,8 +100,10 @@ Rules:
 - Assertions match the spec's expected results exactly (same quoted text, same URL fragments); add none for unstated behaviour.
 - No `.only`, `test.skip`, `test.fixme`, `test.fail`, `@ts-ignore`, or `force: true` (unless evidence is noted in a comment).
 - Each test is independent: no order dependence, no shared mutable state, a fresh context per test.
-- Create data with `uniqueSuffix()` and clean it up in the test (or `afterEach` when a cleanup path exists); never delete data
-  the test didn't create.
+- Create data with `uniqueSuffix()` and register every record with the `cleanup` fixture (`async ({ page, cleanup }) => { … cleanup.register({ entity,
+  identifier, undo }) }`, see the test-data-management skill): the fixture removes it after the test, also a failed one, and the pipeline can sweep it
+  after the run. A test that calls `uniqueSuffix()` without `cleanup.register(...)` gets the static finding `register-created-data`. Never delete
+  data the test didn't create.
 
 ## Execution settings
 

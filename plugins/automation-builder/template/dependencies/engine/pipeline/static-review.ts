@@ -87,6 +87,14 @@ export function reviewSource(file: string, source: string, kind: 'test' | 'suppo
     if (!/\bexpect(?:\.soft)?\s*\(/.test(body)) {
       findings.push({ severity: 'critical', file, line, rule: 'has-assertion', message: `test "${title}" has no assertion`, status: 'open', source: 'static' });
     }
+    // A test that makes unique data creates records. They must be registered so they are removed (or reported as left behind).
+    if (/\buniqueSuffix\s*\(/.test(body) && !/\bcleanup\.register\s*\(/.test(body)) {
+      findings.push({
+        severity: 'major', file, line, rule: 'register-created-data',
+        message: `test "${title}" creates data with uniqueSuffix() but never calls cleanup.register(...): add the cleanup fixture and register each record (with an undo when the app can remove it), or accept this finding with a note that no cleanup path exists`,
+        status: 'open', source: 'static',
+      });
+    }
   });
 
   return withIds(file, findings);

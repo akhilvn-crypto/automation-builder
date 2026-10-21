@@ -61,10 +61,52 @@ of `'`, `"` and a backtick) stays `possible_secret_literal`; tell the user to pu
 - Shared reference data (an existing product, a seeded account) must be named in the spec's preconditions.
   The pipeline doesn't create or modify shared data automatically.
 
-## Cleanup
-- Delete only records the test created, through the app's normal UI/API, in the test or `afterEach`.
-- If no cleanup path exists, say so in the generation report. Never delete data you didn't create, and never run
-  bulk deletes.
+## Cleanup — removing the data a run created
+
+Config: `cleanup.mode` is `off`, `in-test` (each test removes what it created) or `in-test+sweep` (plus a sweep after the run). It is a
+user choice made in setup, never defaulted. `cleanup.allowedEnvironments` names the environments where deleting is allowed; a production
+environment (`prod`, `production`, `prd`, `live`) is refused whatever the config says. Records are only ever removed from a **ledger** of what
+the run itself registered (`dependencies/runs/<runId>/created-data/`): never by search, wildcard or "everything that looks like test data".
+
+**In a test** (the generator does this; handwritten tests may too): ask for the `cleanup` fixture and register each record right after the test
+creates it:
+
+```ts
+test('[TC-010] Create an order', { annotation: { type: 'testId', description: 'TC-010' } }, async ({ page, cleanup }) => {
+  const name = uniqueSuffix('order', test.info().parallelIndex);
+  // ...create the order through the UI...
+  cleanup.register({
+    entity: 'order', identifier: name,
+    undo: async () => { /* delete it the way the app allows, e.g. the same page object's delete action */ },
+    verify: async () => /* true when it is gone */ (await page.getByText(name).count()) === 0,   // optional
+  });
+  // ...assertions...
+});
+```
+- Register **immediately after creating**, before assertions: the record is written to the ledger first, so a test that fails, times out or is
+  killed still leaves a trace. `undo` runs after the test (also a failed one), last-created first; it must remove only that record.
+- `identifier` is the unique name from `uniqueSuffix()` or the id the app returned (letters, digits and `. _ : @ -`). Never register a record
+  the test did not create, and never a shared or seeded one.
+- No way to remove it from inside the test? Register it **without** `undo`: the sweep may still remove it through `config.cleanup.entities`,
+  and otherwise it is listed as left behind. Say so in the generation report.
+- A cleanup problem never fails the test: it is attached as `data-cleanup` and recorded in the ledger.
+
+**After the run** (`pipeline.ts cleanup data <runId> [--dry-run]`, run by the pipeline after execution, healing and regression, on a failed run,
+and at finalization): for every ledger record still not removed, in `in-test+sweep` mode, in an allowed environment, at most
+`cleanup.maxDeletesPerRun` (default 50):
+- `config.cleanup.entities.<entity>.api` — `{ method, path: "/api/orders/{id}", headersFromEnv?, verifyPath? }`: one HTTP call to the app's own
+  origin, headers from env var **names**. **Endpoints are never guessed or scraped:** they are declared by the user (or confirmed by them
+  after the explorer saw the request). Cookie-only APIs that need the browser session cannot be called here; use `ui` for those.
+- `config.cleanup.entities.<entity>.ui.hint` — how the record is removed in the UI (from the test case or the app). The record is handed to the
+  `data-cleaner` agent, which removes it in a named browser session and reports each result with `cleanup resolve`.
+- neither — the record is reported as left behind.
+
+**Left behind is information, not a failure.** `run finalize`, the stage replies and `summary.md` ("Test data") list each record that could not
+be removed with its entity, identifier, test and the way to delete it (`canBeDeletedBy`). Tell the user plainly which records can be deleted;
+the run is not failed or blocked for them. Never claim data was cleaned that the ledger does not show as `deleted` or `verified_gone`.
+
+- Delete only records the run created and registered. If no cleanup path exists, say so in the generation report. Never delete data you
+  didn't create, and never run bulk deletes.
 - Non-sensitive fixture data (JSON/CSV) goes in `automation/test-data/`, created only when a test needs it. Never put credentials there.
 - Run state (`dependencies/runs/`) and run output (`automation/reports/<runId>/`, `automation/test-results/<runId>/`) is removed
   only by the explicit `retention.keepRuns` policy.

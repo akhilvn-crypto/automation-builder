@@ -11,6 +11,7 @@ disable-model-invocation: true
 > `/automation-builder:init` first (it scaffolds the framework; it installs nothing).
 
 Same orchestrator role, shared modules and configuration as `/automation-builder:playwright-pipeline`.
+Read [../playwright-pipeline/environment.md](../playwright-pipeline/environment.md) first (asking the user in Claude Code and Cowork).
 
 1. Start: `node dependencies/engine/cli/pipeline.ts run create --command run-tests` (or resume: `run resume <run-id>`, or `run resume --command run-tests` for the newest unfinished run; show its `checkpoint` first, as in playwright-pipeline).
 2. Run these stages exactly as described in [../playwright-pipeline/stages.md](../playwright-pipeline/stages.md):

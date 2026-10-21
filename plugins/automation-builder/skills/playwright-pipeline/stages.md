@@ -1,6 +1,8 @@
 # Stage playbook (shared by /automation-builder:playwright-pipeline, /automation-builder:generate-tests, /automation-builder:run-tests, /automation-builder:heal-tests)
 
 CLI: `node dependencies/engine/cli/pipeline.ts …` (abbreviated `pl` below), run from the project root. JSON on stdout; exit 0 ok, 2 not ready/invalid, 1 error.
+Whenever a stage says "ask the user" (including relaying an agent's questions), do it as [environment.md](environment.md) describes: the
+AskUserQuestion dialog when it works, a numbered chat question and a stop-and-wait when it does not (Claude Code and Claude Cowork alike).
 
 Two sibling folders. `automation/` is the Playwright framework only; `dependencies/` holds the engine, test-case input and
 run state. Paths follow one rule:
@@ -41,6 +43,16 @@ listed. Agents return a summary. Verify their claims with the CLI validators bef
   its run id and its brief (`briefs[]`, JSON under `dependencies/runs/<runId>/briefs/`). No logs, no earlier conversation.
 - After each agent call: `pl agents record <runId> <stage> --agent <name> [--input-tokens n --output-tokens n]` (tokens only when
   you know them; they are never estimated). `pl agents show <runId>` summarizes.
+**Test data the run created.** Tests register what they create with the `cleanup` fixture and remove it themselves; the pipeline then sweeps what
+is left, by itself, after `execution`, `healing` and `regression_validation` and whenever a stage fails, blocks or is cancelled, and again in
+`pl run finalize`. The reply carries a `data` block (`created`, `removed`, `leftovers`, `needsUi`, `lines`) only when the run created data.
+- `needsUi > 0`: run `pl cleanup data <runId>` and give its `uiTasks` (a bounded list) to the **data-cleaner** agent, which removes each one
+  in the UI and reports it with `pl cleanup resolve`. Do this once, after the last stage that runs tests; it is the only time that agent runs.
+- `leftovers > 0`: **tell the user which records are still there and how they can be deleted** (the `lines`; the same list is in `summary.md`
+  under "Test data"). Do not fail or block the run for them, and never describe the environment as clean.
+- Cleanup only happens when the config has `cleanup.mode` `in-test` or `in-test+sweep` and the environment is on `cleanup.allowedEnvironments`
+  (never production); otherwise everything created is listed as left behind, with the reason. `pl cleanup data <runId> --dry-run` shows
+  what a sweep would do; `pl cleanup status <runId>` the counts.
 Always deterministic, no planning needed: preflight, configuration, input_validation, execution, regression_validation,
 report_generation, finalization. Running tests is a CLI call; a runner error is reported, not "fixed" by an agent.
 
@@ -91,6 +103,8 @@ Final message: run id and status (`pl run show <runId>`); the counts table (tota
 flaky(recovered) / healed / blocked / skipped / unresolved); failure categories; healing attempts; unresolved tests
 with reasons; paths to `dependencies/runs/<runId>/summary.md`, the HTML report (`automation/reports/<runId>/initial/html/index.html`), the Allure report if any, the Extent report if chosen (`automation/reports/<runId>/extent-report/index.html`), the evidence PDF if chosen (`automation/reports/<runId>/evidence-report/evidence-report.pdf`; also name any evidence gaps its status detail reports), and the evidence folder `automation/test-results/<runId>/`.
 Add what was reused (`pl cache status <runId>`) and which stages needed no agent (`pl agents show <runId>`).
+Say which test data is still there (`pl run finalize`'s `data` block, or `pl cleanup status <runId>`): how many records were created and removed, and each
+leftover with how it can be deleted; if the run created none, say nothing about it.
 Say whether anything was left running: from `pl run finalize`'s `cleanup` block (`stopped`, `sessions`, and `stillRunning`, which must be empty
 for "nothing left running").
 To judge a change to the pipeline or its settings, run the same suite again and `pl run compare <baselineRunId> <runId>`: it checks that no test went missing or got worse before it believes a speed-up.

@@ -1,0 +1,59 @@
+# Running in Claude Code (CLI) and Claude Cowork
+
+Every pipeline command (`init`, `do-automation`, `playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`) follows this page.
+The pipeline is the same in both; what differs is how you reach the user and where files live.
+
+## Asking the user
+
+A choice goes to the user as a **dialog** (the `AskUserQuestion` tool) when that works, and as a **numbered question in chat**
+when it does not. Either way you stop and wait for the answer. Never pick for the user, never treat a "(Recommended)" option as
+chosen, never carry on past a material choice (language, test-case path, reports, evidence, browsers, auth, cleanup, installs).
+
+1. **Make the tool callable.** If `AskUserQuestion` is not among the tools you can call, it may be deferred: load it first
+   (`ToolSearch` with query `select:AskUserQuestion`), then call it. A tool that is only named but has no schema cannot be called.
+2. **Call it correctly**, or the whole call is rejected and the user sees nothing:
+   - 1–4 questions per call; each has a `header` (max 12 characters), a `question` ending in `?`, `multiSelect` (true/false) and
+     **2–4 options**, each with a short `label` (1–5 words) and a `description`.
+   - Put the recommended option first and end its label with `(Recommended)`. Do **not** add `Other`, `None` or `Skip`
+     options: the dialog already offers free-text input.
+   - One candidate value only (e.g. a base URL found in a test case)? Ask a confirm question: *Yes, use as-is (Recommended)* /
+     *No, I'll give a different value*. A free-text field with no candidate is asked in plain chat.
+3. **Fall back to chat** when the tool is missing, rejected (`InputValidationError`: fix the question once, don't resend it
+   unchanged), errors, or comes back with no usable answer. Write the question once, as a numbered list, then end your turn:
+
+   ```
+   Which language should the Playwright framework and generated tests use? (fixed for the project)
+     1. TypeScript (recommended): typed fixtures and page objects, compile-time checks of generated tests
+     2. JavaScript: plain ES modules, no compiler
+   Reply with 1 or 2, or tell me something else.
+   ```
+
+   Several questions in one message are fine if numbered (`Q1`, `Q2`…). Read the reply, confirm in one line what you understood
+   if it was free text, and go on. Do not re-ask what the user already answered, in either form.
+4. **Only the main session asks.** Subagents cannot show dialogs: they return their questions to you and you ask them.
+
+## Where things are
+
+- **Project root** = the folder the session works in (Claude Code: the launch folder; Cowork: the folder the user selected for the
+  task). `automation/` and `dependencies/` are created there. Run every `node dependencies/engine/cli/pipeline.ts …` from it.
+- **Plugin files** (`scripts/init.mjs`, `skills/…`) are at `${CLAUDE_PLUGIN_ROOT}`. If that variable arrives unexpanded or empty,
+  or the file is not there (Cowork mounts plugins read-only under paths such as `mnt/.local-plugins` or `mnt/.plugins`), find it:
+  `find mnt/.local-plugins mnt/.plugins -path '*automation-builder*' -name init.mjs 2>/dev/null`, and if those folders do not exist
+  `find / -path '*automation-builder*/scripts/init.mjs' -not -path '*/node_modules/*' 2>/dev/null`. Use the match whose
+  `../.claude-plugin/plugin.json` has `"name": "automation-builder"` (newest `version` if there are several), and use its folder
+  wherever these docs say `${CLAUDE_PLUGIN_ROOT}`. Never copy plugin files by hand into the project.
+- **Commands are POSIX shell** in both. Quote paths; on Windows CLI the Bash tool is Git Bash, in Cowork it is a Linux shell.
+
+## Cowork specifics
+
+- **Node 24+ is required** (the engine runs TypeScript directly). If `preflight` reports `node` as `error`, stop and say so; do not
+  install Node or work around it.
+- Installs are still **one approval per dependency**, into `automation/`, exactly as in the CLI. "Automatic" never means
+  "installed without asking". Browsers are downloaded inside the sandbox; tests run headless. Do not use `test:headed`.
+- The app under test must be reachable **from the sandbox**. A `localhost` URL on the user's own machine is not: if
+  `application_exploration` cannot reach the base URL, mark the stage `blocked`, say it may be a sandbox network limit, and ask for
+  a URL the sandbox can reach. Never invent one.
+- **Agents.** Delegate with the Agent tool as the stages say. If a `automation-builder:<agent>` type is not available, do that
+  agent's job yourself in the main session: read `agents/<name>.md` from the plugin root and follow it, with the same bounded
+  brief, the same CLI validators and the same limits (a stage is completed only when the CLI accepts its artifacts).
+- Files you tell the user about (`summary.md`, reports, the evidence PDF) are in the project folder; give the paths relative to it.

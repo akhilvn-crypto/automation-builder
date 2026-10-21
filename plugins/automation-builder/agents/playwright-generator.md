@@ -38,6 +38,11 @@ orchestrator reruns the batches one after another. Without a brief (a single gen
   removes real duplication (page-specific behaviour stays in `pages/`). List every such file in `sharedFilesChanged`.
 - For `auth.approach = storage-state`, write `auth/auth.setup.<ext>` (login once, save the storage state to
   `auth/storage-state.json`; list it in `sharedFilesChanged`). Non-sensitive data files, only if a test needs them, go in `test-data/`.
+- Test data: when a test creates a record, request the `cleanup` fixture (`async ({ page, cleanup })`) and call `cleanup.register({ entity,
+  identifier, undo })` right after the creation, before the assertions (see test-data-management). Give `undo` only when the exploration evidence
+  or the spec shows how the app removes that record (a delete control on a page you already use, a page-object action); never invent a delete
+  step, URL or endpoint. Without a known way, register without `undo`. In `generation-report.md` list, per test, the entities it creates and
+  whether each has an `undo`, the entity's configured `cleanup.entities` path, or no cleanup path.
 - Write your batch manifest (`tests`, `excluded`, `sharedFilesChanged`; schema: `engine/pipeline/generation.ts`) and, once for the run,
   `generation-report.md`. The orchestrator then runs `generate assemble` (merges batches and reused tests into `generation-manifest.json`)
   and `generate validate <runId>`. When you are the only generator you may write `generation-manifest.json` directly and run `generate validate` yourself.

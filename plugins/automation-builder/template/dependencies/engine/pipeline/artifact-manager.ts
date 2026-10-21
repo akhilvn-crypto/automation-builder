@@ -48,6 +48,8 @@ export const ARTIFACTS = {
   briefsDir: 'briefs', // bounded structured inputs handed to stage agents
   authState: 'auth-state.json', // how stored authentication state was handled for this run (no secrets)
   processes: 'processes.json', // processes the run started (test runner, browsers, report tools) and what was stopped afterwards
+  createdData: 'created-data', // one file per test attempt (or explorer record): the test data the run created and what became of it
+  dataCleanup: 'data-cleanup.json', // the sweeps that removed (or could not remove) that data, with what is left
 } as const;
 
 // Execution labels name one Playwright invocation inside a run: "initial", "heal-TC-001-1", "regression".

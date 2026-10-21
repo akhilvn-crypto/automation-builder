@@ -149,6 +149,31 @@ lives until someone closes it). Left alone, these pile up. The pipeline stops th
 - **Honest result.** After stopping, the processes are looked up again. `stillRunning` lists what could not be stopped (for example access
   denied) and `ok` is false; if the process list itself cannot be read the result says so instead of reporting success.
 
+## 8. Test data the run created
+
+Tests change the application under test; leaving that data behind makes the next run depend on it. The pipeline removes what a run created,
+and says plainly what it could not remove.
+
+- **Ledger first.** A test asks for the `cleanup` fixture and calls `cleanup.register({ entity, identifier, undo })` right after creating a
+  record. The record is written to `runs/<runId>/created-data/<label>/` (one small file per test attempt, so parallel workers never contend)
+  before anything is deleted: a test that fails, times out or is killed still leaves its trace. The explorer registers what it creates with
+  `cleanup record`.
+- **In the test.** After the test (also a failed or timed-out one) the fixture runs the `undo` functions, last-created first, each with a 20 s
+  limit, then an optional `verify`. A cleanup problem is attached to the test (`data-cleanup`) and recorded; it never fails the test.
+- **Sweep.** `cleanup data <runId> [--dry-run]` takes every ledger record that is not removed and removes it through what the user declared in
+  `config.cleanup.entities`: an **API** call (`method`, `path` with `{id}`, headers from env var names, optional `verifyPath` that must answer
+  404/410), or the **UI** through the `data-cleaner` agent (`ui.hint`; it reports each result with `cleanup resolve`). Endpoints are never guessed
+  or scraped from traffic. It runs by itself after `execution`, `healing` and `regression_validation`, when a stage fails/blocks/cancels, and in
+  `run finalize`; repeated sweeps are safe (removed records are skipped).
+- **Guard.** Deleting needs `cleanup.mode` `in-test` (tests only) or `in-test+sweep`, an `app.environment` listed in `cleanup.allowedEnvironments`,
+  and an environment that is not production (`prod`, `production`, `prd`, `live`, refused even if listed). At most `cleanup.maxDeletesPerRun`
+  (default 50) API deletions per sweep; the rest are listed. An identifier must be plain characters (`A-Za-z0-9._:@-`) and the resulting URL must
+  stay on the app's origin.
+- **Honest result.** Statuses: `pending`, `deleted`, `verified_gone`, `failed`, `no_cleanup_path`, `needs_ui`, `blocked`. Whatever is not
+  `deleted`/`verified_gone` is a *leftover*: it appears in the stage replies' `data` block, in `run finalize`, and in `summary.md` under "Test
+  data" with the reason and how it can be deleted. Leftovers never fail or block a run. `data-cleanup.json` keeps the last 10 sweeps.
+- **Static review.** A test that calls `uniqueSuffix()` without `cleanup.register(...)` gets the major finding `register-created-data`.
+
 ## Known limits
 
 - Cleanup relies on the OS process list (PowerShell `Get-CimInstance` on Windows, `ps` elsewhere); on a machine where that cannot run, the
@@ -162,6 +187,10 @@ lives until someone closes it). Left alone, these pile up. The pipeline stops th
   (matched by the imported names). Static relative imports and re-exports are followed; dynamic `import()` and package imports are not.
 - The generator and reviewer rules live in the plugin, so their "version" is the plugin version recorded in `state/scaffold.json`: any plugin update
   regenerates and re-reviews every test once.
+- Test data cleanup removes only what the run registered. A test written without `cleanup.register` leaves its data unlisted (the review flags the
+  common case, `uniqueSuffix()` without a registration, but cannot see every way to create a record). The API sweep sends the declared headers only; an
+  app whose delete needs the browser session cookie needs a `ui` path. UI removal is done by an agent and is checked by a fresh snapshot, not proven.
+  The sweep's HTTP check was exercised against a local server with real Playwright tests (pass, failure, timeout); no real application was used.
 - Locks are advisory and assume short critical sections; a lock older than 30 s is treated as abandoned.
 - The live probe, the evidence PDF and final-screenshot masking were exercised against a local demo app with the real Playwright; behaviour against
   other applications (SSO, SPA logins that answer 200) may differ.

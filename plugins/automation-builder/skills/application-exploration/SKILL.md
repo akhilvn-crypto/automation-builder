@@ -41,6 +41,10 @@ Check the installed version's syntax first: `playwright-cli --help` (or the same
    (adjust the path to the CLI to where you run it from). Never print or echo a value to check it. Do not `source` the file.
 4. Save evidence that matters into `dependencies/runs/<runId>/exploration/` (`<page>.aria.yml`, `<page>.png`).
    Don't save pages showing secrets or personal data.
+   If a step **creates a record** (a form submit, "Add", "Create"), register it as you go so it can be removed with the run's other test data:
+   `node dependencies/engine/cli/pipeline.ts cleanup record <runId> --entity <kind> --identifier <the unique name or id> --hint "<where it is deleted in the UI>"`.
+   When you see a delete or remove control for it, put that in `--hint` (and in `uncertainties` if you did not use it). Use only the controls you saw;
+   never guess a URL or API endpoint, and never delete anything to "see what happens" (see *Not permitted* in the explorer's brief).
 5. Close the session (`close` / `session-stop` per `--help`). Always close it, even after an error. Then run
    `node dependencies/engine/cli/pipeline.ts cleanup run <runId>`: it closes any session of this run that is still open and stops what is
    left of its browser (`ok: true` and an empty `stillRunning` means nothing of the run is running). The pipeline also runs it by itself when

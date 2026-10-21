@@ -63,6 +63,13 @@
 //                                                Runs by itself when exploration ends, when a stage fails/blocks/cancels, on resume
 //                                                and at finalization. Nothing else on the machine is touched.
 //   cleanup all [--dry-run]                      the same for every run in dependencies/runs/ (leftovers of crashed or abandoned runs)
+//   cleanup data <runId> [--dry-run]             remove the test data the run created and the tests did not already remove (only what is listed in
+//                                                created-data/, only with config.cleanup.mode "in-test+sweep", only in an allowed non-production
+//                                                environment). Runs by itself after execution/healing/regression and at finalization.
+//                                                What cannot be removed is listed with how it can be deleted by hand; it never fails the run.
+//   cleanup status <runId>                       counts and the list of data still there
+//   cleanup record <runId> --entity E --identifier I [--hint H]   register a record created outside a test (the explorer does this)
+//   cleanup resolve <runId> <recordId> --status deleted|verified_gone|failed [--note N]   the data-cleaner agent reports a UI deletion
 //   exec plan <runId>                            workers/isolation the next execution would use, and the login-state decision
 //   exec run <runId> [--label L] [--test-file f]... [--test-id id]... [--project p]... [--retries n] [--headed]
 //   triage run <runId> | classify <runId> <key> --category C --confidence C --rationale R
@@ -81,6 +88,7 @@ import { REPORT_MODES, type ReportMode } from '../config/schema.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
 import { sweepAfterStage, sweepRun, type CleanupBrief } from '../pipeline/process-cleanup.ts';
+import { dataSweepTrigger, sweepDataSafely } from '../pipeline/data-cleanup.ts';
 import { presetFor, presetForReporters, reportPlan } from '../pipeline/reporting-mode.ts';
 import {
   HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt, type RunManifest,
@@ -90,7 +98,7 @@ import { StageContractError } from '../pipeline/stage-contracts.ts';
 import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command, type StageName } from '../pipeline/state-manager.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { toRootRelative } from '../utils/paths.ts';
-import { UsageError, stageCommand } from './stage-commands.ts';
+import { UsageError, savedConfig, stageCommand } from './stage-commands.ts';
 
 // dependencies/engine/cli -> dependencies -> <project>/automation
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'automation');
@@ -185,6 +193,9 @@ export function main(argv: string[]): number {
       'evidence-pdf': { type: 'boolean' },
       reporters: { type: 'string' },
       'dry-run': { type: 'boolean' },
+      entity: { type: 'string' },
+      identifier: { type: 'string' },
+      hint: { type: 'string' },
     },
   });
   if (values.pretty) pretty = true;
@@ -289,7 +300,10 @@ export function main(argv: string[]): number {
           const updated = updateStage(root, need(runId, 'runId'), stage, status, { message: values.message, artifacts });
           // The state change is already saved; a cleanup that finds nothing prints nothing.
           const cleanup = sweepAfterStage(root, updated.runId, stage, status);
-          return out({ ...brief(updated, stage), ...(cleanup ? { cleanup } : {}) });
+          // Stages that ran tests leave the data they created: remove it now, so a later failure cannot strand it.
+          const dataTrigger = dataSweepTrigger(stage, status);
+          const data = dataTrigger ? sweepDataSafely(root, updated.runId, savedConfig(root), { trigger: dataTrigger }) : null;
+          return out({ ...brief(updated, stage), ...(cleanup ? { cleanup } : {}), ...(data ? { data } : {}) });
         }
         case 'set-config': {
           const state = loadConfig(root);

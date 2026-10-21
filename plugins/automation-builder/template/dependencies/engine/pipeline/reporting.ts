@@ -13,6 +13,7 @@ import type { AutomationConfig, Reporter, ReportMode } from '../config/schema.ts
 import { readJson, sha256File, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { ARTIFACTS, EVIDENCE_DIR, REPORTS_DIR, reportsDirFor, runDir } from './artifact-manager.ts';
 import { secretValuesFor } from './env-file.ts';
+import { readCreatedData, summarizeData, type Leftover } from './created-data.ts';
 import { buildEvidenceReport, type PdfRenderer } from './evidence-report.ts';
 import { buildExtentReport } from './extent-report.ts';
 import type { ExecutionResults, Outcome } from './execution.ts';
@@ -24,6 +25,7 @@ import { runSupervised } from './supervised-run.ts';
 import type { TestSpecDocument } from './test-spec.ts';
 
 export const SUMMARY_SCHEMA_VERSION = 1;
+const MAX_LISTED_LEFTOVERS = 50;
 export type FinalOutcome = Outcome | 'healed' | 'blocked';
 
 export interface FinalTest {
@@ -63,6 +65,9 @@ export interface RunSummary {
   mode: ReportMode | null; // reporting.mode, null when none is configured
   // Report generation, kept apart from test outcomes: ok is false when a selected reporter did not produce its files.
   reportGeneration: { ok: boolean; durationMs: number; failed: { name: Reporter; status: ReporterStatus['status']; detail: string | null }[]; bytes: number; files: number };
+  // Test data the run created (absent when it created none): what was removed and what is still there, with how to delete it.
+  // Informational: leftovers never change a test outcome or fail the run.
+  testData?: { created: number; removed: number; leftovers: Leftover[]; truncated: number };
   // The normalized results the reports were built from.
   generatedFrom: { executionResultsSha256: string | null; regressionResultsSha256: string | null };
   paths: Record<string, string>; // relative to automation/ ("../dependencies/runs/..." for run state)
@@ -298,6 +303,11 @@ export function buildSummary(i: BuildSummaryInput): RunSummary {
       ...Object.fromEntries(Object.entries(i.manifest.artifacts).map(([k, v]) => [k, rel(path.join(i.runDir, v))])),
     },
   };
+  const created = readCreatedData(i.runDir);
+  if (created.length > 0) {
+    const data = summarizeData(created, i.config);
+    summary.testData = { created: data.total, removed: data.removed, leftovers: data.leftovers.slice(0, MAX_LISTED_LEFTOVERS), truncated: Math.max(0, data.leftovers.length - MAX_LISTED_LEFTOVERS) };
+  }
   summary.reportGeneration = {
     ok: reporters.every((r) => r.status === 'generated'),
     durationMs: Date.now() - started,
@@ -350,6 +360,16 @@ export function renderSummaryMarkdown(s: RunSummary): string {
     lines.push('');
   }
   if (s.unresolved.length) lines.push('## Unresolved', '', ...s.unresolved.map((u) => `- ${u.key}: ${u.reason}`), '');
+  if (s.testData) {
+    const d = s.testData;
+    lines.push('## Test data', '', `Created ${d.created} record(s) · removed ${d.removed} · still there ${d.leftovers.length + d.truncated}`, '');
+    if (d.leftovers.length > 0) {
+      lines.push('These records were created by the run and could not be removed automatically. They can be deleted:', '');
+      for (const l of d.leftovers) lines.push(`- ${l.entity} "${l.identifier}"${l.testId ? ` (${l.testId})` : ''} — ${l.reason}; ${l.canBeDeletedBy ? `delete: ${l.canBeDeletedBy}` : 'no removal path is known, delete it by hand'}`);
+      if (d.truncated > 0) lines.push(`- … and ${d.truncated} more (see created-data/ in the run folder)`);
+      lines.push('');
+    }
+  }
   const g = s.reportGeneration;
   lines.push(
     '## Reports', '',
