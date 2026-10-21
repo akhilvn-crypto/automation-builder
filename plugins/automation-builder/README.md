@@ -99,8 +99,10 @@ Mechanics, trade-offs and limits: `dependencies/docs/pipeline-efficiency.md` (sc
 - **Parallelism:** a conservative default of 2 workers, capped by `execution.isolation`; generation batches (one per module file) never share a
   file; all shared state updates are locked. `run compare <baseline> <candidate>` checks that no test went missing or got worse before it
   believes a speed-up.
-- **Report modes:** `standard` (JSON + HTML), `full` (+ Allure, failure videos), `audit` (+ opt-in step screenshots and the evidence PDF).
-  `config mode-preset <mode>` shows what a mode sets; missing software is proposed, never installed.
+- **Reports are your selection:** Playwright default report, Allure report, Extent report (pipeline-built HTML dashboard, no package) and Evidence PDF; JSON is always
+  kept. Only the selected ones are built. `config reporter-preset --reporters html,extent` shows what a selection saves; missing software is proposed, never installed.
+- **Report modes** follow from the selection and only bound the evidence volume: `standard` (failure-focused), `full` (Allure, failure videos), `audit` (the evidence PDF with one
+  embedded video per test and step evidence). `config mode-preset <mode>` shows what a mode sets.
 
 ## Setup and installation approvals
 

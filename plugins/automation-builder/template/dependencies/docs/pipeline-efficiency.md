@@ -118,11 +118,12 @@ secrets and credential-shaped text.
 
 | Mode | Requires / forbids | Intended for |
 |---|---|---|
-| `standard` | html + json; no allure/evidence-pdf; no record-everything video/screenshot/trace | development runs |
-| `full` | html + json + allure; any evidence settings | team testing and CI |
-| `audit` | full; plus opt-in `reporting.stepScreenshots` and the `evidence-pdf` reporter (which needs step evidence and `evidence.video: "on"`: one embedded video per test) | sign-off |
+| `standard` | json; no allure/evidence-pdf; no record-everything video/screenshot/trace | development runs |
+| `full` | json; allure allowed; any evidence settings | team testing and CI |
+| `audit` | full; plus opt-in step evidence (`reporting.stepScreenshots`: step log + one final-state screenshot) and the `evidence-pdf` reporter (which needs step evidence and `evidence.video: "on"`: one embedded video per test) | sign-off |
 
-`config mode-preset <mode> [--step-screenshots] [--evidence-pdf]` prints a valid proposal; `config report-plan` lists the software the chosen
+The reports themselves (`html`, `allure`, `extent`, `evidence-pdf`) are the user's selection; the mode follows from it (`config reporter-preset --reporters ...` prints the matching
+proposal, `extent` needs no software and no extra evidence). `config mode-preset <mode> [--step-screenshots] [--evidence-pdf]` prints a valid proposal; `config report-plan` lists the software the chosen
 reporters need and what is missing. Nothing is installed without a separate approval. `report build` keeps `reportGeneration` (did each selected
 reporter produce its files, how long, how many files and bytes) apart from `counts`, verifies the files exist before saying a report was
 generated, builds only selected reporters, and records which result files the reports came from. The final-state screenshot masks password fields and
@@ -162,5 +163,5 @@ lives until someone closes it). Left alone, these pile up. The pipeline stops th
 - The generator and reviewer rules live in the plugin, so their "version" is the plugin version recorded in `state/scaffold.json`: any plugin update
   regenerates and re-reviews every test once.
 - Locks are advisory and assume short critical sections; a lock older than 30 s is treated as abandoned.
-- The live probe, the evidence PDF and step-screenshot masking were exercised against a local demo app with the real Playwright; behaviour against
+- The live probe, the evidence PDF and final-screenshot masking were exercised against a local demo app with the real Playwright; behaviour against
   other applications (SSO, SPA logins that answer 200) may differ.

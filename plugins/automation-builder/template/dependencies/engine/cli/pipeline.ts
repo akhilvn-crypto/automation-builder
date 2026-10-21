@@ -8,6 +8,7 @@
 //   ("tests/login.spec.ts"); test-case input paths are relative to dependencies/ ("input/test-cases").
 //   preflight
 //   config check | show | save --file <json> | render [--force]
+//   config reporter-preset --reporters html,allure,extent,evidence-pdf   what to save for the chosen reports (nothing is saved)
 //   config mode-preset <standard|full|audit> [--step-screenshots] [--evidence-pdf]   what a report mode would set (nothing is saved)
 //   config report-plan                           configured reporters/mode and the software they need (nothing is installed)
 //                                                save writes the choices and refreshes automation/playwright.config.* from them;
@@ -80,7 +81,7 @@ import { REPORT_MODES, type ReportMode } from '../config/schema.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
 import { sweepAfterStage, sweepRun, type CleanupBrief } from '../pipeline/process-cleanup.ts';
-import { presetFor, reportPlan } from '../pipeline/reporting-mode.ts';
+import { presetFor, presetForReporters, reportPlan } from '../pipeline/reporting-mode.ts';
 import {
   HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt, type RunManifest,
   recordSetupChange, resumeLatest, setRunConfig, setTestCounts, updateStage, type TestCounts,
@@ -181,6 +182,7 @@ export function main(argv: string[]): number {
       'output-tokens': { type: 'string' },
       'step-screenshots': { type: 'boolean' },
       'evidence-pdf': { type: 'boolean' },
+      reporters: { type: 'string' },
       'dry-run': { type: 'boolean' },
     },
   });
@@ -220,6 +222,16 @@ export function main(argv: string[]): number {
         if (!REPORT_MODES.includes(mode)) throw new UsageError(`mode must be one of: ${REPORT_MODES.join(', ')}`);
         return out({ ok: true, ...presetFor(mode, { stepScreenshots: values['step-screenshots'], evidencePdf: values['evidence-pdf'] }) });
       }
+      // What to save for the reports the user picked (html, allure, extent, evidence-pdf; json is always added). Nothing is saved or installed.
+      if (action === 'reporter-preset') {
+        // "none" = no report beyond the JSON results the pipeline itself reads.
+        const selected = need(values.reporters, '--reporters').split(',').map((s) => s.trim()).filter((s) => s && s !== 'none');
+        try {
+          return out({ ok: true, selected, ...presetForReporters(selected) });
+        } catch (err) {
+          throw new UsageError(err instanceof Error ? err.message : String(err));
+        }
+      }
       // The configured reporters and mode, with the status of the software they need. Missing software is never installed here.
       if (action === 'report-plan') {
         const state = loadConfig(root);
@@ -233,7 +245,7 @@ export function main(argv: string[]): number {
         const missing = requires.filter((r) => r.status !== 'ok');
         return out({ ok: missing.length === 0, ...plan, requires, missing: missing.map((m) => m.id), approvalNeeded: missing.length > 0 ? 'ask the user before installing each missing item, one at a time' : null }, missing.length === 0 ? 0 : 2);
       }
-      throw new UsageError('config <check|show|save|render [--force]|mode-preset|report-plan>');
+      throw new UsageError('config <check|show|save|render [--force]|reporter-preset|mode-preset|report-plan>');
     }
 
     case 'run': {

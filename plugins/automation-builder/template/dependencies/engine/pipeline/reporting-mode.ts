@@ -1,19 +1,20 @@
-// Report modes: how much reporting a run produces. The mode is a persisted setup choice (reporting.mode); it only ever
-// constrains or suggests what the user selected, so reporters are never generated or installed behind their back.
+// Reports are what the user selects in setup: Playwright's default report, Allure, the Extent report, the evidence PDF (JSON is
+// always kept for the pipeline). Only the selected ones are produced. The report mode (reporting.mode) only bounds the evidence
+// volume around that selection, so reporters are never generated or installed behind the user's back.
 //
-//   standard  JSON + Playwright HTML; failure-focused screenshots/traces       default development runs
-//   full      standard + Allure + video retained for failures                  team testing and CI
-//   audit     full + opt-in step evidence and the optional evidence PDF        formal sign-off
+//   standard  failure-focused screenshots/traces; no Allure or evidence PDF         default development runs
+//   full      any evidence settings; video retained for failures; Allure allowed     team testing and CI
+//   audit     full + opt-in step evidence and the evidence PDF                       formal sign-off
 //
-// Validation of a configuration against its mode lives in config/schema.ts; this file turns a mode into a plan the setup
-// flow and `report build` can show, and into a preset the user can approve and save.
+// Validation of a configuration against its mode lives in config/schema.ts; this file turns a mode (or a selection of reports)
+// into a plan the setup flow and `report build` can show, and into a preset the user can approve and save.
 
 import type { AutomationConfig, Reporter, ReportMode } from '../config/schema.ts';
 
 export interface ModeProfile {
   mode: ReportMode;
   intendedFor: string;
-  reporters: readonly Reporter[]; // what the mode produces by default
+  reporters: readonly Reporter[]; // the reports `mode-preset` proposes for the mode (the selection in config.reporters is what counts)
   evidence: AutomationConfig['evidence']; // suggested Playwright evidence settings
   needs: readonly string[]; // optional software the mode relies on (each needs its own approval to install)
   volume: string; // what to expect on disk
@@ -66,6 +67,36 @@ export function presetFor(mode: ReportMode, opts: { stepScreenshots?: boolean; e
     optIn: { stepScreenshots, evidencePdf },
     notes,
   };
+}
+
+// The reports a user can pick in setup, in the order they are listed. `json` is not among them: it is always added (pipeline state).
+export const SELECTABLE_REPORTERS = ['html', 'allure', 'extent', 'evidence-pdf'] as const;
+export type SelectableReporter = (typeof SELECTABLE_REPORTERS)[number];
+
+export const REPORTER_LABELS: Record<SelectableReporter, string> = {
+  html: 'Playwright default report',
+  allure: 'Allure report',
+  extent: 'Extent report',
+  'evidence-pdf': 'Evidence PDF',
+};
+
+// What to save for a selection of reports: exactly those reports plus `json`, and whatever each one needs to have data to show.
+// The mode follows from the selection instead of being asked: the evidence PDF needs audit (step evidence + a video of every
+// test), Allure needs full, anything else stays failure-focused standard. Nothing is installed here.
+export function presetForReporters(selected: readonly string[]): ModePreset {
+  const unknown = selected.filter((r) => !(SELECTABLE_REPORTERS as readonly string[]).includes(r));
+  if (unknown.length > 0) throw new Error(`unknown report(s): ${unknown.join(', ')}; choose from ${SELECTABLE_REPORTERS.join(', ')}`);
+  const has = (r: SelectableReporter) => selected.includes(r);
+  const mode: ReportMode = has('evidence-pdf') ? 'audit' : has('allure') ? 'full' : 'standard';
+  const base = presetFor(mode, { evidencePdf: has('evidence-pdf') });
+  const needs: string[] = [];
+  if (has('allure')) needs.push('allure-playwright', 'allure CLI');
+  if (has('evidence-pdf')) needs.push('chromium (renders the PDF)');
+  const notes = [`${mode}: ${MODE_PROFILES[mode].volume}`];
+  if (has('extent')) notes.push('the Extent report is built from the run results after the tests (no package, one HTML file); it shows steps when the step log exists (evidence PDF selected) and Playwright\'s own screenshots otherwise');
+  if (has('evidence-pdf')) notes.push(...base.notes.slice(1));
+  if (selected.length === 0) notes.push('no report selected: only the JSON results the pipeline reads are written');
+  return { ...base, reporters: ['json', ...SELECTABLE_REPORTERS.filter(has)], needs, notes };
 }
 
 export interface ReportPlan {

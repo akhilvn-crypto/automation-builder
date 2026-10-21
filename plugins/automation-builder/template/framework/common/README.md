@@ -17,7 +17,7 @@ tests/                  every test (*.spec.{{EXT}}). Files the pipeline wrote st
 helpers/                reusable utilities shared by tests and pages (test-data.{{EXT}}: requireEnv, requireWorkerEnv, uniqueSuffix, redact)
 fixtures/               the shared `test` / `expect` (test.{{EXT}}) — import these, never @playwright/test directly
 config/                 automation.config.json: approved, non-secret choices (base URL, browsers, evidence, reporters)
-reports/<run-id>/       reporter output per pipeline run (html, json, junit, allure, and evidence-report/ with the evidence PDF); reports/adhoc/ for plain `npm test` (git-ignored)
+reports/<run-id>/       reporter output per pipeline run (html, json, allure, and extent-report/ with the Extent report, evidence-report/ with the evidence PDF); reports/adhoc/ for plain `npm test` (git-ignored)
 test-results/<run-id>/  screenshots, video, traces per pipeline run; test-results/adhoc/ for plain `npm test` (git-ignored)
 playwright.config.{{EXT}}   standard Playwright config; the pipeline fills it from config/automation.config.json, edit it freely (PW_BASE_URL, PW_RETRIES, PW_WORKERS override at run time)
 package.json  .gitignore  .env.example  README.md

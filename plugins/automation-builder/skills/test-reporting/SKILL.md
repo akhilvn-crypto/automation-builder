@@ -1,34 +1,61 @@
 ---
 name: test-reporting
-description: Reporter configuration (HTML, JSON, JUnit, Allure), report generation and verification, final outcome rules and the run summary. Use for the report_generation and finalization stages or when changing reporters.
+description: Report selection (Playwright default report, Allure, Extent, Evidence PDF; JSON always), report generation and verification, final outcome rules and the run summary. Use for the report_generation and finalization stages or when changing reporters.
 user-invocable: false
 ---
 
 # Test reporting
 
+## The four reports the user can choose
+Setup asks which reports are wanted; only the selected ones are produced (and only their software is proposed):
+
+| Choice | `reporters` value | Made by | Needs |
+|---|---|---|---|
+| Playwright default report | `html` | Playwright, while the tests run | nothing |
+| Allure report | `allure` | `allure-playwright` while the tests run, `allure generate` in `report build` | `allure-playwright` + the Allure CLI (each approved separately) |
+| Extent report | `extent` | `report build` (pipeline-built HTML) | nothing |
+| Evidence PDF | `evidence-pdf` | `report build` (HTML printed to PDF, videos embedded) | Chromium, `evidence.video: "on"`, audit mode with step evidence |
+
+`json` is always added (the pipeline reads raw JSON, not HTML) and never offered. `junit` is still a valid value in older configs but is
+no longer offered. `config reporter-preset --reporters html,extent` turns a selection into the reporters/evidence/mode to save: the
+mode follows from the selection (evidence PDF → `audit`, Allure → `full`, otherwise `standard`), so it is not asked separately.
+
 ## Where reporters are configured
 Only in `automation/config/automation.config.json` → `reporters` (changed through the pipeline-setup skill). The Playwright
 reporter list is written into `automation/playwright.config.*` (`config save`, or `config render` after changing it) unless that
 file was edited by hand. Reporter output goes to the framework's
-`automation/reports/<runId>/<label>/` (never into `dependencies/`). `json` is mandatory: the pipeline reads raw JSON, not HTML.
+`automation/reports/<runId>/<label>/` (never into `dependencies/`); the Extent report and the evidence PDF go to
+`automation/reports/<runId>/extent-report/` and `.../evidence-report/`. `json` is mandatory.
 Allure is written into the config only when `allure-playwright` is installed (approved); otherwise it is listed as
 `missing_dependency`. After installing it run `config render` (`exec run` also does this before each run).
-Extent Reports is not wired in: there's no verified maintained Playwright integration. Offer it only after checking
-for one, then add it the same way with separate approval.
+
+## The Extent report (`extent`)
+One self-contained HTML file, `automation/reports/<runId>/extent-report/index.html`, in the style of an Extent Reports dashboard:
+- **Dashboard:** counts, pass-rate ring chart, time in tests, per-module and failure-category tables, and a "needs attention" list that links to the tests.
+- **Tests:** every test (also blocked ones, with the reason), a status filter and a search box, expand/collapse all. Per test: module,
+  priority, tags, preconditions, the steps and expected results of the test case, and per attempt (initial, retries, regression)
+  the status, time, errors and a screenshot. The *executed* steps appear only when the shared fixture recorded a step log (that
+  happens when the evidence PDF is also selected); otherwise the page says the screenshot is the one Playwright recorded.
+- **Environment:** run, environment, base URL, browsers. Light/dark switch; works on a phone; no network requests.
+It is built by `report build` from the normalized execution results (same data as the evidence PDF), needs no package, and is
+**not** the ExtentReports library (Java/.NET; no maintained Playwright-for-Node integration was found), so say that when handing it
+over. Screenshots are embedded (larger than 5 MB are skipped with a note); videos are linked by relative path, never embedded. Text is
+HTML-escaped and secrets are masked. Status in `reporters`: `generated` (detail: tests, steps, screenshots, size) or `failed`.
 
 ## Report modes
-`reporting.mode` (saved by pipeline-setup) bounds how much is produced; it only constrains what the user selected.
+`reporting.mode` bounds how much is produced; it only constrains what the user selected. It is derived from the selection (see above) and does not require any particular report.
 
 | Mode | Produces | For |
 |---|---|---|
-| `standard` | JSON + Playwright HTML; failure-focused screenshots/traces (no record-everything evidence) | default development runs |
-| `full` | standard + Allure (approved) + video retained for failures | team testing and CI |
-| `audit` | full + opt-in step screenshots (`reporting.stepScreenshots`) and the optional `evidence-pdf` reporter | formal sign-off |
+| `standard` | failure-focused screenshots/traces (no record-everything evidence); no Allure or evidence PDF | default development runs |
+| `full` | any evidence settings; Allure allowed; video retained for failures | team testing and CI |
+| `audit` | full + opt-in step evidence (step log + one final-state screenshot per test; `reporting.stepScreenshots`, the key's original name) and the optional `evidence-pdf` reporter (one embedded video per test) | formal sign-off |
 
-`node dependencies/engine/cli/pipeline.ts config mode-preset <mode> [--step-screenshots] [--evidence-pdf]` shows what a mode would set;
+`node dependencies/engine/cli/pipeline.ts config reporter-preset --reporters <list>` shows what to save for a selection of reports, and
+`config mode-preset <mode> [--step-screenshots] [--evidence-pdf]` what a mode would set (nothing is saved by either);
 `config report-plan` shows the configured reporters and the software they need (Allure adapter + CLI, Chromium for the PDF).
-Missing software is proposed, never installed: ask for each item separately (pipeline-setup §3). Step screenshots and the PDF stay
-opt-in because they slow runs and add many files.
+Missing software is proposed, never installed: ask for each item separately (pipeline-setup §3). Step evidence and the PDF stay
+opt-in because they record a video of every test and add files to each one.
 
 ## The custom evidence report (`evidence-pdf`)
 Chosen like any reporter. It is the one to offer when the user needs proof of what ran: **a PDF with, per test and per attempt
@@ -68,6 +95,7 @@ How it works:
 - `unresolved` = blocked + failures that aren't confirmed application defects.
 - Verifies each selected reporter's output for the `initial` execution: `results.json` parses, `html/index.html`
   exists, `junit.xml` is JUnit XML; for Allure it runs `allure generate` (project-local CLI, else global) and checks `index.html`;
+  for `extent` it writes the HTML page from the `initial` (and `regression`) results and checks the file is not empty;
   for `evidence-pdf` it builds the PDF from the `initial` (and `regression`) results and checks it is a PDF.
 - Writes `summary.json` and `summary.md` into the run directory (`dependencies/runs/<runId>/`) **even when a reporter failed**, so the failure is visible.
 - Exit 2 if any reporter failed or the run had a runner error. Then set `report_generation` to `failed` with the
@@ -81,7 +109,7 @@ How it works:
 `node dependencies/engine/cli/pipeline.ts run finalize <runId>` copies the counts onto the manifest and applies `retention.keepRuns`
 (only when configured). Then complete `finalization`. The final message shows: counts table, failure categories,
 healing attempts and results, unresolved tests with reasons, report paths (`automation/reports/<runId>/initial/html/index.html`,
-the Allure report, the evidence PDF `automation/reports/<runId>/evidence-report/evidence-report.pdf`,
+the Allure report, the Extent report `automation/reports/<runId>/extent-report/index.html`, the evidence PDF `automation/reports/<runId>/evidence-report/evidence-report.pdf`,
 `dependencies/runs/<runId>/summary.md`) and the evidence directory `automation/test-results/<runId>/`.
 
 ## Metrics

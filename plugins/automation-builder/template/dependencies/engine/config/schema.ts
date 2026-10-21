@@ -12,7 +12,9 @@ export const SCREENSHOT_MODES = ['off', 'on', 'only-on-failure'] as const;
 export const TRACE_MODES = ['off', 'on', 'on-first-retry', 'retain-on-failure'] as const;
 // 'evidence-pdf' is the pipeline's own report: a PDF with, per test, the executed steps, one embedded execution video and one
 // final-state screenshot. It is built after the run by report_generation, not by a Playwright reporter.
-export const REPORTERS = ['html', 'json', 'allure', 'junit', 'evidence-pdf'] as const;
+// 'extent' is the pipeline's own Extent-style HTML report (dashboard, filterable test list, steps, errors, screenshots), also built after
+// the run from the normalized results: no package is needed. 'junit' is still valid in older configs but is not offered in setup.
+export const REPORTERS = ['html', 'json', 'allure', 'junit', 'extent', 'evidence-pdf'] as const;
 // How much reporting a run produces; see MODE_PROFILES in reporting-mode.ts.
 export const REPORT_MODES = ['standard', 'full', 'audit'] as const;
 // What parallel workers may assume about shared application state (see execution-plan.ts).
@@ -325,17 +327,14 @@ function checkReporting(c: Checker, raw: Obj, reporting: Obj): void {
   const mode = reporting.mode;
   const reporters = Array.isArray(raw.reporters) ? raw.reporters : [];
   const has = (r: string) => reporters.includes(r);
+  // Which reports are produced is the user's selection (reporters); the mode only bounds the evidence volume and the heavier reporters.
   if (mode === 'standard') {
-    for (const r of ['allure', 'evidence-pdf']) if (has(r)) c.invalid('reporting.mode', `mode "standard" produces JSON + Playwright HTML only; "${r}" needs mode "full" or "audit"`);
-    for (const r of ['html', 'json']) if (!has(r)) c.invalid('reporters', `mode "standard" needs the ${r} reporter`);
+    for (const r of ['allure', 'evidence-pdf']) if (has(r)) c.invalid('reporting.mode', `mode "standard" is failure-focused; "${r}" needs mode "full" or "audit"`);
     // Standard keeps artifact volume down: nothing is recorded for tests that pass.
     const ev = isObj(raw.evidence) ? raw.evidence : {};
     if (ev.video === 'on' || ev.screenshot === 'on' || ev.trace === 'on') {
       c.invalid('evidence', 'mode "standard" is failure-focused: use off/retain-on-failure/only-on-failure, or choose mode "full" or "audit" to record every test');
     }
-  }
-  if (mode === 'full' || mode === 'audit') {
-    for (const r of ['html', 'json', 'allure']) if (!has(r)) c.invalid('reporters', `mode "${mode}" needs the ${r} reporter`);
   }
   if (reporting.stepScreenshots === true && mode !== 'audit') c.invalid('reporting.stepScreenshots', 'step screenshots are an audit-mode option');
   if (has('evidence-pdf')) {

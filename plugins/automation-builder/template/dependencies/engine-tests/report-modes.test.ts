@@ -12,7 +12,7 @@ import { saveConfig } from '../engine/config/load-config.ts';
 import { REPORT_MODES, validateConfig, type AutomationConfig } from '../engine/config/schema.ts';
 import { runPreflight } from '../engine/pipeline/preflight.ts';
 import { buildSummary, type AllureRunner } from '../engine/pipeline/reporting.ts';
-import { MODE_PROFILES, presetFor, reportPlan } from '../engine/pipeline/reporting-mode.ts';
+import { MODE_PROFILES, presetFor, presetForReporters, reportPlan } from '../engine/pipeline/reporting-mode.ts';
 import type { RunManifest } from '../engine/pipeline/run-manager.ts';
 import type { ExecutionResults } from '../engine/pipeline/execution.ts';
 import { sha256File } from '../engine/utils/fs.ts';
@@ -38,11 +38,12 @@ test('a configuration without a mode keeps working exactly as chosen', () => {
   assert.equal(valid({ ...validConfig(), reporters: ['json', 'junit', 'allure'] }), true);
 });
 
-test('standard produces JSON + HTML only, and stays failure-focused', () => {
+test('standard stays failure-focused: no Allure or evidence PDF, and the reports are the user\'s selection', () => {
   assert.equal(valid(withMode('standard')), true);
   assert.equal(valid(withMode('standard', { reporters: ['json', 'html', 'junit'] })), true, 'extra reporters the user chose are fine');
-  assert.match(issues(withMode('standard', { reporters: ['json', 'html', 'allure'] })).join(), /mode "standard" produces JSON \+ Playwright HTML only; "allure"/);
-  assert.match(issues(withMode('standard', { reporters: ['json'] })).join(), /needs the html reporter/);
+  assert.equal(valid(withMode('standard', { reporters: ['json', 'extent'] })), true, 'the Extent report alone, without the Playwright report');
+  assert.equal(valid(withMode('standard', { reporters: ['json'] })), true, 'no human-readable report is a valid choice');
+  assert.match(issues(withMode('standard', { reporters: ['json', 'html', 'allure'] })).join(), /mode "standard" is failure-focused; "allure"/);
   for (const evidence of [{ video: 'on' }, { screenshot: 'on' }, { trace: 'on' }]) {
     const c = withMode('standard', { evidence: { ...validConfig().evidence, ...evidence } as AutomationConfig['evidence'] });
     assert.match(issues(c).join(), /failure-focused/, JSON.stringify(evidence));
@@ -50,9 +51,10 @@ test('standard produces JSON + HTML only, and stays failure-focused', () => {
   assert.equal(valid(withMode('standard', { evidence: { video: 'off', screenshot: 'off', trace: 'on-first-retry' } })), true);
 });
 
-test('full and audit need Allure; step screenshots and the PDF are opt-in even in audit', () => {
+test('full and audit allow Allure but do not force it; step screenshots and the PDF are opt-in even in audit', () => {
   const allure = { reporters: ['json', 'html', 'allure'] } as Partial<AutomationConfig>;
-  assert.match(issues(withMode('full')).join(), /mode "full" needs the allure reporter/);
+  assert.equal(valid(withMode('full')), true, 'full without Allure is just a mode with failure videos');
+  assert.equal(valid(withMode('full', { reporters: ['json', 'extent'] })), true);
   assert.equal(valid(withMode('full', allure)), true);
   assert.equal(valid(withMode('full', { ...allure, evidence: { video: 'on', screenshot: 'on', trace: 'on' } })), true, 'full may record everything');
   assert.equal(valid(withMode('audit', allure)), true, 'audit without opt-ins is just a heavier full');
@@ -89,6 +91,33 @@ test('every preset is itself a valid configuration for its mode', () => {
   assert.ok(MODE_PROFILES.standard.needs.length === 0 && MODE_PROFILES.full.needs.length > 0);
 });
 
+const everyChoice = (): string[][] => {
+  const picks = ['html', 'allure', 'extent', 'evidence-pdf'];
+  return Array.from({ length: 1 << picks.length }, (_, mask) => picks.filter((_p, n) => mask & (1 << n)));
+};
+
+test('each selection of the four reports gives exactly those reports, a mode that fits them, and a valid configuration', () => {
+  for (const selected of everyChoice()) {
+    const p = presetForReporters(selected);
+    const c = { ...validConfig(), reporters: p.reporters, evidence: p.evidence, reporting: p.reporting };
+    assert.equal(valid(c), true, `${selected.join('+') || 'none'}: ${issues(c).join()}`);
+    assert.deepEqual(p.reporters, ['json', ...['html', 'allure', 'extent', 'evidence-pdf'].filter((r) => selected.includes(r))], 'json is always added; nothing else is');
+    assert.equal(p.mode, selected.includes('evidence-pdf') ? 'audit' : selected.includes('allure') ? 'full' : 'standard');
+  }
+  const pdf = presetForReporters(['extent', 'evidence-pdf']);
+  assert.deepEqual([pdf.reporting.stepScreenshots, pdf.evidence.video, pdf.needs], [true, 'on', ['chromium (renders the PDF)']]);
+  const html = presetForReporters(['html', 'extent']);
+  assert.deepEqual([html.mode, html.needs, html.reporting.stepScreenshots, html.evidence.video], ['standard', [], undefined, 'off'], 'html + extent need no software and record nothing extra');
+  assert.deepEqual(presetForReporters(['allure']).needs, ['allure-playwright', 'allure CLI']);
+  assert.deepEqual(presetForReporters([]).reporters, ['json']);
+  assert.throws(() => presetForReporters(['html', 'junit']), /unknown report\(s\): junit/);
+});
+
+test('the Extent report needs no software; the report plan lists only what the chosen reports need', () => {
+  const plan = reportPlan({ ...validConfig(), reporters: ['json', 'extent'] } as AutomationConfig);
+  assert.deepEqual(plan.requires, []);
+});
+
 test('the report plan lists the software the chosen reporters need, without installing anything', () => {
   const plain = reportPlan(validConfig() as AutomationConfig);
   assert.deepEqual([plain.mode, plain.requires.length, plain.evidencePdf], [null, 0, false]);
@@ -123,6 +152,12 @@ test('CLI: missing reporter software is proposed, never installed; declining it 
   const preset = JSON.parse(run('config', 'mode-preset', 'audit', '--evidence-pdf').stdout);
   assert.deepEqual([preset.mode, preset.reporters.includes('evidence-pdf'), preset.reporting.stepScreenshots], ['audit', true, true]);
   assert.equal(run('config', 'mode-preset', 'loud').status, 1);
+
+  const chosen = JSON.parse(run('config', 'reporter-preset', '--reporters', 'html,extent,evidence-pdf').stdout);
+  assert.deepEqual([chosen.reporters, chosen.mode, chosen.reporting.stepScreenshots], [['json', 'html', 'extent', 'evidence-pdf'], 'audit', true]);
+  assert.deepEqual(JSON.parse(run('config', 'reporter-preset', '--reporters', 'none').stdout).reporters, ['json']);
+  assert.equal(run('config', 'reporter-preset', '--reporters', 'html,junit').status, 1, 'junit is not one of the selectable reports');
+  assert.equal(run('config', 'reporter-preset').status, 1, 'the selection must be stated, never assumed');
 });
 
 test('preflight needs Chromium for the evidence PDF even when the tests run in another browser', (t) => {

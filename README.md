@@ -23,7 +23,7 @@ artifacts, before the next one starts:
 | 9 | failure_triage | Classifies each failure: script defect, application defect, environment, test data or flaky. |
 | 10 | healing | Repairs **only** confirmed script defects, at most 2 attempts per test. A guard rejects any patch that weakens assertions. Patches that don't fix the test are reverted. |
 | 11 | regression_validation | Re-runs the healed tests with retries off. |
-| 12 | report_generation | Generates HTML / JSON / JUnit / Allure reports (whichever you chose) and `summary.md`. Report mode (`standard`, `full`, `audit`) decides how much is produced; **audit** can add the custom evidence report: one PDF with every executed step next to the screenshot taken when it ended (see below). `reportGeneration` (did the reporters work) is reported apart from the test counts. |
+| 12 | report_generation | Generates the reports you selected in setup (Playwright default report, Allure, Extent report, Evidence PDF; JSON is always kept) and `summary.md`. The report mode (`standard`, `full`, `audit`) follows from your selection and only bounds how much evidence is recorded; **audit** (chosen by picking the Evidence PDF) adds the custom evidence report: one PDF with every executed step next to the screenshot taken when it ended (see below). `reportGeneration` (did the reporters work) is reported apart from the test counts. |
 | 13 | finalization | Sets the final outcomes: `passed`, `failed`, `flaky`, `healed`, `blocked`, `skipped`. |
 
 Each run's state lives on disk in `dependencies/runs/<run-id>/`, so a stopped or blocked run can be resumed. Application
@@ -239,8 +239,9 @@ dependencies/runs/<run-id>/              pipeline state
   execution-results.json   normalized results
   failure-analysis.json    category + confidence + evidence per failure
   healing/                 before-snapshots, diffs, guard results, rerun outcomes
-  summary.md               final counts, unresolved failures, links to the HTML/JUnit/Allure reports
-automation/reports/<run-id>/<label>/     HTML / JSON / JUnit / Allure reporter output
+  summary.md               final counts, unresolved failures, links to the reports you chose
+automation/reports/<run-id>/<label>/     Playwright HTML / JSON / Allure reporter output (whichever you chose)
+automation/reports/<run-id>/extent-report/    index.html (the Extent report), if chosen
 automation/reports/<run-id>/evidence-report/  evidence-report.pdf (+ the self-contained .html it is printed from), if chosen
 automation/test-results/<run-id>/<label>/  screenshots, videos, traces
 ```
@@ -272,6 +273,18 @@ exploration ends, when any stage fails, blocks or is cancelled, on `resume`, and
 stopped and anything that could not be (`stillRunning`). Only processes recorded for the run, or sessions named with its run id, are touched;
 your own browsers and servers never are. `cleanup run <run-id> --dry-run` previews it, and `cleanup all [--dry-run]` clears leftovers of earlier
 crashed runs. Details and limits: `dependencies/docs/pipeline-efficiency.md`, section 7.
+
+## Choosing reports
+
+Setup asks which reports you want, as four choices: **Playwright default report**, **Allure report**, **Extent report** and **Evidence PDF**.
+Only the ones you pick are produced (JSON results are always kept, the pipeline reads them). Each choice proposes only the software it needs, for your
+approval: Allure needs `allure-playwright` and the Allure CLI, the Evidence PDF needs Chromium, the others need nothing. The report mode is derived
+from the choice, not asked separately.
+
+The **Extent report** is one self-contained HTML file, `automation/reports/<run-id>/extent-report/index.html`: a dashboard (pass/fail chart, per-module
+and failure-category tables), a searchable, filterable list of tests with the steps, expected results, errors and screenshots of each, and a
+light/dark switch. The pipeline builds it from the run results (no package). It is *not* the ExtentReports library, which is Java/.NET and has no
+maintained Playwright-for-Node integration.
 
 ## Custom evidence report (`evidence-pdf`)
 
