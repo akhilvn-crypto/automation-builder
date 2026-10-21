@@ -1,0 +1,399 @@
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { test } from 'node:test';
+import { stageCommand } from '../engine/cli/stage-commands.ts';
+import { runDir } from '../engine/pipeline/artifact-manager.ts';
+import { validateExplorationRecord, type ExplorationRecord } from '../engine/pipeline/exploration.ts';
+import { checkElements, parseAriaSnapshot } from '../engine/pipeline/exploration-reuse.ts';
+import {
+  invalidateFromFailures, loadStore, locatorsInError, pageKey, specFingerprint, storePath, type ObservationStore, type StoredPage,
+} from '../engine/pipeline/exploration-store.ts';
+import type { FailureAnalysis } from '../engine/pipeline/failure-classifier.ts';
+import { buildRunMetrics } from '../engine/pipeline/metrics.ts';
+import { createRun, loadManifest } from '../engine/pipeline/run-manager.ts';
+import { slugify, type TestSpec, type TestSpecDocument } from '../engine/pipeline/test-spec.ts';
+import { tmpRoot, validConfig, writeDep, writeFile, writeRunSpecs } from './helpers.ts';
+
+const BASE = 'https://test.example.com';
+const SIGN_IN = "getByRole('button', { name: 'Sign in' })";
+const EMAIL = "getByLabel('Email')";
+const LOGIN_SNAPSHOT = '- textbox "Email"\n- button "Sign in" [ref=e12]\n';
+
+function mkSpec(id: string, steps: string[], suite: string | null = 'Auth'): TestSpec {
+  return {
+    id, title: `${id} title`, source: { path: 'input/cases.md', line: 1, originalId: id, sheet: null }, suite, module: suite ?? 'General', moduleSlug: slugify(suite ?? 'General'), priority: null, tags: [],
+    preconditions: [], steps: steps.map((action, i) => ({ index: i + 1, action, expected: null })),
+    expectedResults: ['something observable'], testData: [], ambiguities: [], status: 'ready',
+  };
+}
+
+function newRun(root: string, specs: TestSpec[], config = validConfig()): string {
+  const { runId } = createRun(root, { command: 'generate-tests', config });
+  writeRunSpecs(root, runId, specs);
+  return runId;
+}
+
+function call(root: string, action: string, runId: string, values: Record<string, unknown> = {}) {
+  const r = stageCommand(root, 'explore', action, [runId], values);
+  return { code: r.code, value: r.value as Record<string, any> };
+}
+
+// What the explorer would write after observing the login page for the given test cases.
+function writeFresh(root: string, runId: string, specIds: string[], opts: { locators?: string[]; withEmail?: boolean; noPages?: boolean } = {}): void {
+  const rel = `runs/${runId}`;
+  writeDep(root, `${rel}/exploration/login.aria.yml`, LOGIN_SNAPSHOT);
+  const elements = [
+    { role: 'button', name: 'Sign in', testId: null, candidateLocator: SIGN_IN, confidence: 'high', notes: null },
+    ...(opts.withEmail === false ? [] : [{ role: 'textbox', name: 'Email', testId: null, candidateLocator: EMAIL, confidence: 'high', notes: null }]),
+  ];
+  const record = {
+    schemaVersion: 1, tool: 'playwright-cli', toolVersion: '1', session: `explore-${runId}`, baseUrl: BASE,
+    startedAt: '2026-10-20T00:00:00Z', endedAt: '2026-10-20T00:05:00Z',
+    pages: opts.noPages ? [] : [{ id: 'login', url: `${BASE}/login/`, title: 'Login', snapshot: 'exploration/login.aria.yml', screenshot: null, elements }],
+    specs: specIds.map((testId) => ({
+      testId, status: 'explored', uncertainties: [], notes: null,
+      steps: [{ index: 1, observed: 'login form shown', pageId: 'login', locators: opts.locators ?? [EMAIL, SIGN_IN] }],
+    })),
+    avoidedActions: [],
+  };
+  writeDep(root, `${rel}/exploration/fresh.json`, JSON.stringify(record));
+}
+
+function writeSnapshot(root: string, runId: string, name: string, text: string): string {
+  const rel = `exploration/${name}`;
+  writeDep(root, `runs/${runId}/${rel}`, text);
+  return rel;
+}
+
+function readRecord(root: string, runId: string): ExplorationRecord {
+  return JSON.parse(readFileSync(path.join(runDir(root, runId), 'exploration', 'exploration.json'), 'utf8'));
+}
+
+// ---------- pure helpers ----------
+
+test('aria snapshots are parsed for role and accessible name', () => {
+  const nodes = parseAriaSnapshot('- heading "Home" [level=1]\n  - button "Say \\"hi\\"" [ref=e3]\n- link /Docs.*/\n- text: plain\n');
+  assert.deepEqual(nodes, [
+    { role: 'heading', name: 'Home' },
+    { role: 'button', name: 'Say "hi"' },
+    { role: 'link', name: null },
+    { role: 'text', name: null },
+  ]);
+});
+
+test('page identity ignores origin-less noise but never crosses origins', () => {
+  assert.equal(pageKey(`${BASE}/login/?next=/a`, BASE), '/login');
+  assert.equal(pageKey('/', BASE), '/');
+  assert.equal(pageKey('/app#/orders', BASE), '/app#/orders');
+  assert.equal(pageKey('/app#section', BASE), '/app');
+  assert.equal(pageKey('https://other.example.com/login', BASE), null);
+});
+
+test('element checks distinguish present, missing, ambiguous and unprovable controls', () => {
+  const el = (role: string | null, name: string | null, locator: string) => ({
+    role, name, testId: null, candidateLocator: locator, confidence: 'high', notes: null,
+    runId: 'r', observedAt: 'x', lastRevalidatedAt: null, status: 'verified', staleReason: null, staleAt: null,
+  });
+  const page = {
+    key: '/p', url: '/p', title: null, evidence: { snapshot: null, screenshot: null },
+    elements: [el('button', 'Save', 'a'), el('button', 'Gone', 'b'), el('link', 'Docs', 'c'), el(null, null, 'd'), { ...el('button', 'Old', 'e'), status: 'stale' }],
+  } as unknown as StoredPage;
+  const checks = checkElements(page, '- button "Save"\n- link "Docs"\n- link "Docs"\n');
+  assert.deepEqual(Object.fromEntries(Object.entries(checks).map(([k, c]) => [k, c.state])), {
+    a: 'present', b: 'missing', c: 'ambiguous', d: 'unverifiable',
+  });
+});
+
+test('a test case fingerprint changes when its steps change', () => {
+  const a = mkSpec('TC-1', ['open /login']);
+  assert.equal(specFingerprint(a), specFingerprint(mkSpec('TC-1', ['open /login'])));
+  assert.notEqual(specFingerprint(a), specFingerprint(mkSpec('TC-1', ['open /login', 'click Sign in'])));
+});
+
+test('reused pages are only valid with proof of revalidation in this run', (t) => {
+  const root = tmpRoot(t);
+  const rec = {
+    schemaVersion: 1, tool: 'playwright-cli', toolVersion: null, session: null, baseUrl: BASE, startedAt: '', endedAt: '',
+    pages: [{ id: 'p', url: '/p', title: null, snapshot: null, screenshot: null, elements: [], provenance: { source: 'reused' } }],
+    specs: [], avoidedActions: [],
+  };
+  const issues = validateExplorationRecord(rec, { runDir: root, specs: null });
+  assert.ok(issues.some((i) => /no revalidatedAt/.test(i)));
+  assert.ok(issues.some((i) => /no snapshot from this run/.test(i)));
+});
+
+// ---------- the full flow ----------
+
+test('first run explores everything and saves observations; nothing is reused without a store', (t) => {
+  const root = tmpRoot(t);
+  const runId = newRun(root, [mkSpec('TC-1', ['open login']), mkSpec('TC-2', ['open login', 'sign in'])]);
+  const plan = call(root, 'plan', runId).value;
+  assert.deepEqual(plan.summary, { explore: 2, revalidate: 0, reuse: 0 });
+  assert.equal(plan.store.status, 'missing');
+  assert.deepEqual(plan.groups.map((g: any) => [g.module, g.specIds]), [['Auth', ['TC-1', 'TC-2']]]);
+
+  writeFresh(root, runId, ['TC-1', 'TC-2']);
+  const res = call(root, 'assemble', runId);
+  assert.equal(res.code, 0, JSON.stringify(res.value));
+  const rec = readRecord(root, runId);
+  assert.equal(rec.pages[0]!.provenance?.source, 'fresh');
+  assert.deepEqual(rec.reuse?.freshSpecs, ['TC-1', 'TC-2']);
+
+  const state = loadStore(root, BASE);
+  assert.equal(state.status, 'ok');
+  assert.ok(state.status === 'ok' && state.store.pages['/login']!.elements.length === 2);
+  assert.ok(state.status === 'ok' && Object.keys(state.store.specs).join() === 'TC-1,TC-2');
+});
+
+test('unchanged test cases are reused only after a snapshot from the new run confirms the locators', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login']), mkSpec('TC-2', ['open login', 'sign in'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1', 'TC-2']);
+  assert.equal(call(root, 'assemble', first).code, 0);
+
+  const second = newRun(root, specs);
+  const plan = call(root, 'plan', second).value;
+  assert.deepEqual(plan.summary, { explore: 0, revalidate: 2, reuse: 0 }, 'saved evidence alone is not enough');
+  assert.deepEqual(plan.pagesToRevalidate.map((p: any) => p.key), ['/login']);
+  assert.deepEqual(plan.groups[0].sharedPages, ['/login'], 'both cases share one page');
+
+  // Assembling before revalidating must refuse to reuse. (Nothing was visited, so fresh.json has no pages.)
+  writeFresh(root, second, [], { noPages: true });
+  const early = call(root, 'assemble', second);
+  assert.equal(early.code, 2);
+  assert.match(early.value.issues[0], /TC-1: saved evidence has not been revalidated/);
+
+  const snap = writeSnapshot(root, second, 'login-recheck.aria.yml', LOGIN_SNAPSHOT);
+  const rv = call(root, 'revalidate', second, { page: '/login', file: snap });
+  assert.deepEqual(rv.value.summary, { explore: 0, revalidate: 0, reuse: 2 });
+
+  const res = call(root, 'assemble', second);
+  assert.equal(res.code, 0, JSON.stringify(res.value));
+  const rec = readRecord(root, second);
+  assert.deepEqual(rec.reuse?.reusedSpecs, ['TC-1', 'TC-2']);
+  assert.deepEqual(rec.reuse?.freshSpecs, []);
+  const page = rec.pages[0]!;
+  assert.equal(page.provenance?.source, 'reused');
+  assert.equal(page.snapshot, snap, 'evidence is this run’s snapshot, not a path into the old run');
+  assert.deepEqual(rec.specs.map((s) => [s.testId, s.steps[0]!.pageId]), [['TC-1', page.id], ['TC-2', page.id]]);
+  assert.deepEqual(validateExplorationRecord(rec, { runDir: runDir(root, second), specs: null }), []);
+
+  // Metrics report the reuse.
+  const m = loadManifest(root, second);
+  assert.ok(m.ok);
+  const manifest = { ...m.manifest!, artifacts: { exploration: 'exploration/exploration.json' } };
+  assert.deepEqual(buildRunMetrics(root, manifest).exploration, {
+    pages: 1, pagesFresh: 0, pagesReused: 1, elementsReused: 2, specs: 2, specsReused: 2, specsFresh: 0,
+  });
+});
+
+test('a changed test case is explored again while its unchanged neighbours are still reused', (t) => {
+  const root = tmpRoot(t);
+  const first = newRun(root, [mkSpec('TC-1', ['open login']), mkSpec('TC-2', ['open login', 'sign in'])]);
+  writeFresh(root, first, ['TC-1', 'TC-2']);
+  call(root, 'assemble', first);
+
+  const second = newRun(root, [mkSpec('TC-1', ['open login']), mkSpec('TC-2', ['open login', 'sign in', 'sign out'])]);
+  const plan = call(root, 'plan', second).value;
+  const byId = Object.fromEntries(plan.specs.map((s: any) => [s.testId, s]));
+  assert.equal(byId['TC-1'].action, 'revalidate');
+  assert.equal(byId['TC-2'].action, 'explore');
+  assert.match(byId['TC-2'].reason, /test case changed/);
+
+  call(root, 'revalidate', second, { page: `${BASE}/login`, file: writeSnapshot(root, second, 's.aria.yml', LOGIN_SNAPSHOT) });
+  writeFresh(root, second, ['TC-2']);
+  assert.equal(call(root, 'assemble', second).code, 0);
+  const rec = readRecord(root, second);
+  assert.deepEqual(rec.reuse?.reusedSpecs, ['TC-1']);
+  assert.deepEqual(rec.reuse?.freshSpecs, ['TC-2']);
+  assert.equal(rec.pages.length, 1, 'the fresh observation of /login absorbs the reused page');
+  assert.equal(rec.pages[0]!.provenance?.source, 'fresh');
+  assert.equal(rec.specs.find((s) => s.testId === 'TC-1')!.steps[0]!.pageId, 'login', 'reused case remapped onto the fresh page');
+});
+
+test('a locator missing from the new snapshot is invalidated with a reason and forces re-exploration', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+
+  const second = newRun(root, specs);
+  const rv = call(root, 'revalidate', second, {
+    page: '/login', file: writeSnapshot(root, second, 's.aria.yml', '- textbox "Email"\n- button "Log in"\n'),
+  });
+  assert.equal(rv.value.elements[SIGN_IN].state, 'missing');
+  assert.equal(rv.value.elements[EMAIL].state, 'present');
+  assert.deepEqual(rv.value.summary, { explore: 1, revalidate: 0, reuse: 0 });
+  assert.match(rv.value.specs[0].reason, /is stale: revalidation \(.+\): no button named "Sign in" in the current snapshot/);
+
+  const state = loadStore(root, BASE);
+  assert.ok(state.status === 'ok');
+  const stale = state.store.pages['/login']!.elements.find((e) => e.candidateLocator === SIGN_IN)!;
+  assert.equal(stale.status, 'stale');
+  assert.match(stale.staleReason!, new RegExp(`revalidation \\(${second}\\)`));
+
+  // The invalidation outlives the run: a later run is told why it must explore.
+  const third = newRun(root, specs);
+  const plan = call(root, 'plan', third).value;
+  assert.equal(plan.specs[0].action, 'explore');
+  assert.match(plan.specs[0].reason, /is stale: revalidation/);
+
+  // Exploring again replaces the stale element with a verified one.
+  writeFresh(root, third, ['TC-1']);
+  assert.equal(call(root, 'assemble', third).code, 0);
+  const after = loadStore(root, BASE);
+  assert.ok(after.status === 'ok' && after.store.pages['/login']!.elements.every((e) => e.status === 'verified'));
+});
+
+test('an ambiguous or unprovable locator is never reused', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+
+  const second = newRun(root, specs);
+  const rv = call(root, 'revalidate', second, {
+    page: '/login', file: writeSnapshot(root, second, 's.aria.yml', '- textbox "Email"\n- button "Sign in"\n- button "Sign in"\n'),
+  });
+  assert.equal(rv.value.elements[SIGN_IN].state, 'ambiguous');
+  assert.equal(rv.value.summary.explore, 1);
+});
+
+test('a corrupt store is rejected, reported and replaced rather than trusted', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+
+  writeFileSync(storePath(root, BASE), '{ "schemaVersion": 1, "origin": "https://test.example.com", "pages": {');
+  const second = newRun(root, specs);
+  const plan = call(root, 'plan', second).value;
+  assert.equal(plan.store.status, 'corrupt');
+  assert.equal(plan.specs[0].action, 'explore');
+  assert.equal(call(root, 'revalidate', second, { page: '/login', file: writeSnapshot(root, second, 's.aria.yml', LOGIN_SNAPSHOT) }).code, 2);
+
+  writeFresh(root, second, ['TC-1']);
+  assert.equal(call(root, 'assemble', second).code, 0);
+  assert.equal(loadStore(root, BASE).status, 'ok', 'replaced by a valid store built from fresh evidence');
+
+  // Structurally wrong but parseable content is also refused.
+  const store = JSON.parse(readFileSync(storePath(root, BASE), 'utf8'));
+  store.pages['/login'].key = '/other';
+  writeFileSync(storePath(root, BASE), JSON.stringify(store));
+  assert.equal(loadStore(root, BASE).status, 'corrupt');
+});
+
+test('evidence is per environment: another base URL starts empty', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+
+  const other = validConfig();
+  other.app.baseUrl = 'https://staging.example.com';
+  const second = newRun(root, specs, other);
+  const plan = call(root, 'plan', second).value;
+  assert.equal(plan.store.status, 'missing');
+  assert.equal(plan.summary.explore, 1);
+});
+
+test('--fresh forces exploration even when valid evidence exists', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+
+  const second = newRun(root, specs);
+  const plan = call(root, 'plan', second, { fresh: true }).value;
+  assert.equal(plan.specs[0].action, 'explore');
+  assert.match(plan.specs[0].reason, /fresh exploration was requested/);
+  call(root, 'revalidate', second, { page: '/login', file: writeSnapshot(root, second, 's.aria.yml', LOGIN_SNAPSHOT) });
+  assert.equal(call(root, 'plan', second).value.specs[0].action, 'explore', 'the choice sticks for the run');
+});
+
+test('evidence from another origin is never stored', (t) => {
+  const root = tmpRoot(t);
+  const first = newRun(root, [mkSpec('TC-1', ['open login'])]);
+  writeFresh(root, first, ['TC-1']);
+  const file = path.join(runDir(root, first), 'exploration', 'fresh.json');
+  const rec = JSON.parse(readFileSync(file, 'utf8'));
+  rec.pages[0].url = 'https://elsewhere.example.com/login';
+  writeFileSync(file, JSON.stringify(rec));
+  assert.equal(call(root, 'assemble', first).code, 0);
+  const state = loadStore(root, BASE);
+  assert.ok(state.status === 'ok' && Object.keys(state.store.pages).length === 0 && Object.keys(state.store.specs).length === 0);
+});
+
+test('assemble refuses a fresh record that fails validation', (t) => {
+  const root = tmpRoot(t);
+  const first = newRun(root, [mkSpec('TC-1', ['open login'])]);
+  writeFresh(root, first, ['TC-1'], { locators: ['e12'] });
+  const res = call(root, 'assemble', first);
+  assert.equal(res.code, 2);
+  assert.match(res.value.issues.join(), /temporary CLI element reference/);
+  assert.equal(loadStore(root, BASE).status, 'missing', 'nothing saved from an invalid record');
+});
+
+// ---------- execution feedback ----------
+
+function storeWith(locator: string): ObservationStore {
+  const el = {
+    role: 'button', name: 'Sign in', testId: null, candidateLocator: locator, confidence: 'high', notes: null,
+    runId: 'r', observedAt: 'x', lastRevalidatedAt: null, status: 'verified', staleReason: null, staleAt: null,
+  };
+  return {
+    schemaVersion: 1, origin: BASE, updatedAt: 'x', specs: {}, invalidations: [],
+    pages: { '/login': { key: '/login', url: '/login', title: null, evidence: { snapshot: null, screenshot: null }, elements: [el] } },
+  } as unknown as ObservationStore;
+}
+
+function analysis(signals: string[], errorExcerpt: string): FailureAnalysis {
+  return {
+    schemaVersion: 1, analyzedAt: 'x', sourceRunId: '20261020-000000-aaaaaa', sourceLabel: 'initial',
+    failures: [{ key: 'TC-1@chromium', testId: 'TC-1', signals, errorExcerpt }],
+  } as unknown as FailureAnalysis;
+}
+
+test('locators are read from Playwright failure messages', () => {
+  assert.deepEqual(locatorsInError("Locator: getByRole('button', { name: 'Sign in' })\nExpected: visible"), [SIGN_IN]);
+  assert.deepEqual(locatorsInError("Call log:\n  - waiting for getByLabel('Email')\n"), [EMAIL]);
+});
+
+test('a locator that failed to resolve in execution makes its saved observation stale', () => {
+  const err = `Error: expect(locator).toBeVisible() failed\n\nLocator: ${SIGN_IN}\nReceived: <element(s) not found>`;
+  const r = invalidateFromFailures(storeWith(SIGN_IN), analysis(['locator found no element'], err), '2026-10-20T00:00:00Z');
+  assert.equal(r.invalidated.length, 1);
+  const el = r.store.pages['/login']!.elements[0]!;
+  assert.equal(el.status, 'stale');
+  assert.match(el.staleReason!, /execution \(20261020-000000-aaaaaa, TC-1\): locator found no element/);
+  assert.equal(r.store.invalidations.length, 1);
+});
+
+test('assertion failures and unrelated locators do not invalidate observations', () => {
+  const mismatch = analysis(['assertion value mismatch'], `Locator: ${SIGN_IN}\nExpected: "A"\nReceived: "B"`);
+  assert.equal(invalidateFromFailures(storeWith(SIGN_IN), mismatch, 'x').invalidated.length, 0);
+  const other = analysis(['locator found no element'], "Locator: getByRole('link', { name: 'Docs' })\n<element(s) not found>");
+  assert.equal(invalidateFromFailures(storeWith(SIGN_IN), other, 'x').invalidated.length, 0);
+});
+
+test('manual invalidation records the reason and survives for the next run', (t) => {
+  const root = tmpRoot(t);
+  const specs = [mkSpec('TC-1', ['open login'])];
+  const first = newRun(root, specs);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+
+  const second = newRun(root, specs);
+  const res = call(root, 'invalidate', second, { page: '/login', reason: 'login page was redesigned', locator: SIGN_IN });
+  assert.equal(res.value.invalidatedElements, 1);
+  const plan = call(root, 'plan', newRun(root, specs)).value;
+  assert.match(plan.specs[0].reason, /login page was redesigned/);
+  assert.equal(call(root, 'store', second).value.elements.stale, 1);
+});

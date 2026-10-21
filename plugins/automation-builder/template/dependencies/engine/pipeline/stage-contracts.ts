@@ -1,8 +1,11 @@
 // What each stage must produce before it may be marked `completed`.
 // updateStage() enforces this, so a stage never advances on a missing or invalid artifact.
 
+import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { readJson } from '../utils/fs.ts';
+import { readJson, sha256File } from '../utils/fs.ts';
+import { inputBaseDir } from '../utils/layout.ts';
+import { validateCanonicalDocument, checkSpecsAgainstCanonical, isAutomatable, type CanonicalDocument } from './canonical.ts';
 import { validateExecutionResults } from './execution.ts';
 import { validateExplorationRecord } from './exploration.ts';
 import { validateFailureAnalysis } from './failure-classifier.ts';
@@ -18,7 +21,7 @@ import { validateTestSpecDocument, type TestSpecDocument } from './test-spec.ts'
 // Artifact names (manifest.artifacts keys) each stage must have registered to complete.
 export const STAGE_REQUIRED_ARTIFACTS: Partial<Record<StageName, readonly string[]>> = {
   input_validation: ['inputValidation'],
-  test_analysis: ['testSpecs'],
+  test_analysis: ['canonicalCases', 'testSpecs'],
   application_exploration: ['exploration'],
   test_generation: ['generationManifest', 'generationReport'],
   script_review: ['reviewReport'],
@@ -45,13 +48,36 @@ function loadSpecs(ctx: Ctx): TestSpecDocument | null {
   return r.ok ? (r.value as TestSpecDocument) : null;
 }
 
+function loadCanonical(ctx: Ctx): CanonicalDocument | null {
+  const rel = ctx.artifacts.canonicalCases;
+  if (!rel) return null;
+  const r = readJson(path.join(ctx.runDir, rel));
+  return r.ok ? (r.value as CanonicalDocument) : null;
+}
+
 const JSON_VALIDATORS: Record<string, Validator> = {
   inputValidation: (v) => validateInputValidationReport(v),
-  testSpecs: (v) => {
-    const issues = validateTestSpecDocument(v);
-    const ready = (v as TestSpecDocument).specs?.filter((s) => s.status === 'ready').length ?? 0;
-    if (issues.length === 0 && ready === 0) issues.push('no test case is ready: every case needs clarification');
+  // The canonical test cases are the gate: they must be valid, describe the input files as they are now, and include at least
+  // one case that may be automated.
+  canonicalCases: (v, ctx) => {
+    const issues = validateCanonicalDocument(v);
+    if (issues.length > 0) return issues;
+    const doc = v as CanonicalDocument;
+    if (doc.validation.errors.length > 0) issues.push(`the input has errors: ${doc.validation.errors.map((e) => `${e.path}: ${e.message}`).join('; ')}`);
+    if (!doc.testCases.some((c) => isAutomatable(c.validation.status))) issues.push('no test case is valid: every case needs clarification or is invalid');
+    for (const src of doc.sources) {
+      const abs = path.join(inputBaseDir(ctx.rootDir), src.path);
+      if (!existsSync(abs) || sha256File(abs) !== src.sha256) issues.push(`${src.path} changed (or is gone) since it was normalized: run "specs parse" again`);
+    }
     return issues;
+  },
+  // test-specs.json must be exactly the projection of the canonical test cases registered with it.
+  testSpecs: (v, ctx) => {
+    const issues = validateTestSpecDocument(v);
+    if (issues.length > 0) return issues;
+    const canonical = loadCanonical(ctx);
+    if (!canonical) return ['the canonical test cases (canonicalCases) must be registered with the specs: they are the only accepted source'];
+    return checkSpecsAgainstCanonical(canonical, v as TestSpecDocument);
   },
   exploration: (v, ctx) => validateExplorationRecord(v, { runDir: ctx.runDir, specs: loadSpecs(ctx) }),
   generationManifest: (v, ctx) => validateGenerationManifest(v, { rootDir: ctx.rootDir, specs: loadSpecs(ctx) }),

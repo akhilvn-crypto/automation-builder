@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import * as jsHelpers from '../template/framework/javascript/helpers/test-data.js';
+import * as tsHelpers from '../template/framework/typescript/helpers/test-data.ts';
 
 const INIT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'init.mjs');
 
@@ -221,12 +223,27 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     const kept = init(root, '--update');
     assert.equal(readFileSync(fixture, 'utf8'), custom);
     assert.ok(!kept.json.overwritten.includes(`automation/fixtures/test.${ext}`));
-    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('stepEvidence')), JSON.stringify(kept.json.warnings));
+    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('0.9.0')), JSON.stringify(kept.json.warnings));
 
-    // A copy that already has the fixture is left alone silently.
-    writeFileSync(fixture, `${custom}// stepEvidence\n`);
+    // A copy that already has the current fixture is left alone silently.
+    writeFileSync(fixture, `${custom}// maskSelectors\n`);
     const quiet = init(root, '--update');
     assert.ok(!quiet.json.warnings.some((w) => w.includes('customised')));
+  });
+
+  test(`${language}: --update also brings the unmodified 0.8.0 fixtures/test.${ext} up to date (masked step screenshots, redaction)`, (t) => {
+    const root = project(t);
+    assert.equal(init(root, '--language', language).code, 0);
+    const fixture = path.join(root, 'automation', 'fixtures', `test.${ext}`);
+    const shipped = readFileSync(path.join(DATA, `fixture-0.8.0.${ext}.txt`), 'utf8');
+    assert.match(shipped, /stepEvidence/);
+    assert.doesNotMatch(shipped, /maskSelectors/);
+    writeFileSync(fixture, shipped);
+    assert.ok(init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    const current = readFileSync(fixture, 'utf8');
+    assert.match(current, /maskSelectors/);
+    assert.match(current, /redactSensitive/);
+    assert.match(current, /input\[type="password"\]/, 'password fields are always masked in step screenshots');
   });
 }
 
@@ -246,7 +263,7 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
       input: { testCasesPath: 'input/test-cases' }, browsers: ['chromium'],
       evidence: { video: 'off', screenshot: 'only-on-failure', trace: 'off' }, reporters: ['json'],
       auth: { approach: 'none', credentialEnvVars: [] }, exploration: { tool: 'none' },
-      execution: { workers: null, retries: 2, timeoutMs: 20000 }, healing: { maxAttemptsPerTest: 2 }, retention: { keepRuns: null },
+      execution: { workers: null, retries: 2, timeoutMs: 20000, isolation: 'shared-readonly' }, healing: { maxAttemptsPerTest: 2 }, retention: { keepRuns: null },
     };
     const cfgFile = path.join(root, 'cfg.json');
     writeFileSync(cfgFile, JSON.stringify(cfg));
@@ -278,4 +295,26 @@ test('migration: the thin playwright.config wrapper of 0.6.x is replaced and its
   assert.equal(r.code, 0, JSON.stringify(r.json));
   assert.doesNotMatch(readFileSync(file, 'utf8'), /playwright-settings/);
   assert.ok(!existsSync(path.join(root, 'dependencies', 'engine', 'config', 'playwright-settings.ts')));
+});
+
+// ---- test-data helpers shipped in the framework (per-worker accounts, worker-tagged unique data) ----
+
+for (const [language, h] of [['typescript', tsHelpers], ['javascript', jsHelpers]]) {
+  test(`${language}: helpers give each worker its own account when a pool exists and fall back to the shared one`, () => {
+    assert.equal(h.workerEnvName('TEST_USER_EMAIL', 0), 'TEST_USER_EMAIL_1');
+    const env = { TEST_USER_EMAIL: 'shared@x.test', TEST_USER_EMAIL_2: 'second@x.test' };
+    assert.equal(h.requireWorkerEnv('TEST_USER_EMAIL', 1, env), 'second@x.test');
+    assert.equal(h.requireWorkerEnv('TEST_USER_EMAIL', 0, env), 'shared@x.test');
+    assert.throws(() => h.requireWorkerEnv('NOPE', 0, {}), /Missing required environment variable NOPE/);
+    assert.match(h.uniqueSuffix('order', 3), /^order-w3-/);
+    assert.match(h.uniqueSuffix('order'), /^order-[a-z0-9]+-[0-9a-f]{6}$/);
+  });
+}
+
+test('the framework ignores secrets and saved logins, and the pipeline ignores its local caches', () => {
+  const template = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'template');
+  const framework = readFileSync(path.join(template, 'framework', 'common', 'gitignore'), 'utf8');
+  for (const line of ['.env', 'auth/storage-state*.json', '**/storage-state*.json']) assert.ok(framework.split(/\r?\n/).includes(line), line);
+  const dependencies = readFileSync(path.join(template, 'dependencies', 'gitignore'), 'utf8');
+  for (const line of ['runs/', 'state/exploration-store/', 'state/artifact-cache/']) assert.ok(dependencies.split(/\r?\n/).includes(line), line);
 });

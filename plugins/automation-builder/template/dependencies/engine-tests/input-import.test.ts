@@ -47,7 +47,7 @@ test('import converts a workbook from any path to one Markdown file per test cas
     ['input/test-cases/LOG-1.md', 'LOG-1', 'created'],
     ['input/test-cases/PRJ-1.md', 'PRJ-1', 'created'],
   ]);
-  assert.deepEqual(r.counts, { total: 2, ready: 2, needsClarification: 0 });
+  assert.deepEqual(r.counts, { total: 2, valid: 2, warning: 0, needsClarification: 0, invalid: 0, ready: 2 });
   assert.deepEqual(r.env.created, ['TEST_PASSWORD']);
   assert.deepEqual(r.tables.map((x: any) => x.path), ['cases.xlsx', 'cases.xlsx'], 'files are named relative to the source, not as ../../..');
   assert.deepEqual(r.othersInFolder, []);
@@ -113,7 +113,7 @@ test('a layout the engine cannot read writes nothing; input map fixes it and imp
 
   must(root, 'input', 'map', odd, '--sheet', 'Cases', '--column', 'id=Code', '--column', 'title=What', '--column', 'steps=How', '--column', 'expected=Outcome');
   const ok = must(root, 'input', 'import', '--from', odd);
-  assert.deepEqual(ok.counts, { total: 1, ready: 1, needsClarification: 0 });
+  assert.deepEqual(ok.counts, { total: 1, valid: 1, warning: 0, needsClarification: 0, invalid: 0, ready: 1 });
 });
 
 test('a case that is not ready is still imported and reported; a missing path and a quoted path are handled', (t) => {
@@ -122,7 +122,7 @@ test('a case that is not ready is still imported and reported; a missing path an
   const md = path.join(outside, 'incomplete.md');
   writeFileSync(md, '# Settings\n\n## SET-1: Change language\n### Steps\n1. Open settings\n');
   const r = must(root, 'input', 'import', '--from', `"${md}"`);
-  assert.deepEqual(r.counts, { total: 1, ready: 0, needsClarification: 1 });
+  assert.deepEqual(r.counts, { total: 1, valid: 0, warning: 0, needsClarification: 1, invalid: 0, ready: 0 });
   assert.equal(r.needsClarification[0].id, 'SET-1');
   assert.ok(existsSync(path.join(dependenciesDir(root), 'input', 'test-cases', 'SET-1.md')));
 
@@ -150,7 +150,7 @@ test('numbering that restarts on every sheet gets sheet-prefixed IDs, so every c
   const sheet = (n: string) => ({ name: n, rows: [['S. No.', 'Module', 'Scenarios', 'Test Steps', 'Expected Result'], ['TC001', n, `Open ${n}`, 'Open the page', 'The page is shown'], ['TC002', n, `Close ${n}`, 'Close the page', 'The page is closed']] });
   const book = writeXlsx(outside, 'restart.xlsx', [sheet('Admin'), sheet('Target Block')]);
   const r = must(root, 'input', 'import', '--from', book);
-  assert.deepEqual(r.counts, { total: 4, ready: 4, needsClarification: 0 });
+  assert.deepEqual(r.counts, { total: 4, valid: 4, warning: 0, needsClarification: 0, invalid: 0, ready: 4 });
   assert.deepEqual(r.files.map((f: any) => f.id), ['ADMIN-TC001', 'ADMIN-TC002', 'TARGET-BLOCK-TC001', 'TARGET-BLOCK-TC002']);
   assert.deepEqual(readdirSync(dest).sort(), ['ADMIN-TC001.md', 'ADMIN-TC002.md', 'TARGET-BLOCK-TC001.md', 'TARGET-BLOCK-TC002.md']);
   assert.match(readFileSync(path.join(dest, 'TARGET-BLOCK-TC002.md'), 'utf8'), /^# Target Block\n\n## TARGET-BLOCK-TC002: Close Target Block/);

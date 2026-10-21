@@ -24,6 +24,9 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
 - Never modify tests to force a pass. Never treat partial artifacts as valid.
 - Pipeline state lives on disk. Use the CLI for every state change; never edit manifests or config by hand.
 - Ask the user only for what is missing (pipeline-setup skill), one approval per dependency.
+- Use agents only where `pl agents plan <runId> <stage>` says judgment is needed, and give each agent just its bounded brief. Run parsing,
+  hashing, test execution, validation and report assembly yourself through the CLI. Reuse earlier work only through the CLI's cache
+  decisions (`specs parse`, `generate plan`, `review plan`); never decide yourself that an old artifact or an old test result is still good.
 
 ## Start or resume
 

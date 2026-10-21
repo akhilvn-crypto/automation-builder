@@ -21,6 +21,14 @@ export interface ObservedElement {
   notes: string | null;
 }
 
+export interface PageProvenance {
+  // fresh = observed by the explorer in this run; reused = carried over from the observation store and
+  // revalidated against a snapshot taken in this run (`snapshot` below is that snapshot).
+  source: 'fresh' | 'reused';
+  fromRunId?: string;
+  revalidatedAt?: string;
+}
+
 export interface ObservedPage {
   id: string;
   url: string;
@@ -28,6 +36,16 @@ export interface ObservedPage {
   snapshot: string | null; // path relative to the run dir
   screenshot: string | null; // path relative to the run dir
   elements: ObservedElement[];
+  provenance?: PageProvenance; // absent on records written without the reuse flow
+}
+
+// Written by `explore assemble`: which evidence was reused and why everything else was explored.
+export interface ReuseSummary {
+  reusedSpecs: string[];
+  freshSpecs: string[];
+  reusedPages: string[]; // page keys
+  freshPages: string[];
+  reasons: Record<string, string>; // testId -> why it was explored fresh / what it was reused from
 }
 
 export interface SpecExploration {
@@ -50,6 +68,7 @@ export interface ExplorationRecord {
   specs: SpecExploration[];
   // Actions deliberately not performed because they looked destructive/irreversible.
   avoidedActions: string[];
+  reuse?: ReuseSummary;
 }
 
 // Temporary CLI element references (e.g. "e12", "ref=e12", "aria-ref=e5") are exploration aids only.
@@ -82,6 +101,11 @@ export function validateExplorationRecord(v: unknown, ctx: { runDir: string; spe
       if (rel === null || rel === undefined) continue;
       if (isAbsoluteOrEscaping(rel)) issues.push(`page ${p.id} ${kind} path must be relative to the run dir`);
       else if (!existsSync(path.join(ctx.runDir, rel))) issues.push(`page ${p.id} ${kind} "${rel}" does not exist`);
+    }
+    if (p.provenance?.source === 'reused') {
+      // Reused evidence is only acceptable with proof it was re-checked in this run.
+      if (!p.provenance.revalidatedAt) issues.push(`page ${p.id} is reused but has no revalidatedAt`);
+      if (!p.snapshot) issues.push(`page ${p.id} is reused but has no snapshot from this run`);
     }
     for (const e of p.elements ?? []) {
       const err = checkLocatorExpression(e.candidateLocator);

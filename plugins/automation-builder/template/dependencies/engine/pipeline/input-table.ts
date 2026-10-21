@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { stateDir } from '../utils/layout.ts';
+import { AUTO_APPLY_CONFIDENCE, suggestColumns, type ColumnSuggestion } from './column-inference.ts';
 
 export const FIELDS = ['id', 'title', 'module', 'preconditions', 'steps', 'expected', 'data', 'priority', 'tags'] as const;
 export type Field = (typeof FIELDS)[number];
@@ -41,26 +42,50 @@ const EXPECTED_PATTERN = /^expected(?: (?!actual\b)[a-z]+){0,5}$/;
 
 const SERIAL_NUMBER = /^(?:s no|sno|sl no|sr no|serial no|serial number)$/;
 
-function fieldOf(header: string): Field | null {
+// Title headers that describe the case rather than name it. They lose to a real title column ("Test Case Title") when a sheet
+// has both, instead of making the two tie.
+const WEAK_TITLE = new Set([
+  'test description', 'test case description', 'testcase description', 'scenario description', 'objective', 'test objective', 'use case',
+]);
+
+// How well a header names a field: 3 = a known name, 2 = a looser fit, 1 = only when nothing better exists.
+export interface HeaderHit { field: Field; score: number }
+
+export function hitOf(header: string): HeaderHit | null {
   if (header === '') return null;
-  if (ID_PATTERN.test(header)) return 'id';
-  if (EXPECTED_PATTERN.test(header)) return 'expected';
-  for (const f of FIELDS) if (ALIASES[f].includes(header)) return f;
+  if (ID_PATTERN.test(header)) return { field: 'id', score: 3 };
+  for (const f of FIELDS) {
+    if (ALIASES[f].includes(header)) return { field: f, score: f === 'title' && WEAK_TITLE.has(header) ? 2 : 3 };
+  }
+  if (EXPECTED_PATTERN.test(header)) return { field: 'expected', score: 2 }; // "Expected Result (as per spec)"
+  if (header === 'description') return { field: 'title', score: 1 }; // a bare "Description" is the title only when nothing better names it
+  // A serial-number column ("S. No.") is the ID only when the sheet has no real ID column.
+  if (SERIAL_NUMBER.test(header)) return { field: 'id', score: 1 };
   return null;
+}
+
+// The field a Markdown label ("**Procedure:**", "Pre-conditions") names, by the same names table headers use.
+export function labelField(label: string): Field | null {
+  const hit = hitOf(normalizeHeader(label));
+  return hit && hit.score >= 2 ? hit.field : null;
+}
+
+export interface ColumnCandidate { index: number; score: number }
+
+// Every column that could be each field, best fit first.
+export function columnCandidates(header: string[]): Partial<Record<Field, ColumnCandidate[]>> {
+  const out: Partial<Record<Field, ColumnCandidate[]>> = {};
+  header.forEach((h, index) => {
+    const hit = hitOf(normalizeHeader(h));
+    if (hit) (out[hit.field] ??= []).push({ index, score: hit.score });
+  });
+  for (const list of Object.values(out)) list.sort((a, b) => b.score - a.score || a.index - b.index);
+  return out;
 }
 
 export function autoMapColumns(header: string[]): Partial<Record<Field, number>> {
   const columns: Partial<Record<Field, number>> = {};
-  header.forEach((h, i) => {
-    const f = fieldOf(normalizeHeader(h));
-    if (f && columns[f] === undefined) columns[f] = i;
-  });
-  // A bare "Description" column is the title only when nothing better names it.
-  const description = header.findIndex((h) => normalizeHeader(h) === 'description');
-  if (description >= 0 && columns.title === undefined) columns.title = description;
-  // A serial-number column ("S. No.") is the ID only when the sheet has no real ID column.
-  const serial = header.findIndex((h) => SERIAL_NUMBER.test(normalizeHeader(h)));
-  if (serial >= 0 && columns.id === undefined) columns.id = serial;
+  for (const [field, list] of Object.entries(columnCandidates(header)) as [Field, ColumnCandidate[]][]) columns[field] = list[0]!.index;
   return columns;
 }
 
@@ -111,6 +136,9 @@ export function mappingFor(m: InputMappings | undefined, relPath: string, sheet:
   return m?.tables[mappingKey(relPath, sheet)] ?? (sheet === null ? undefined : m?.tables[relPath]);
 }
 
+// A field that two or more columns fit equally well (and that all hold data): a person has to say which one it is.
+export interface AmbiguousField { field: Field; headers: string[] }
+
 export interface ResolvedTable {
   status: 'ok' | 'skipped' | 'unresolved';
   headerLine: number | null;
@@ -119,6 +147,9 @@ export interface ResolvedTable {
   columns: Partial<Record<Field, number>>;
   ignored: string[];
   reason: string | null; // why skipped/unresolved
+  ambiguous: AmbiguousField[]; // fields with several equally good columns; the first was read, the cases are held back
+  inferred: ColumnSuggestion[]; // columns read from their content because no header name fit (applied: confidence >= 0.9)
+  suggestions: ColumnSuggestion[]; // proposals not applied; confirm one with `input map`
 }
 
 const HEADER_SCAN_ROWS = 25;
@@ -139,11 +170,70 @@ function columnsFor(cells: string[], override: TableMapping | undefined): Partia
   return columns;
 }
 
+const hasData = (rows: TableRow[], headerIndex: number, column: number): boolean =>
+  rows.slice(headerIndex + 1).some((r) => (r.cells[column] ?? '').trim() !== '');
+
+interface HeaderReading {
+  columns: Partial<Record<Field, number>>;
+  ambiguous: AmbiguousField[];
+  inferred: ColumnSuggestion[];
+  suggestions: ColumnSuggestion[];
+}
+
+// Reads one row as the header: names first, then the tie between equally good columns, then (for what is still missing) the
+// columns' content. A saved mapping settles a field outright.
+function readHeader(rows: TableRow[], idx: number, override: TableMapping | undefined): HeaderReading {
+  const cells = rows[idx]!.cells;
+  const columns = columnsFor(cells, override);
+  const saved = new Set(Object.keys(override?.columns ?? {}));
+  const ambiguous: AmbiguousField[] = [];
+  for (const [field, list] of Object.entries(columnCandidates(cells)) as [Field, ColumnCandidate[]][]) {
+    if (saved.has(field)) continue;
+    const top = list.filter((c) => c.score === list[0]!.score);
+    if (top.length < 2) continue;
+    // Of equally named columns, one that holds nothing is not a rival.
+    const filled = top.filter((c) => hasData(rows, idx, c.index));
+    if (filled.length === 1) columns[field] = filled[0]!.index;
+    else if (filled.length >= 2) ambiguous.push({ field, headers: filled.map((c) => cells[c.index]!.trim()) });
+  }
+
+  const missing: Field[] = [];
+  if (columns.steps === undefined) missing.push('steps');
+  if (columns.expected === undefined) missing.push('expected');
+  if (columns.id === undefined && columns.title === undefined) missing.push('id');
+  if (columns.title === undefined) missing.push('title'); // only ever proposed, never applied from content alone
+  if (missing.length === 0) return { columns, ambiguous, inferred: [], suggestions: [] };
+
+  const suggestions = suggestColumns(rows, idx, new Set(Object.values(columns)), missing);
+  // Content alone is applied only when it completes the table: steps, expected and an ID (a title is never inferred).
+  const confident = suggestions.filter((s) => s.field !== 'title' && s.confidence >= AUTO_APPLY_CONFIDENCE);
+  const tentative = { ...columns };
+  for (const s of confident) tentative[s.field] = s.index;
+  const complete = tentative.steps !== undefined && tentative.expected !== undefined && (tentative.id !== undefined || tentative.title !== undefined);
+  if (complete && confident.length > 0) {
+    return { columns: tentative, ambiguous, inferred: confident, suggestions: suggestions.filter((s) => !confident.includes(s)) };
+  }
+  return { columns, ambiguous, inferred: [], suggestions };
+}
+
+// For a sheet whose headers matched nothing: the first row of short, non-numeric labels followed by data.
+function guessHeaderIndex(rows: TableRow[]): number {
+  const scanned = rows.slice(0, HEADER_SCAN_ROWS);
+  const widest = Math.max(0, ...scanned.map((r) => r.cells.filter((c) => c.trim() !== '').length));
+  if (widest < 3) return -1;
+  return scanned.findIndex((r, i) => {
+    const filled = r.cells.filter((c) => c.trim() !== '');
+    return i < rows.length - 1 && filled.length >= Math.max(3, Math.ceil(widest * 0.6))
+      && filled.every((c) => c.trim().length <= 60 && !/^[\d.,\s-]+$/.test(c.trim()) && !/\n/.test(c.trim()));
+  });
+}
+
 // Resolves the header row and columns of one table. Unless a header row is saved, the first of the first rows that names a
-// steps column and an expected-result column is the header (spreadsheets often carry a title block above it).
+// steps column and an expected-result column is the header (spreadsheets often carry a title block above it). When no row does,
+// the most header-like row is read by what its columns hold.
 export function resolveTable(rows: TableRow[], override: TableMapping | undefined): ResolvedTable {
-  const fail = (status: ResolvedTable['status'], reason: string, header: string[] = [], headerLine: number | null = null): ResolvedTable =>
-    ({ status, headerLine, headerIndex: -1, header, columns: {}, ignored: [], reason });
+  const fail = (status: ResolvedTable['status'], reason: string, header: string[] = [], headerLine: number | null = null, suggestions: ColumnSuggestion[] = []): ResolvedTable =>
+    ({ status, headerLine, headerIndex: -1, header, columns: {}, ignored: [], reason, ambiguous: [], inferred: [], suggestions });
   if (override?.skip) return fail('skipped', 'skipped by the saved input mapping');
   if (rows.length === 0) return fail('skipped', 'no rows');
 
@@ -157,16 +247,23 @@ export function resolveTable(rows: TableRow[], override: TableMapping | undefine
     });
   }
   if (idx < 0) {
-    // Report the row that looked most like a header, so the user sees which columns were found.
-    const best = scanned.reduce((a, r) => (Object.keys(columnsFor(r.cells, override)).length > Object.keys(columnsFor(a.cells, override)).length ? r : a), rows[0]!);
-    const found = columnsFor(best.cells, override);
-    const wanted = Object.entries(override?.columns ?? {});
-    const testLike = found.steps !== undefined || found.expected !== undefined || wanted.length > 0;
-    const missing = [found.steps === undefined ? 'steps' : '', found.expected === undefined ? 'expected result' : ''].filter(Boolean).join(' and ');
-    const reason = wanted.length > 0
-      ? `no row in the first ${HEADER_SCAN_ROWS} has the saved column(s) ${wanted.map(([f, t]) => `${f}="${t}"`).join(', ')} together with ${missing || 'the rest of the headers'}`
-      : testLike ? `no ${missing} column recognised` : 'no steps or expected-result column recognised';
-    return fail(testLike ? 'unresolved' : 'skipped', reason, best.cells, best.line);
+    const guess = guessHeaderIndex(rows);
+    const reading = guess >= 0 ? readHeader(rows, guess, override) : null;
+    if (guess >= 0 && reading!.inferred.length > 0) idx = guess;
+    else {
+      // Report the row that looked most like a header, so the user sees which columns were found.
+      const best = guess >= 0 ? rows[guess]! : scanned.reduce((a, r) => (Object.keys(columnsFor(r.cells, override)).length > Object.keys(columnsFor(a.cells, override)).length ? r : a), rows[0]!);
+      const found = columnsFor(best.cells, override);
+      const suggestions = reading?.suggestions ?? [];
+      const suggested = (f: Field) => suggestions.some((s) => s.field === f);
+      const wanted = Object.entries(override?.columns ?? {});
+      const testLike = found.steps !== undefined || found.expected !== undefined || wanted.length > 0 || (suggested('steps') && suggested('expected'));
+      const missing = [found.steps === undefined ? 'steps' : '', found.expected === undefined ? 'expected result' : ''].filter(Boolean).join(' and ');
+      const reason = wanted.length > 0
+        ? `no row in the first ${HEADER_SCAN_ROWS} has the saved column(s) ${wanted.map(([f, t]) => `${f}="${t}"`).join(', ')} together with ${missing || 'the rest of the headers'}`
+        : testLike ? `no ${missing} column recognised` : 'no steps or expected-result column recognised';
+      return fail(testLike ? 'unresolved' : 'skipped', reason, best.cells, best.line, testLike ? suggestions : []);
+    }
   }
 
   const row = rows[idx]!;
@@ -176,7 +273,7 @@ export function resolveTable(rows: TableRow[], override: TableMapping | undefine
       return fail('unresolved', `mapped column "${text}" (${field}) is not in the header row (found: ${row.cells.filter((c) => c.trim()).map((c) => JSON.stringify(c.trim())).join(', ')})`, row.cells, row.line);
     }
   }
-  const columns = columnsFor(row.cells, override);
+  const { columns, ambiguous, inferred, suggestions } = readHeader(rows, idx, override);
   // Whatever no field claims is reported, so a dropped column is visible rather than silent.
   const used = new Set(Object.values(columns));
   const stillIgnored = row.cells.filter((c, i) => c.trim() !== '' && !used.has(i)).map((c) => c.trim());
@@ -187,9 +284,9 @@ export function resolveTable(rows: TableRow[], override: TableMapping | undefine
       columns.steps === undefined ? 'steps' : '',
       columns.expected === undefined ? 'expected result' : '',
     ].filter(Boolean).join(', ');
-    return { status: 'unresolved', headerLine: row.line, headerIndex: idx, header: row.cells, columns, ignored: stillIgnored, reason: `missing column(s): ${missing}` };
+    return { status: 'unresolved', headerLine: row.line, headerIndex: idx, header: row.cells, columns, ignored: stillIgnored, reason: `missing column(s): ${missing}`, ambiguous, inferred, suggestions };
   }
-  return { status: 'ok', headerLine: row.line, headerIndex: idx, header: row.cells, columns, ignored: stillIgnored, reason: null };
+  return { status: 'ok', headerLine: row.line, headerIndex: idx, header: row.cells, columns, ignored: stillIgnored, reason: null, ambiguous, inferred, suggestions };
 }
 
 export interface TableReport {
@@ -207,7 +304,16 @@ export interface TableReport {
   sections: string[];
   titlePrefixes: { prefix: string; cases: number }[];
   cases: number;
+  // Fields with several equally good columns (the cases are held back until `input map` names one), columns read from their
+  // content, and proposals for the ones still unmapped. Headers, field names and percentages only, never cell values.
+  ambiguous: AmbiguousField[];
+  inferred: TableSuggestion[];
+  suggestions: TableSuggestion[];
 }
+
+export interface TableSuggestion { field: Field; header: string; confidence: number; reason: string }
+
+const suggestionOf = (s: ColumnSuggestion): TableSuggestion => ({ field: s.field, header: s.header, confidence: s.confidence, reason: s.reason });
 
 export function reportOf(rel: string, sheet: string | null, t: ResolvedTable): Omit<TableReport, 'moduleFrom' | 'sections' | 'titlePrefixes' | 'cases'> {
   const mapped: Partial<Record<Field, string>> = {};
@@ -215,5 +321,17 @@ export function reportOf(rel: string, sheet: string | null, t: ResolvedTable): O
   return {
     path: rel, sheet, status: t.status, reason: t.reason, headerLine: t.headerLine, mapped,
     ignoredColumns: t.ignored, headers: t.header.map((h) => h.trim()).filter(Boolean),
+    ambiguous: t.ambiguous, inferred: t.inferred.map(suggestionOf), suggestions: t.suggestions.map(suggestionOf),
   };
+}
+
+// The question a person has to answer about a table, in words: which headers, which fields, the command that settles it.
+export function mappingQuestions(r: Pick<TableReport, 'path' | 'sheet' | 'ambiguous' | 'suggestions' | 'status'>): string[] {
+  const where = r.sheet === null ? r.path : `${r.path}, sheet "${r.sheet}"`;
+  const sheetArg = r.sheet === null ? '' : ` --sheet "${r.sheet}"`;
+  const out = r.ambiguous.map((a) => `${where}: which column is the ${a.field}? ${a.headers.map((h) => JSON.stringify(h)).join(' and ')} fit equally well. Save the answer with: input map "${r.path}"${sheetArg} --column ${a.field}="<header>"`);
+  if (r.status === 'unresolved') {
+    for (const s of r.suggestions) out.push(`${where}: the ${s.field} may be the column ${JSON.stringify(s.header)} (${Math.round(s.confidence * 100)}% sure: ${s.reason}). Confirm with: input map "${r.path}"${sheetArg} --column ${s.field}=${JSON.stringify(s.header)}`);
+  }
+  return out;
 }

@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { isAbsoluteOrEscaping } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
+import { withFileLock } from '../utils/lock.ts';
 import { ARTIFACTS } from './artifact-manager.ts';
 import type { ExecutionResults } from './execution.ts';
 import type { FailureAnalysis, FailureEntry } from './failure-classifier.ts';
@@ -149,11 +150,14 @@ export function recordAttempt(rootDir: string, runDirectory: string, input: Reco
     reverted,
     recordedAt: (input.now ?? new Date()).toISOString(),
   };
-  const log = readHealingLog(runDirectory);
-  if (log.entries.some((e) => e.testId === entry.testId && e.attempt === entry.attempt)) {
-    throw new Error(`${entry.testId} attempt ${entry.attempt} is already recorded`);
-  }
-  writeJsonAtomic(healingLogPath(runDirectory), { ...log, entries: [...log.entries, entry] });
+  // Two healers finishing at once must not drop each other's entries.
+  withFileLock(`${healingLogPath(runDirectory)}.lock`, () => {
+    const log = readHealingLog(runDirectory);
+    if (log.entries.some((e) => e.testId === entry.testId && e.attempt === entry.attempt)) {
+      throw new Error(`${entry.testId} attempt ${entry.attempt} is already recorded`);
+    }
+    writeJsonAtomic(healingLogPath(runDirectory), { ...log, entries: [...log.entries, entry] });
+  });
   return entry;
 }
 

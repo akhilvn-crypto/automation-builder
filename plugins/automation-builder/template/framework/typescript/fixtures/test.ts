@@ -6,9 +6,10 @@
 // `diagnostics` (auto): collects console errors, page errors and failed requests, and attaches them
 // (secret-redacted) only when the test does not end with its expected status.
 //
-// `stepEvidence` (auto, only when the "evidence-pdf" reporter is configured): wraps `test.step` so that every step records
-// its outcome and a screenshot taken the moment it ends (also when it fails), plus a final-state screenshot when the test
-// ends. report_generation lays them out as the evidence PDF. Without that reporter nothing is captured.
+// `stepEvidence` (auto, only in audit mode with reporting.stepScreenshots and the "evidence-pdf" reporter): wraps `test.step`
+// so that every step records its outcome and a screenshot taken the moment it ends (also when it fails), plus a final-state
+// screenshot when the test ends. report_generation lays them out as the evidence PDF. Without that reporter nothing is
+// captured, so normal runs pay nothing for it. Password inputs and reporting.maskSelectors are masked in every screenshot.
 //
 // Add project-wide fixtures here (e.g. an authenticated API client) with test.extend; keep them app-agnostic.
 
@@ -18,6 +19,7 @@ import { test as base, expect } from '@playwright/test';
 import type { Page, TestInfo } from '@playwright/test';
 import { loadConfig } from '../../dependencies/engine/config/load-config.ts';
 import { redactionEnvVars } from '../../dependencies/engine/pipeline/env-file.ts';
+import { redactSensitive } from '../../dependencies/engine/utils/redact.ts';
 import {
   SCREENSHOT_MIME, SCREENSHOT_QUALITY, STEP_LOG_ATTACHMENT, STEP_LOG_DIR, STEP_LOG_FILE, STEP_LOG_SCHEMA_VERSION,
   type StepEvidenceEntry, type StepEvidenceLog,
@@ -35,7 +37,8 @@ function credentialEnvVars(): string[] {
 // Decided once per worker, when this file is loaded.
 const EVIDENCE = (() => {
   const state = loadConfig(ROOT);
-  return state.status === 'valid' && state.config.reporters.includes('evidence-pdf');
+  if (state.status !== 'valid' || !state.config.reporters.includes('evidence-pdf')) return null;
+  return { maskSelectors: ['input[type="password"]', ...(state.config.reporting?.maskSelectors ?? [])] };
 })();
 
 // The test currently running in this worker (a worker runs one test at a time).
@@ -51,7 +54,7 @@ let recording: Recording | null = null;
 const ANSI = /\u001b\[[0-9;]*m/g;
 
 function clean(text: string): string {
-  return redact(text.replace(ANSI, ''), secretValues(credentialEnvVars()));
+  return redactSensitive(redact(text.replace(ANSI, ''), secretValues(credentialEnvVars())));
 }
 
 // Attaches a file by path. Playwright copies it into the attempt's attachments/ folder; the scratch original is then removed
@@ -67,7 +70,8 @@ async function capture(r: Recording, name: string): Promise<{ screenshot: string
   if (r.page.isClosed()) return { screenshot: null, note: 'the page was already closed' };
   try {
     const file = r.testInfo.outputPath(STEP_LOG_DIR, `${name}.jpg`);
-    await r.page.screenshot({ path: file, type: 'jpeg', quality: SCREENSHOT_QUALITY, animations: 'disabled', caret: 'hide', timeout: 5_000 });
+    const mask = (EVIDENCE?.maskSelectors ?? []).map((selector) => r.page.locator(selector));
+    await r.page.screenshot({ path: file, type: 'jpeg', quality: SCREENSHOT_QUALITY, animations: 'disabled', caret: 'hide', timeout: 5_000, mask, maskColor: '#555555' });
     await attachFile(r.testInfo, name, file, SCREENSHOT_MIME);
     return { screenshot: name, note: null };
   } catch (err) {
@@ -114,7 +118,7 @@ const extended = base.extend<{ diagnostics: void; stepEvidence: void }>({
       await use();
 
       if (testInfo.status !== testInfo.expectedStatus && lines.length > 0) {
-        const body = redact(lines.join('\n'), secretValues(credentialEnvVars()));
+        const body = redactSensitive(redact(lines.join('\n'), secretValues(credentialEnvVars())));
         await testInfo.attach('diagnostics', { body, contentType: 'text/plain' });
       }
     },

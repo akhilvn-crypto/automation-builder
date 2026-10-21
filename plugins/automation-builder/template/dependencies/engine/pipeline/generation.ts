@@ -34,6 +34,8 @@ export interface GenerationManifest {
   tests: { testId: string; file: string; title: string }[]; // file is relative to automation/
   excluded: { testId: string; reason: string }[];
   sharedFilesChanged: string[]; // fixtures/pages/helpers/auth touched, relative to automation/
+  // Written by `generate assemble`: which tests were generated now and which were reused from an earlier run.
+  reuse?: { generatedTests: string[]; reusedTests: string[] };
 }
 
 // Tests are organised module by module: every file holds the tests of exactly one module, and a module's tests are not

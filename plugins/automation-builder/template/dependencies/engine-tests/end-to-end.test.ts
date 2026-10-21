@@ -101,12 +101,12 @@ test('[TC-4] Search results load', { annotation: { type: 'testId', description: 
 `;
 
 // A project configured through the CLI, with the stand-in Playwright and test cases in place.
-function setupProject(t: { after: (fn: () => void) => void }, reporters = ['html', 'json']) {
+function setupProject(t: { after: (fn: () => void) => void }, reporters = ['html', 'json'], extra: Record<string, unknown> = {}) {
   const root = tmpRoot(t);
   writeFile(root, 'package.json', JSON.stringify({ type: 'module' }));
   writeFile(root, 'node_modules/@playwright/test/cli.js', FAKE_PLAYWRIGHT);
   writeDep(root, 'input/test-cases/demo.md', CASES);
-  const cfg = { ...validConfig(), language: 'javascript', reporters };
+  const cfg = { ...validConfig(), language: 'javascript', reporters, ...extra };
   must(root, 'config', 'save', '--file', writeFile(root, 'cfg.json', JSON.stringify(cfg)));
   return root;
 }
@@ -130,7 +130,7 @@ function startRun(root: string): string {
   const specs = must(root, 'specs', 'parse', runId);
   assert.deepEqual(specs.counts, { total: 5, ready: 4, needsClarification: 1 });
   assert.equal(specs.needsClarification[0].id, 'TC-5');
-  stage(root, runId, 'test_analysis', 'completed', 'testSpecs=test-specs.json');
+  stage(root, runId, 'test_analysis', 'completed', 'canonicalCases=canonical-test-cases.json', 'testSpecs=test-specs.json');
   return runId;
 }
 
@@ -287,7 +287,7 @@ test('report generation failure is visible and blocks a clean finish', (t) => {
 });
 
 test('the evidence-pdf reporter writes the evidence page and reports missing rendering tools instead of claiming a PDF', (t) => {
-  const root = setupProject(t, ['html', 'json', 'evidence-pdf']);
+  const root = setupProject(t, ['html', 'json', 'allure', 'evidence-pdf'], { reporting: { mode: 'audit', stepScreenshots: true } });
   const runId = startRun(root);
   exploreGenerateReview(root, runId);
   scenario(root, 'initial', [pass('TC-1', 'a'), pass('TC-2', 'b'), pass('TC-3', 'c'), pass('TC-4', 'd')]);
@@ -307,7 +307,7 @@ test('the evidence-pdf reporter writes the evidence page and reports missing ren
   assert.equal(pdf.status, 'missing_dependency');
   assert.equal(pdf.path, null);
   assert.match(pdf.detail, /@playwright\/test is required to render the PDF/);
-  assert.deepEqual(r.json.reporters.filter((x: any) => x.name !== 'evidence-pdf').map((x: any) => x.status), ['generated', 'generated']);
+  assert.deepEqual(r.json.reporters.filter((x: any) => x.name !== 'evidence-pdf').map((x: any) => x.status), ['generated', 'generated', 'missing_dependency'], 'allure results are absent');
   const page = path.join(root, 'reports', runId, 'evidence-report', 'evidence-report.html');
   assert.ok(existsSync(page), 'the evidence page is still written');
   assert.match(readFileSync(page, 'utf8'), /Test evidence report/);

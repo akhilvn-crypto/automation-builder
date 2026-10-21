@@ -3,13 +3,15 @@
 // cases can contain credentials and this output goes to the agent and the chat.
 
 import path from 'node:path';
-import { FIELDS, MODULE_SOURCES, mappingKey, saveMappings, type Field, type InputMappings, type TableMapping, type TableReport } from './input-table.ts';
-import { detectFormat, listInputFiles, parseInputs, type ParseError } from './test-case-parser.ts';
+import { FIELDS, MODULE_SOURCES, mappingKey, mappingQuestions, saveMappings, type Field, type InputMappings, type TableMapping, type TableReport } from './input-table.ts';
+import { detectFormat, listInputFiles, parseInputs, unsupportedMessage, type ParseError } from './test-case-parser.ts';
 import { toPosixRelative } from '../utils/fs.ts';
 
 export interface InputInspection {
   files: { path: string; format: string | null }[];
   tables: TableReport[];
+  // What a person still has to answer about how a table is read (ambiguous columns, proposals for unmapped ones), as sentences.
+  questions: string[];
   modules: { module: string; moduleSlug: string; cases: number; sources: string[] }[];
   errors: ParseError[];
   unsupported: string[];
@@ -30,10 +32,11 @@ export function inspectInput(baseDir: string, inputPath: string, mappings: Input
   return {
     files: files.map((f) => ({ path: toPosixRelative(baseDir, f), format: detectFormat(f) })),
     tables: parsed.tables,
+    questions: parsed.tables.flatMap(mappingQuestions),
     modules: [...modules.values()],
     errors: parsed.errors,
     unsupported: parsed.unsupported,
-    ok: parsed.errors.length === 0 && parsed.document.specs.length > 0,
+    ok: parsed.errors.length === 0 && parsed.document.specs.length > 0 && !parsed.tables.some((t) => t.ambiguous.length > 0),
   };
 }
 
@@ -55,7 +58,7 @@ export type MapResult =
 export function applyMapping(baseDir: string, rootDir: string, current: InputMappings, req: MapRequest): MapResult {
   const abs = path.resolve(baseDir, req.file);
   const format = detectFormat(abs);
-  if (format !== 'csv' && format !== 'xlsx') return { ok: false, message: `${req.file} is not a CSV or Excel file; only tables can be mapped` };
+  if (format === null) return { ok: false, message: `${req.file}: ${unsupportedMessage(abs)}` };
   const key = mappingKey(toPosixRelative(baseDir, abs), req.sheet);
 
   const next: InputMappings = { ...current, tables: { ...current.tables } };
@@ -96,7 +99,7 @@ export function applyMapping(baseDir: string, rootDir: string, current: InputMap
   const mine = inspection.tables.filter((t) => (req.sheet === null ? true : t.sheet === req.sheet));
   if (req.sheet !== null && mine.length === 0) return { ok: false, message: `sheet "${req.sheet}" was not found in ${req.file}`, tables: inspection.tables };
   // A mapping aimed at one table (a CSV, or a named sheet) must make it readable; a workbook-wide one only must not break a sheet.
-  const targeted = format === 'csv' || req.sheet !== null;
+  const targeted = format !== 'xlsx' || req.sheet !== null;
   const broken = req.skip ? undefined : mine.find((t) => (targeted ? t.status !== 'ok' : t.status === 'unresolved'));
   if (broken) return { ok: false, message: `not saved: ${broken.reason}`, tables: mine };
   saveMappings(rootDir, next);

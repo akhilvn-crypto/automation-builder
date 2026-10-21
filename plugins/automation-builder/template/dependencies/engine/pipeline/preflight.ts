@@ -9,7 +9,9 @@ import path from 'node:path';
 import { loadConfig, type ConfigState } from '../config/load-config.ts';
 import { readScaffold, type Scaffold } from '../config/scaffold.ts';
 import type { AutomationConfig } from '../config/schema.ts';
+import { AUTH_DIR, AUTH_STATE_FILE } from '../config/playwright-config.ts';
 import { readJson } from '../utils/fs.ts';
+import { isIgnored } from '../utils/gitignore.ts';
 
 export type CheckStatus = 'ok' | 'missing' | 'error';
 
@@ -233,6 +235,21 @@ export function runPreflight(rootDir: string, deps: PreflightDeps = defaultDeps)
     purpose: 'Generate the Allure HTML report from allure-results',
     installCommand: allureLocal || allureGlobal ? null : 'npm install --save-dev --save-exact allure',
     detail: 'Verify current Allure CLI guidance before installing (Allure 3 ships as the npm "allure" package).',
+  });
+
+  // Secrets and saved sessions must never be committed. Required as soon as the configuration uses either.
+  const usesSecrets = config !== null && (config.auth.credentialEnvVars.length > 0 || config.auth.approach === 'storage-state');
+  const unprotected = [['.env', '.env'], [AUTH_STATE_FILE, `saved login state (${AUTH_DIR}/)`]].filter(([file]) => !isIgnored(rootDir, file!)).map(([, label]) => label!);
+  checks.push({
+    id: 'secrets-ignored',
+    label: 'Secrets excluded from version control',
+    status: unprotected.length === 0 ? 'ok' : 'error',
+    required: usesSecrets,
+    version: null,
+    location: 'project',
+    purpose: `Credentials (.env) and saved login sessions (${AUTH_DIR}/) must never be committed`,
+    installCommand: null,
+    detail: unprotected.length === 0 ? null : `not covered by automation/.gitignore: ${unprotected.join(', ')}. Add ".env" and "${AUTH_DIR}/storage-state*.json" to it.`,
   });
 
   const configOk = cfgState.status === 'valid';

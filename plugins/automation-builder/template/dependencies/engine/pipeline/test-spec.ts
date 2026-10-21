@@ -17,13 +17,15 @@ export const AMBIGUITY_KINDS = [
   'undefined_data_reference', // step uses {name} that the Test Data section does not define
   'possible_secret_literal', // a credential-looking literal; must become an env var reference
   'vague_expected_result', // e.g. "works correctly" — not verifiable as written
+  'ambiguous_column_mapping', // two columns of the table fit the same field equally well; a person must say which one
+  'untitled_case', // the source gives the case neither an ID nor a title, so it cannot be identified (invalid)
 ] as const;
 export type AmbiguityKind = (typeof AMBIGUITY_KINDS)[number];
 
 // Kinds that make a case unusable for generation until a human clarifies it.
 export const BLOCKING_AMBIGUITIES: readonly AmbiguityKind[] = [
   'missing_expected_result', 'missing_steps', 'empty_step', 'duplicate_id',
-  'undefined_data_reference', 'possible_secret_literal',
+  'undefined_data_reference', 'possible_secret_literal', 'ambiguous_column_mapping', 'untitled_case',
 ];
 
 export interface SourceRef {
@@ -80,6 +82,9 @@ export interface TestSpecDocument {
   schemaVersion: typeof TEST_SPEC_SCHEMA_VERSION;
   generatedAt: string;
   sources: SourceFile[];
+  // The canonical test cases (canonical.ts) these specs are projected from. `specs parse` always writes it; the pipeline refuses
+  // specs whose hash does not match the canonical document of the run.
+  canonical?: { schemaVersion: string; sha256: string };
   specs: TestSpec[];
 }
 

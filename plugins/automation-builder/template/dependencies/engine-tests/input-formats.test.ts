@@ -171,8 +171,9 @@ test('files the engine cannot read say what to do instead; corrupt workbooks fai
   writeDep(root, 'input/test-cases/broken.xlsx', 'not a zip');
   writeDep(root, 'input/test-cases/notes.txt', 'ignored');
   const { errors, unsupported } = parseAll(root);
-  assert.deepEqual(unsupported, ['input/test-cases/notes.txt']);
+  assert.deepEqual(unsupported, ['input/test-cases/legacy.xls', 'input/test-cases/notes.txt']);
   assert.match(errors.find((e) => e.path.endsWith('legacy.xls'))!.message, /save as \.xlsx/);
+  assert.match(errors.find((e) => e.path.endsWith('notes.txt'))!.message, /unsupported file type "\.txt".*\.md, \.csv, \.xlsx/);
   assert.match(errors.find((e) => e.path.endsWith('broken.xlsx'))!.message, /not a valid \.xlsx/);
 });
 

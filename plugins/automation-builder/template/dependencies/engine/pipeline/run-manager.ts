@@ -6,12 +6,13 @@ import path from 'node:path';
 import { validateConfig, type AutomationConfig } from '../config/schema.ts';
 import { readJson, sha256File, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { inputBaseDir } from '../utils/layout.ts';
+import { withFileLock } from '../utils/lock.ts';
 import { ARTIFACTS, EVIDENCE_DIR, REPORTS_DIR, RUN_ID_PATTERN, checkArtifactPath, runDir, runsDir } from './artifact-manager.ts';
 import type { DependencyChange } from './dependency-log.ts';
 import { StageContractError, checkStageOutputs } from './stage-contracts.ts';
 import {
   COMMANDS, STAGES, applyTransition, deriveRunStatus, initialStages, isStageStatus, nextStage,
-  recoverInterrupted, type Command, type RunStatus, type StageMap, type StageName, type StageStatus,
+  recoverInterrupted, type Command, type RunStatus, type StageAttempt, type StageMap, type StageName, type StageStatus,
 } from './state-manager.ts';
 
 export const MANIFEST_SCHEMA_VERSION = 1;
@@ -146,6 +147,27 @@ export function saveManifest(rootDir: string, m: RunManifest): void {
   writeJsonAtomic(manifestPath(rootDir, m.runId), m);
 }
 
+// Every change to an existing manifest goes through here: the load -> change -> save cycle holds a per-run lock, so
+// concurrent CLI processes (parallel workers, stage agents) cannot overwrite each other's updates. `change` must be
+// quick and must not call the Playwright runner or an agent.
+export function mutateManifestWith<R>(
+  rootDir: string,
+  runId: string,
+  change: (m: RunManifest) => { manifest: RunManifest; result: R },
+): { manifest: RunManifest; result: R } {
+  return withFileLock(path.join(runDir(rootDir, runId), '.manifest.lock'), () => {
+    const loaded = loadManifest(rootDir, runId);
+    if (!loaded.ok) throw new Error(`manifest for ${runId} is invalid: ${loaded.issues.join('; ')}`);
+    const out = change(loaded.manifest);
+    if (out.manifest !== loaded.manifest) saveManifest(rootDir, out.manifest);
+    return out;
+  });
+}
+
+export function mutateManifest(rootDir: string, runId: string, change: (m: RunManifest) => RunManifest): RunManifest {
+  return mutateManifestWith(rootDir, runId, (m) => ({ manifest: change(m), result: null })).manifest;
+}
+
 export type LoadManifestResult = { ok: true; manifest: RunManifest } | { ok: false; issues: string[] };
 
 // Loads and fully validates a manifest. Never trust a manifest that fails validation.
@@ -184,6 +206,7 @@ export function validateManifest(v: unknown, runDirectory: string): string[] {
       if (!rec) issues.push(`stage "${s}" is missing`);
       else if (!isStageStatus(rec.status)) issues.push(`stage "${s}" has invalid status ${JSON.stringify(rec.status)}`);
       else if (!Array.isArray(rec.artifacts)) issues.push(`stage "${s}" artifacts must be an array`);
+      else if (rec.attempts !== undefined) issues.push(...validateAttempts(s, rec.attempts));
     }
     for (const k of Object.keys(m.stages)) {
       if (!(STAGES as readonly string[]).includes(k)) issues.push(`unknown stage "${k}"`);
@@ -202,6 +225,22 @@ export function validateManifest(v: unknown, runDirectory: string): string[] {
   }
   if (!m.healing || typeof m.healing.attemptsByTest !== 'object') issues.push('healing record is missing');
   return issues;
+}
+
+function validateAttempts(stage: string, v: unknown): string[] {
+  if (!Array.isArray(v)) return [`stage "${stage}" attempts must be an array`];
+  return v.flatMap((a: Partial<StageAttempt> | null, i) => {
+    const at = `stage "${stage}" attempt ${i + 1}`;
+    if (typeof a !== 'object' || a === null) return [`${at} must be an object`];
+    const start = Date.parse(a.startedAt as string);
+    const end = Date.parse(a.endedAt as string);
+    if (Number.isNaN(start) || Number.isNaN(end)) return [`${at} has an invalid timestamp`];
+    const issues: string[] = [];
+    if (end < start) issues.push(`${at} ends before it starts`);
+    if (!['completed', 'failed', 'blocked', 'cancelled'].includes(a.status as string)) issues.push(`${at} has invalid status ${JSON.stringify(a.status)}`);
+    if (typeof a.interrupted !== 'boolean') issues.push(`${at} interrupted must be a boolean`);
+    return issues;
+  });
 }
 
 function refresh(m: RunManifest, now: string): RunManifest {
@@ -228,36 +267,32 @@ export function updateStage(
   to: StageStatus,
   opts: UpdateStageOptions = {},
 ): RunManifest {
-  const loaded = loadManifest(rootDir, runId);
-  if (!loaded.ok) throw new Error(`manifest for ${runId} is invalid: ${loaded.issues.join('; ')}`);
-  const m = loaded.manifest;
   const now = (opts.clock ?? systemClock)().toISOString();
-
   const newArtifacts = opts.artifacts ?? {};
   for (const [name, rel] of Object.entries(newArtifacts)) {
     const err = checkArtifactPath(runDir(rootDir, runId), rel);
     if (err) throw new Error(`cannot register artifact "${name}": ${err}`);
   }
 
-  if (to === 'completed') {
-    const issues = checkStageOutputs(stage, {
-      rootDir, runDir: runDir(rootDir, runId), manifest: m, artifacts: { ...m.artifacts, ...newArtifacts },
-    });
-    if (issues.length > 0) {
-      throw new StageContractError(`stage "${stage}" cannot complete: ${issues.join('; ')}`);
+  return mutateManifest(rootDir, runId, (m) => {
+    if (to === 'completed') {
+      const issues = checkStageOutputs(stage, {
+        rootDir, runDir: runDir(rootDir, runId), manifest: m, artifacts: { ...m.artifacts, ...newArtifacts },
+      });
+      if (issues.length > 0) {
+        throw new StageContractError(`stage "${stage}" cannot complete: ${issues.join('; ')}`);
+      }
     }
-  }
 
-  const stages = applyTransition(m.stages, stage, to, now, opts.message ?? null);
-  const rel = Object.values(newArtifacts);
-  stages[stage] = { ...stages[stage], artifacts: [...new Set([...stages[stage].artifacts, ...rel])] };
+    const stages = applyTransition(m.stages, stage, to, now, opts.message ?? null);
+    const rel = Object.values(newArtifacts);
+    stages[stage] = { ...stages[stage], artifacts: [...new Set([...stages[stage].artifacts, ...rel])] };
 
-  const updated = refresh(
-    { ...m, stages, artifacts: { ...m.artifacts, ...newArtifacts }, startedAt: m.startedAt ?? (to === 'running' ? now : null) },
-    now,
-  );
-  saveManifest(rootDir, updated);
-  return updated;
+    return refresh(
+      { ...m, stages, artifacts: { ...m.artifacts, ...newArtifacts }, startedAt: m.startedAt ?? (to === 'running' ? now : null) },
+      now,
+    );
+  });
 }
 
 // Where a run stopped, derived from the manifest alone, so a new session can pick up without the old chat.
@@ -297,12 +332,10 @@ export function prepareResume(rootDir: string, runId: string, clock: Clock = sys
   const loaded = loadManifest(rootDir, runId);
   if (!loaded.ok) return loaded;
   const now = clock().toISOString();
-  const { stages, recovered } = recoverInterrupted(loaded.manifest.stages, now);
-  let m = loaded.manifest;
-  if (recovered.length > 0) {
-    m = refresh({ ...m, stages }, now);
-    saveManifest(rootDir, m);
-  }
+  const { manifest: m, result: recovered } = mutateManifestWith(rootDir, runId, (current) => {
+    const r = recoverInterrupted(current.stages, now);
+    return { manifest: r.recovered.length > 0 ? refresh({ ...current, stages: r.stages }, now) : current, result: r.recovered };
+  });
   if (m.status === 'cancelled' || m.status === 'completed') {
     return { ok: false, issues: [`run ${runId} is ${m.status} and cannot be resumed`] };
   }
@@ -339,11 +372,7 @@ export function resumeLatest(
 export function setTestCounts(rootDir: string, runId: string, counts: TestCounts): RunManifest {
   const errors = validateTestCounts(counts);
   if (errors.length > 0) throw new Error(`invalid test counts: ${errors.join('; ')}`);
-  const loaded = loadManifest(rootDir, runId);
-  if (!loaded.ok) throw new Error(`manifest for ${runId} is invalid: ${loaded.issues.join('; ')}`);
-  const updated = { ...loaded.manifest, testCounts: counts };
-  saveManifest(rootDir, updated);
-  return updated;
+  return mutateManifest(rootDir, runId, (m) => ({ ...m, testCounts: counts }));
 }
 
 export function validateTestCounts(c: TestCounts): string[] {
@@ -361,45 +390,35 @@ export function validateTestCounts(c: TestCounts): string[] {
 // so a run never silently switches configuration mid-way.
 export function setRunConfig(rootDir: string, runId: string, config: AutomationConfig): RunManifest {
   const valid = requireValidConfig(config);
-  const loaded = loadManifest(rootDir, runId);
-  if (!loaded.ok) throw new Error(`manifest for ${runId} is invalid: ${loaded.issues.join('; ')}`);
-  const m = loaded.manifest;
-  if (m.stages.configuration.status !== 'running') {
-    throw new Error(`config can only be set while the configuration stage is running (it is ${m.stages.configuration.status})`);
-  }
-  const updated: RunManifest = {
-    ...m,
-    config: valid,
-    healing: { ...m.healing, maxAttemptsPerTest: valid.healing.maxAttemptsPerTest },
-  };
-  saveManifest(rootDir, updated);
-  return updated;
+  return mutateManifest(rootDir, runId, (m) => {
+    if (m.stages.configuration.status !== 'running') {
+      throw new Error(`config can only be set while the configuration stage is running (it is ${m.stages.configuration.status})`);
+    }
+    return { ...m, config: valid, healing: { ...m.healing, maxAttemptsPerTest: valid.healing.maxAttemptsPerTest } };
+  });
 }
 
 export class HealingLimitError extends Error {}
 
 // Reserve one healing attempt for a test. Throws once the per-test cap is reached.
 export function recordHealingAttempt(rootDir: string, runId: string, testId: string): { attempt: number; remaining: number } {
-  const loaded = loadManifest(rootDir, runId);
-  if (!loaded.ok) throw new Error(`manifest for ${runId} is invalid: ${loaded.issues.join('; ')}`);
-  const m = loaded.manifest;
-  const max = m.healing.maxAttemptsPerTest;
-  if (max === null) throw new Error('healing limit is unknown: run has no configuration yet');
-  const used = m.healing.attemptsByTest[testId] ?? 0;
-  if (used >= max) {
-    throw new HealingLimitError(`healing limit reached for ${testId} (${used}/${max}); report as unresolved`);
-  }
-  const attempt = used + 1;
-  saveManifest(rootDir, { ...m, healing: { ...m.healing, attemptsByTest: { ...m.healing.attemptsByTest, [testId]: attempt } } });
-  return { attempt, remaining: max - attempt };
+  return mutateManifestWith(rootDir, runId, (m) => {
+    const max = m.healing.maxAttemptsPerTest;
+    if (max === null) throw new Error('healing limit is unknown: run has no configuration yet');
+    const used = m.healing.attemptsByTest[testId] ?? 0;
+    if (used >= max) {
+      throw new HealingLimitError(`healing limit reached for ${testId} (${used}/${max}); report as unresolved`);
+    }
+    const attempt = used + 1;
+    return {
+      manifest: { ...m, healing: { ...m.healing, attemptsByTest: { ...m.healing.attemptsByTest, [testId]: attempt } } },
+      result: { attempt, remaining: max - attempt },
+    };
+  }).result;
 }
 
 export function recordSetupChange(rootDir: string, runId: string, change: DependencyChange): RunManifest {
-  const loaded = loadManifest(rootDir, runId);
-  if (!loaded.ok) throw new Error(`manifest for ${runId} is invalid: ${loaded.issues.join('; ')}`);
-  const updated = { ...loaded.manifest, setupChanges: [...loaded.manifest.setupChanges, change] };
-  saveManifest(rootDir, updated);
-  return updated;
+  return mutateManifest(rootDir, runId, (m) => ({ ...m, setupChanges: [...m.setupChanges, change] }));
 }
 
 // Retention: only when config.retention.keepRuns is set (an explicit user policy). Deletes the oldest

@@ -57,7 +57,13 @@ export function planModules(doc: TestSpecDocument, language: Language, rootDir: 
 
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
-function renderSpec(s: TestSpec): string[] {
+// Source information the canonical schema keeps as metadata is written under a reserved "### Metadata" heading, so reading the
+// file back restores it (a key such as "Steps" can then never be mistaken for the section of that name).
+const metaKey = (k: string): string => k.replace(/[^A-Za-z0-9 /().&'-]/g, ' ').replace(/\s+/g, ' ').trim();
+
+export type MetadataOf = (id: string) => Record<string, string> | undefined;
+
+function renderSpec(s: TestSpec, metadata?: Record<string, string>): string[] {
   const out = [`## ${s.id}: ${oneLine(s.title)}`];
   if (s.priority) out.push(`Priority: ${oneLine(s.priority)}`);
   if (s.tags.length) out.push(`Tags: ${s.tags.join(', ')}`);
@@ -71,32 +77,34 @@ function renderSpec(s: TestSpec): string[] {
     for (const st of s.steps) out.push(`${st.index}. ${oneLine(st.action)}${st.expected ? ` -> Expected: ${oneLine(st.expected)}` : ''}`);
   }
   if (s.expectedResults.length) out.push('### Expected Results', ...s.expectedResults.map((e) => `- ${oneLine(e)}`));
+  const meta = Object.entries(metadata ?? {}).flatMap(([k, v]) => (/^[A-Za-z]/.test(metaKey(k)) && oneLine(v) ? [`- ${metaKey(k)}: ${oneLine(v)}`] : []));
+  if (meta.length) out.push('### Metadata', ...meta);
   return out;
 }
 
 // One module as a Markdown file in the format `specs parse` reads natively. Built from the parsed specs, so credentials
 // appear as env:VAR references (never values) and inline emails as {placeholders}.
-export function renderModuleMarkdown(module: string, specs: TestSpec[]): string {
+export function renderModuleMarkdown(module: string, specs: TestSpec[], metadataOf?: MetadataOf): string {
   const lines = [`# ${oneLine(module)}`, ''];
-  for (const s of specs) lines.push(...renderSpec(s), '');
+  for (const s of specs) lines.push(...renderSpec(s, metadataOf?.(s.id)), '');
   return lines.join('\n');
 }
 
 // One case as its own Markdown file (the module heading is kept so the case lands in the same module when it is read back).
-export function renderCaseMarkdown(spec: TestSpec): string {
-  return [`# ${oneLine(spec.module)}`, '', ...renderSpec(spec), ''].join('\n');
+export function renderCaseMarkdown(spec: TestSpec, metadata?: Record<string, string>): string {
+  return [`# ${oneLine(spec.module)}`, '', ...renderSpec(spec, metadata), ''].join('\n');
 }
 
 export interface NormalizedFile { module: string; moduleSlug: string; file: string; cases: number }
 
 // Writes <dir>/<slug>.md for every module. The run keeps these as the record of how the original input was understood;
 // copy one into the input folder to continue in the canonical format.
-export function writeNormalizedInput(dir: string, doc: TestSpecDocument): NormalizedFile[] {
+export function writeNormalizedInput(dir: string, doc: TestSpecDocument, metadataOf?: MetadataOf): NormalizedFile[] {
   rmSync(dir, { recursive: true, force: true }); // a re-parse must not leave files of modules that no longer exist
   mkdirSync(dir, { recursive: true });
   return [...groupByModule(doc.specs)].map(([slug, specs]) => {
     const file = `${slug}.md`;
-    writeFileSync(path.join(dir, file), renderModuleMarkdown(specs[0]!.module, specs));
+    writeFileSync(path.join(dir, file), renderModuleMarkdown(specs[0]!.module, specs, metadataOf));
     return { module: specs[0]!.module, moduleSlug: slug, file, cases: specs.length };
   });
 }

@@ -15,15 +15,15 @@ artifacts, before the next one starts:
 | 1 | preflight | Read-only check of Node, npm, Playwright, browsers and config. Nothing is changed. |
 | 2 | configuration | Asks only for missing settings (base URL, environment, test-case path, browsers, evidence, reporters, auth) and saves them to `automation/config/automation.config.json`. Each missing dependency is offered separately, with the exact command. |
 | 3 | input_validation | Checks the test-case files: format, IDs, steps, expected results, and no literal credentials. |
-| 4 | test_analysis | Normalizes the cases into `test-specs.json`. Ambiguous cases are flagged and become questions for you; steps and expected results are never invented. |
+| 4 | test_analysis | Normalizes the cases into `canonical-test-cases.json` and projects `test-specs.json` from it (cached while the input is unchanged). Ambiguous cases are flagged and become questions for you; steps and expected results are never invented. An agent is used only when something needs judgment. |
 | 5 | application_exploration | Opens the real app (Playwright CLI or the aria-snapshot fallback), records the pages and durable locators, and saves evidence. |
-| 6 | test_generation | Writes Playwright tests in `automation/tests/` (each file marked `// @automation-builder:generated`; plus page objects in `automation/pages/` where they remove duplication) from the specs and the observed UI, using shared fixtures. |
+| 6 | test_generation | Writes Playwright tests in `automation/tests/` (each file marked `// @automation-builder:generated`; plus page objects in `automation/pages/` where they remove duplication) from the specs and the observed UI, using shared fixtures. Unchanged tests from an earlier run are reused; the rest are generated in parallel, one module file per generator. |
 | 7 | script_review | Static review plus typecheck: assertions match the specs, locators are reliable, and no secrets, sleeps or skips. |
 | 8 | execution | Runs the tests and normalizes the results. Collects screenshots, video and traces. |
 | 9 | failure_triage | Classifies each failure: script defect, application defect, environment, test data or flaky. |
 | 10 | healing | Repairs **only** confirmed script defects, at most 2 attempts per test. A guard rejects any patch that weakens assertions. Patches that don't fix the test are reverted. |
 | 11 | regression_validation | Re-runs the healed tests with retries off. |
-| 12 | report_generation | Generates HTML / JSON / JUnit / Allure reports (whichever you chose) and `summary.md`. Choose **evidence-pdf** for the custom evidence report: one PDF with every executed step next to the screenshot taken when it ended (see below). |
+| 12 | report_generation | Generates HTML / JSON / JUnit / Allure reports (whichever you chose) and `summary.md`. Report mode (`standard`, `full`, `audit`) decides how much is produced; **audit** can add the custom evidence report: one PDF with every executed step next to the screenshot taken when it ended (see below). `reportGeneration` (did the reporters work) is reported apart from the test counts. |
 | 13 | finalization | Sets the final outcomes: `passed`, `failed`, `flaky`, `healed`, `blocked`, `skipped`. |
 
 Each run's state lives on disk in `dependencies/runs/<run-id>/`, so a stopped or blocked run can be resumed. Application
@@ -100,7 +100,7 @@ that is not framework:
 automation/                       the framework only
   pages/BasePage.*                page objects (mandatory folder)
   tests/                          all tests; files marked "@automation-builder:generated" are pipeline-owned, the rest are yours
-  helpers/test-data.*             requireEnv(), uniqueSuffix(), redact() (mandatory folder)
+  helpers/test-data.*             requireEnv(), requireWorkerEnv(), uniqueSuffix(), redact() (mandatory folder)
   fixtures/test.*                 shared test/expect with automatic failure diagnostics
   config/                         approved settings (automation.config.json)
   reports/  test-results/         generated per run: <run-id>/<label>/ (reports; screenshots, video, traces)
@@ -129,7 +129,15 @@ test case, named after its ID, so a single case is easy to find and edit) and sa
 `Scenario`, `Procedure`, `Expected Outcome` …), a title block above the table is skipped, and one sheet per module works. If a layout
 isn't recognised, Claude asks which of your headers is which and remembers the answer (`input inspect` / `input map`); you never
 have to reformat the file. Columns that match nothing (Status, Actual Result, …) are listed, never silently dropped. The same cases are written
-back in the pipeline's own format to `runs/<run-id>/normalized-input/`. Examples are in `dependencies/docs/examples/`:
+back in the pipeline's own format to `runs/<run-id>/normalized-input/`.
+
+Every format is normalized once into `canonical-test-cases.json` (each case with its source row or line and a status: `valid`,
+`warning`, `needs_clarification` or `invalid`); `test-specs.json` is projected from it, and nothing downstream reads your original
+files. Two details about layouts: when two columns fit a field equally well (`Steps` and `Test Steps`), the cases of that table wait
+until you say which one (`input map`); when no header names the steps, expected result or ID, the columns' content is read and the
+reading is used only at 90% confidence or better, reported as a warning you can confirm. Known limits: step-level test data is kept
+only in the canonical document (a case imported as Markdown keeps its case-level data), and in a Markdown case an unindented plain-text
+line inside Steps or Expected Results can be read as metadata. Examples are in `dependencies/docs/examples/`:
 
 ```markdown
 ## TC-001: Valid user can sign in
@@ -225,7 +233,8 @@ the earlier Claude Code conversation, because everything it needs is in `depende
 ```
 dependencies/runs/<run-id>/              pipeline state
   manifest.json            stages, statuses, config snapshot, input hashes, setup changes
-  test-specs.json          normalized test cases
+  canonical-test-cases.json  every test case in one schema, with its validation status
+  test-specs.json          projected from the canonical cases; what later stages read
   exploration/             observed pages, locators, snapshots
   execution-results.json   normalized results
   failure-analysis.json    category + confidence + evidence per failure
@@ -246,10 +255,19 @@ Then run `npm run demo:app` from `dependencies/` (serves on `http://localhost:41
 dependencies/demo/test-cases`, using base URL `http://localhost:4173` and environment `demo`. DEMO-1 and DEMO-2 pass. DEMO-3
 fails as an **application defect** (the cart total bug is deliberate), and the pipeline reports it without healing it.
 
+## Doing less work, safely
+
+Runs reuse what is provably unchanged (normalized specs, generated tests, review results, the typecheck, saved exploration observations),
+ask an agent only where judgment is needed, validate saved login state before trusting it, and keep parallel work from colliding.
+`cache status <run-id>` shows what was reused and why anything was rebuilt; `agents plan` shows which stages needed an agent;
+`run compare <baseline> <run>` checks that no test went missing or got worse before it believes a speed-up. The mechanics, trade-offs and
+limits are in `dependencies/docs/pipeline-efficiency.md` after `init`, and in `plugins/automation-builder/template/dependencies/docs/`.
+
 ## Custom evidence report (`evidence-pdf`)
 
-For QA sign-off you often need proof of *what was executed*, not just a pass/fail count. Pick **evidence-pdf** among the
-reporters during setup and the run ends with `automation/reports/<run-id>/evidence-report/evidence-report.pdf`:
+For QA sign-off you often need proof of *what was executed*, not just a pass/fail count. Choose **audit** report mode during setup and
+opt in to step screenshots and the **evidence-pdf** reporter (both off by default), and the run ends with
+`automation/reports/<run-id>/evidence-report/evidence-report.pdf`:
 
 - a cover page with the run, environment, counts, a clickable list of tests, and any **evidence gaps**;
 - per test: the module, preconditions, the steps of the test case, then **every executed step with its screenshot**
@@ -263,6 +281,8 @@ this reporter is chosen); `report build` lays them out as one self-contained HTM
 Playwright + Chromium, so there is **no extra package**. Chromium must be installed (preflight asks to approve it if you
 only run Firefox/WebKit). Generated tests wrap each expected result in `test.step('Expected: …')`, so every check has its own
 screenshot. Cost: a JPEG per step for every test, passing ones included.
+
+Password fields (and `reporting.maskSelectors`) are masked in the screenshots; other visible page data is not.
 
 Existing project? Run `/automation-builder:init --update`: an unmodified `fixtures/test.*` is refreshed; a customised one
 is left alone and you get the exact snippet to copy.

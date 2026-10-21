@@ -19,12 +19,19 @@ export const ARTIFACTS = {
   manifest: 'manifest.json',
   inputValidation: 'input-validation.json',
   inputCopyDir: 'input', // verbatim copy of the original test-case files
-  testSpecs: 'test-specs.json',
+  canonicalCases: 'canonical-test-cases.json', // every test case in the canonical schema, with its validation status (canonical.ts)
+  testSpecs: 'test-specs.json', // projected from canonicalCases; the file generation, exploration and review read
   normalizedInputDir: 'normalized-input', // the test cases re-written in the pipeline's Markdown format, one file per module
   explorationDir: 'exploration',
   exploration: 'exploration/exploration.json',
+  explorationPlan: 'exploration/exploration-plan.json', // per-test-case explore/revalidate/reuse decisions
+  explorationFresh: 'exploration/fresh.json', // what the explorer observed in this run (input to `explore assemble`)
+  explorationRevalidation: 'exploration/revalidation.json', // saved observations re-checked against this run's snapshots
+  generationDir: 'generation', // generation plan and per-batch manifests (parallel generation)
+  generationPlan: 'generation/plan.json', // per test case: generate | reuse, with reasons, and one batch per module file
   generationManifest: 'generation-manifest.json',
   generationReport: 'generation-report.md',
+  reviewPlan: 'review-plan.json', // which tests still need the reviewer agent, which have a valid earlier review
   reviewReport: 'review-report.json',
   reviewSummary: 'review-report.md',
   executionResults: 'execution-results.json',
@@ -35,6 +42,11 @@ export const ARTIFACTS = {
   rerunsDir: 'reruns', // normalized results of targeted reruns, one file per label
   summary: 'summary.json',
   summaryMarkdown: 'summary.md',
+  metrics: 'metrics.json', // derived from the manifest + artifacts; safe to regenerate
+  cacheDecisions: 'cache-decisions.json', // every reuse/rebuild decision of this run, with reasons
+  agentUsage: 'agents.json', // which stages needed an agent, which ran deterministically, recorded invocations
+  briefsDir: 'briefs', // bounded structured inputs handed to stage agents
+  authState: 'auth-state.json', // how stored authentication state was handled for this run (no secrets)
 } as const;
 
 // Execution labels name one Playwright invocation inside a run: "initial", "heal-TC-001-1", "regression".

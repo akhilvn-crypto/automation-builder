@@ -53,12 +53,23 @@ export const COMMAND_STAGES: Record<Command, readonly StageName[]> = {
 export const RUN_STATUSES = ['in_progress', 'completed', 'failed', 'blocked', 'cancelled'] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+// One start->end span of a stage. A stage that is retried after failing/blocking has several.
+export interface StageAttempt {
+  startedAt: string;
+  endedAt: string;
+  status: Exclude<StageStatus, 'pending' | 'running' | 'skipped'>; // how the attempt ended
+  interrupted: boolean; // true = recovered after the process died, not ended by an explicit transition
+  message: string | null;
+}
+
 export interface StageRecord {
   status: StageStatus;
   startedAt: string | null;
   endedAt: string | null;
   message: string | null;
   artifacts: string[]; // relative to the run directory
+  // Finished attempts, oldest first. Absent in manifests written before metrics existed.
+  attempts?: StageAttempt[];
 }
 
 export type StageMap = Record<StageName, StageRecord>;
@@ -120,6 +131,12 @@ export function applyTransition(
     next.endedAt = null;
   } else {
     next.endedAt = now;
+    // Leaving `running` closes an attempt; keep it so retries do not erase earlier durations.
+    if (current.status === 'running' && current.startedAt !== null) {
+      const status = to as StageAttempt['status']; // running -> {completed|failed|blocked|cancelled} only
+      const attempt: StageAttempt = { startedAt: current.startedAt, endedAt: now, status, interrupted: false, message: next.message };
+      next.attempts = [...(current.attempts ?? []), attempt];
+    }
   }
   return { ...stages, [stage]: next };
 }
@@ -151,6 +168,9 @@ export function recoverInterrupted(stages: StageMap, now: string): { stages: Sta
   for (const s of STAGES) {
     if (out[s].status === 'running') {
       out = applyTransition(out, s, 'failed', now, 'interrupted: stage was running when the previous process stopped');
+      // Distinguish "the process died" from a stage that reported its own failure.
+      const attempts = (out[s].attempts ?? []).map((a, i, all) => (i === all.length - 1 ? { ...a, interrupted: true } : a));
+      out = { ...out, [s]: { ...out[s], attempts } };
       recovered.push(s);
     }
   }

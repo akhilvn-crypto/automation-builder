@@ -79,9 +79,12 @@ function inputs(root: string, r: ExecutionResults, doc: TestSpecDocument | null,
 
 const fakePdf: PdfRenderer = (_root, _html, pdf) => { writeFileSync(pdf, '%PDF-1.7\nfake'); return { ok: true, output: '' }; };
 
-test('"evidence-pdf" is an accepted reporter', () => {
-  const cfg = { ...validConfig(), reporters: ['html', 'json', 'evidence-pdf'] };
-  assert.equal(validateConfig(cfg).ok, true);
+test('"evidence-pdf" is accepted only in audit mode with step screenshots switched on', () => {
+  const audit = { ...validConfig(), reporters: ['html', 'json', 'allure', 'evidence-pdf'], reporting: { mode: 'audit', stepScreenshots: true } };
+  assert.equal(validateConfig(audit).ok, true);
+  assert.equal(validateConfig({ ...audit, reporting: { mode: 'audit' } }).ok, false, 'step screenshots are opt-in and the PDF needs them');
+  assert.equal(validateConfig({ ...audit, reporting: { mode: 'full' } }).ok, false);
+  assert.equal(validateConfig({ ...validConfig(), reporters: ['html', 'json', 'evidence-pdf'] }).ok, false, 'no mode, no PDF');
 });
 
 test('parseStepLog accepts a log and rejects other shapes', () => {

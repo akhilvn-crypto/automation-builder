@@ -6,6 +6,7 @@ import path from 'node:path';
 import { isAbsoluteOrEscaping } from '../config/schema.ts';
 import { sha256File, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { ARTIFACTS } from './artifact-manager.ts';
+import type { ValidationStatus } from './canonical.ts';
 import type { InputMappings, TableReport } from './input-table.ts';
 import { detectFormat, listInputFiles, parseInputs, type ParseError } from './test-case-parser.ts';
 import type { InputFormat } from './test-spec.ts';
@@ -22,6 +23,7 @@ export interface InputValidationReport {
   tables: TableReport[]; // how each CSV file / worksheet was read
   moduleCounts: { module: string; cases: number }[];
   caseCount: number;
+  statusCounts: Record<ValidationStatus, number>; // canonical validation status of every case
   ok: boolean;
 }
 
@@ -36,6 +38,7 @@ export function validateInput(baseDir: string, runDirectory: string, inputPath: 
     tables: [],
     moduleCounts: [],
     caseCount: 0,
+    statusCounts: { valid: 0, warning: 0, needs_clarification: 0, invalid: 0 },
   };
   if (isAbsoluteOrEscaping(inputPath)) {
     return finish(runDirectory, { ...base, errors: [{ path: inputPath, message: 'input path must be relative and inside dependencies/' }] });
@@ -66,7 +69,7 @@ export function validateInput(baseDir: string, runDirectory: string, inputPath: 
   for (const s of parsed.document.specs) counts.set(s.moduleSlug, { module: s.module, cases: (counts.get(s.moduleSlug)?.cases ?? 0) + 1 });
   return finish(runDirectory, {
     ...base, files: entries, unsupported: parsed.unsupported, errors, tables: parsed.tables,
-    moduleCounts: [...counts.values()], caseCount: parsed.document.specs.length,
+    moduleCounts: [...counts.values()], caseCount: parsed.document.specs.length, statusCounts: parsed.canonical.validation.counts,
   });
 }
 

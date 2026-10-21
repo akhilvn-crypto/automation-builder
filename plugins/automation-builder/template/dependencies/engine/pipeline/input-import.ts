@@ -26,8 +26,8 @@ export interface ImportResult {
   destination: string; // IMPORT_DIR
   alreadyInPlace: boolean; // the source is already Markdown inside the destination folder: nothing to convert
   files: ImportedFile[];
-  counts: { total: number; ready: number; needsClarification: number };
-  needsClarification: { id: string; title: string; ambiguities: { kind: string; message: string }[] }[];
+  counts: { total: number; valid: number; warning: number; needsClarification: number; invalid: number; ready: number }; // ready = valid + warning
+  needsClarification: { id: string; title: string; status: string; ambiguities: { kind: string; message: string }[] }[]; // needs_clarification and invalid
   renamedIds: { id: string; originalId: string }[]; // duplicate source IDs get a -dupN suffix, so they are unique in the converted files
   // Other test-case files already in the destination folder (not written by this import): the pipeline reads them too.
   othersInFolder: string[];
@@ -56,7 +56,7 @@ export function importInput(baseDir: string, sourceAbs: string, mappings: InputM
   const destAbs = path.join(baseDir, IMPORT_DIR);
   const empty = {
     source: sourceAbs, destination: IMPORT_DIR, alreadyInPlace: false, files: [] as ImportedFile[],
-    counts: { total: 0, ready: 0, needsClarification: 0 }, needsClarification: [], renamedIds: [], othersInFolder: [] as string[], tables: [],
+    counts: { total: 0, valid: 0, warning: 0, needsClarification: 0, invalid: 0, ready: 0 }, needsClarification: [], renamedIds: [], othersInFolder: [] as string[], tables: [],
     errors: [] as ParseError[], unsupported: [] as string[], credentials: [] as DetectedCredential[],
     document: { schemaVersion: TEST_SPEC_SCHEMA_VERSION, generatedAt: (opts.now ?? new Date()).toISOString(), sources: [], specs: [] } as TestSpecDocument,
   };
@@ -88,17 +88,18 @@ export function importInput(baseDir: string, sourceAbs: string, mappings: InputM
     errors: parsed.errors.map(tell), unsupported: parsed.unsupported.map(shown), credentials: parsed.credentials, ok: false,
   };
   const specs = parsed.document.specs;
+  const byId = new Map(parsed.canonical.testCases.map((c) => [c.testCaseId, c]));
+  const counts = parsed.canonical.validation.counts;
   base.counts = {
-    total: specs.length,
-    ready: specs.filter((s) => s.status === 'ready').length,
-    needsClarification: specs.filter((s) => s.status === 'needs_clarification').length,
+    total: specs.length, valid: counts.valid, warning: counts.warning, needsClarification: counts.needs_clarification, invalid: counts.invalid,
+    ready: counts.valid + counts.warning,
   };
   base.needsClarification = specs.filter((s) => s.status === 'needs_clarification')
-    .map((s) => ({ id: s.id, title: s.title, ambiguities: s.ambiguities.map((a) => ({ kind: a.kind, message: a.message })) }));
+    .map((s) => ({ id: s.id, title: s.title, status: byId.get(s.id)?.validation.status ?? 'needs_clarification', ambiguities: s.ambiguities.map((a) => ({ kind: a.kind, message: a.message })) }));
   base.renamedIds = specs.filter((s) => s.source.originalId && s.id !== s.source.originalId).map((s) => ({ id: s.id, originalId: s.source.originalId! }));
 
   if (toRead.every((f) => detectFormat(f) === null)) {
-    base.errors.push({ path: sourceAbs, message: `no supported test-case files (supported: .md, .csv, .tsv, .xlsx; found ${toRead.length} file(s))` });
+    base.errors.push({ path: sourceAbs, message: `no supported test-case files (supported: .md, .csv, .xlsx; found ${toRead.length} file(s))` });
   }
   // Nothing is written from a partly readable source: a half-converted set would look complete.
   if (base.errors.length > 0 || specs.length === 0) {
@@ -116,7 +117,10 @@ export function importInput(baseDir: string, sourceAbs: string, mappings: InputM
   // One file per test case, named after its ID, so a single case can be found and edited on its own.
   for (const s of specs) {
     const abs = path.join(destAbs, `${s.id}.md`);
-    const content = renderCaseMarkdown(s);
+    // Where the case came from is kept in its metadata, so the converted file still points at the original sheet and row.
+    const c = byId.get(s.id)!;
+    const origin = `${c.source.fileName}${c.source.sheet ? ` > ${c.source.sheet}` : ''}, ${c.source.row !== null ? `row ${c.source.row}` : `line ${c.source.line}`}`;
+    const content = renderCaseMarkdown(s, { ...c.metadata, 'Imported from': origin });
     const rel = `${IMPORT_DIR}/${s.id}.md`;
     const row = { file: rel, id: s.id, module: s.module };
     if (!existsSync(abs)) { out.push({ ...row, state: 'created' }); writes.push({ abs, content }); }

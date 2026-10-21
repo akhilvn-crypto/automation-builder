@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -65,10 +65,16 @@ test('input validation copies originals into the run and fails clearly on bad in
   const { runId } = createRun(root, { command: 'playwright-pipeline' });
   const dir = runDir(root, runId);
   const base = dependenciesDir(root);
+  // A file that is not .md/.csv/.xlsx is rejected, not skipped: the other file is still read and copied, but the input is not ok.
   const r = validateInput(base, dir, 'input/test-cases');
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, false);
   assert.deepEqual(r.unsupported, ['input/test-cases/notes.txt']);
+  assert.match(r.errors.find((e) => e.path.endsWith('notes.txt'))!.message, /unsupported file type "\.txt".*\.md, \.csv, \.xlsx/);
   assert.ok(existsSync(path.join(dir, 'input', 'input', 'test-cases', 'a.md')));
+  rmSync(path.join(base, 'input/test-cases/notes.txt'));
+  const clean = validateInput(base, dir, 'input/test-cases');
+  assert.equal(clean.ok, true);
+  assert.deepEqual(clean.statusCounts, { valid: 1, warning: 0, needs_clarification: 0, invalid: 0 });
   assert.equal(validateInput(base, dir, 'missing/dir').ok, false);
   assert.match(validateInput(base, dir, '../outside').errors[0]!.message, /inside dependencies\//);
 });

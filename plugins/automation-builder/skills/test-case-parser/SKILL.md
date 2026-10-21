@@ -1,13 +1,16 @@
 ---
 name: test-case-parser
-description: Supported test-case input formats (Markdown, CSV, Excel .xlsx in the user's own column layout), how they are normalized into modules and test-specs.json, stable test IDs and ambiguity rules. Use when parsing, writing or fixing test-case input, or interpreting test-specs.json.
+description: Supported test-case input formats (Markdown, CSV, Excel .xlsx in the user's own column layout), how they are normalized once into the canonical test cases and projected to test-specs.json, how column layouts are read (ambiguous and inferred columns), stable test IDs and ambiguity rules. Use when parsing, writing or fixing test-case input, or interpreting canonical-test-cases.json or test-specs.json.
 user-invocable: false
 ---
 
 # Test-case input and the test-spec schema
 
-Parser: `dependencies/engine/pipeline/test-case-parser.ts` (tables: `input-table.ts`, Excel: `utils/xlsx.ts`). Schema and
-validator: `test-spec.ts`; full schema reference `dependencies/docs/test-spec-schema.md`; examples `dependencies/docs/examples/`.
+Parser: `dependencies/engine/pipeline/test-case-parser.ts` (tables: `input-table.ts` + `column-inference.ts`, Excel: `utils/xlsx.ts`).
+Every format is normalized **once** into `canonical-test-cases.json` (`canonical.ts`: one record per case, each with a validation
+status and its source row/line), and `test-specs.json` (`test-spec.ts`) is a pure projection of it. Downstream stages read only
+`test-specs.json` and accept it only while it matches the canonical document. Full schema reference
+`dependencies/docs/test-spec-schema.md`; examples `dependencies/docs/examples/`.
 Input paths are relative to `dependencies/` (`input/test-cases/login.md`); spec `source` references use the same form.
 Markdown/CSV syntax examples, header aliases and row rules: [reference.md](reference.md) (read only when writing or debugging input).
 
@@ -35,6 +38,19 @@ name in the ID cell is a module heading, not a case.
   real test content, tell the user and map it.
 - Sheets with no steps/expected column (cover page, notes) are skipped and listed under `tables`; a sheet with only one of
   the two is an error.
+- A header that fits a field less well loses to one that fits better (`Test Case Title` beats `Test Description` for the title).
+  Columns no field claims are kept under their own name in the case's `metadata`, never dropped.
+
+**Two equally good columns** (`Steps` and `Test Steps`, both with content) are an `ambiguous_column_mapping`: the first is read,
+but every case of that table is held back as `needs_clarification` until `input map` names one. Ask the user which header is
+the field (the finding and `tables[].ambiguous` list the candidates); never choose.
+
+**Unknown headers.** When no header names the steps / expected result / ID, the engine reads the columns' content (numbered or
+multi-line lists and instruction verbs → steps; "should be shown"-style wording → expected result; unique ID-shaped values → ID).
+A reading is applied only at 90% confidence or better and only if it completes the table; it is reported as an
+`inferred_columns` warning (`tables[].inferred`, headers and percentages, never cell values), and the cases stay automatable.
+Say which headers were read as what and offer `input map` to confirm or correct it. A title is never inferred, only proposed.
+Anything less certain is an error whose `suggestions` become your questions.
 
 If a layout is not recognised, `input import` / `specs parse` exit 2 and list the columns found. Then:
 
@@ -63,17 +79,29 @@ silently. Tests are generated one file per module (`specs modules <runId>` print
 
 ## Ambiguities
 
+Every canonical case has a status: `valid`, `warning` (usable; a remark), `needs_clarification` (a person must answer) or
+`invalid` (no ID and no title: `untitled_case`). The document's status is the worst of its cases and table findings. Only
+`valid` and `warning` cases are generated; both of the others appear as `needs_clarification` in `test-specs.json`.
+
 Blocking (case → `needs_clarification`, never generated): `missing_expected_result`, `missing_steps`, `empty_step`,
-`duplicate_id`, `undefined_data_reference`, `possible_secret_literal`. Warning only: `vague_expected_result` ("works
-correctly"): mention it, the case stays `ready`.
+`duplicate_id`, `undefined_data_reference`, `ambiguous_column_mapping`, `possible_secret_literal`; `untitled_case` makes it
+`invalid`. Warning only: `vague_expected_result` ("works correctly"): mention it, the case stays `ready`.
+`node dependencies/engine/cli/pipeline.ts specs check <runId>` re-verifies that `test-specs.json` is exactly the projection of
+the canonical document (hash and content, and that the source files are unchanged) and lists the cases that are not automatable.
+
+Known limits: step-level data (the Test Data on a step's own row, and the `{name}` values a step uses) lives only in the canonical document, so a case
+that went through `input import` (Markdown) keeps only its case-level data. In a Markdown case, an unindented plain-text line
+inside Steps or Expected Results can be read as a metadata label; indent continuation lines under their item. A workbook's
+notes sheet (e.g. `Suggetions`) is skipped and listed under `tables`.
 
 `possible_secret_literal` is rare: credentials, usernames and emails written as literals are moved to `automation/.env`
 automatically (test-data-management skill), so the spec holds `envVar: "TEST_PASSWORD"` and the case stays `ready`; the kind
 remains for values that cannot live in a `.env`. Inline emails in step/expected text are the one wording change: `Enter qa@x.com
 in Email` becomes `Enter {email} in Email` with a matching Test Data entry. `literal:` keeps a deliberately fake value as is.
 
-Resolving a blocking ambiguity means the **user edits the source** (or answers and you show the exact line to change), then
-re-run `specs parse`. Never patch `test-specs.json`.
+Resolving a blocking ambiguity means the **user edits the source** (or answers and you show the exact line to change; a column
+question is answered with `input map`), then re-run `specs parse`. Never patch `test-specs.json` or
+`canonical-test-cases.json`: a hand-edited file stops the pipeline.
 
 ## Stable IDs
 

@@ -2,13 +2,17 @@
 // The custom evidence-pdf reporter is built by evidence-report.ts and listed alongside the Playwright reporters.
 // Summary files in the run directory (dependencies/runs/<run-id>/): summary.json (machine-readable) and summary.md.
 // Reporter output itself lives in automation/reports/<run-id>/<label>/.
+//
+// Everything here is derived from the normalized execution results (never from an agent's narrative), and only the reporters
+// the user selected are verified or built. Test outcomes and report generation are kept apart: a reporter that failed is a
+// `reportGeneration` problem, a test that failed is a `counts` problem, and neither is reported as the other.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { AutomationConfig, Reporter } from '../config/schema.ts';
-import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
-import { ARTIFACTS, EVIDENCE_DIR, REPORTS_DIR, reportsDirFor } from './artifact-manager.ts';
+import type { AutomationConfig, Reporter, ReportMode } from '../config/schema.ts';
+import { readJson, sha256File, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
+import { ARTIFACTS, EVIDENCE_DIR, REPORTS_DIR, reportsDirFor, runDir } from './artifact-manager.ts';
 import { secretValuesFor } from './env-file.ts';
 import { buildEvidenceReport, type PdfRenderer } from './evidence-report.ts';
 import type { ExecutionResults, Outcome } from './execution.ts';
@@ -37,6 +41,10 @@ export interface ReporterStatus {
   status: 'generated' | 'failed' | 'missing_dependency';
   path: string | null; // relative to automation/
   detail: string | null;
+  // What the reporter cost, so artifact volume and generation time can be measured.
+  durationMs?: number;
+  bytes?: number;
+  files?: number;
 }
 
 export interface RunSummary {
@@ -51,6 +59,11 @@ export interface RunSummary {
   unresolved: { key: string; reason: string }[];
   reporters: ReporterStatus[];
   runnerError: string | null;
+  mode: ReportMode | null; // reporting.mode, null when none is configured
+  // Report generation, kept apart from test outcomes: ok is false when a selected reporter did not produce its files.
+  reportGeneration: { ok: boolean; durationMs: number; failed: { name: Reporter; status: ReporterStatus['status']; detail: string | null }[]; bytes: number; files: number };
+  // The normalized results the reports were built from.
+  generatedFrom: { executionResultsSha256: string | null; regressionResultsSha256: string | null };
   paths: Record<string, string>; // relative to automation/ ("../dependencies/runs/..." for run state)
 }
 
@@ -143,10 +156,35 @@ function nonEmptyFile(p: string): boolean {
   return existsSync(p) && statSync(p).isFile() && statSync(p).size > 0;
 }
 
+function footprint(abs: string): { bytes: number; files: number } {
+  if (!existsSync(abs)) return { bytes: 0, files: 0 };
+  const st = statSync(abs);
+  if (st.isFile()) return { bytes: st.size, files: 1 };
+  let bytes = 0;
+  let files = 0;
+  for (const d of readdirSync(abs, { recursive: true, withFileTypes: true })) {
+    if (!d.isFile()) continue;
+    files++;
+    bytes += statSync(path.join(d.parentPath, d.name)).size;
+  }
+  return { bytes, files };
+}
+
+// Everything on disk that belongs to a reporter, whether or not it succeeded (a failed reporter still left files).
+function reporterFiles(name: Reporter, dir: string, rootDir: string, status: ReporterStatus): string[] {
+  switch (name) {
+    case 'json': return [path.join(dir, 'results.json')];
+    case 'html': return [path.join(dir, 'html')];
+    case 'junit': return [path.join(dir, 'junit.xml')];
+    case 'allure': return [path.join(dir, 'allure-results'), path.join(dir, 'allure-report')];
+    case 'evidence-pdf': return status.path ? [path.dirname(path.join(rootDir, status.path))] : [];
+  }
+}
+
 export function verifyReporters(rootDir: string, runId: string, config: AutomationConfig, label: string, allure: AllureRunner, evidencePdf?: () => ReporterStatus): ReporterStatus[] {
   const dir = reportsDirFor(rootDir, runId, label);
   const rel = (p: string) => toPosixRelative(rootDir, p);
-  return config.reporters.map((name): ReporterStatus => {
+  const verifyOne = (name: Reporter): ReporterStatus => {
     if (name === 'json') {
       const p = path.join(dir, 'results.json');
       const ok = readJson(p).ok;
@@ -175,6 +213,12 @@ export function verifyReporters(rootDir: string, runId: string, config: Automati
     const index = path.join(outDir, 'index.html');
     if (r.ok && nonEmptyFile(index)) return { name, status: 'generated', path: rel(index), detail: null };
     return { name, status: 'failed', path: null, detail: `allure generate failed: ${r.output.trim().split('\n').slice(-3).join(' | ') || 'no index.html produced'}` };
+  };
+  return config.reporters.map((name) => {
+    const started = Date.now();
+    const status = verifyOne(name);
+    const size = reporterFiles(name, dir, rootDir, status).map(footprint).reduce((a, b) => ({ bytes: a.bytes + b.bytes, files: a.files + b.files }), { bytes: 0, files: 0 });
+    return { ...status, durationMs: Date.now() - started, ...size };
   });
 }
 
@@ -193,6 +237,7 @@ export interface BuildSummaryInput extends OutcomeInputs {
 }
 
 export function buildSummary(i: BuildSummaryInput): RunSummary {
+  const started = Date.now();
   const tests = computeFinalTests(i);
   const counts = countOutcomes(tests);
   const categories: Partial<Record<Category, number>> = {};
@@ -224,6 +269,12 @@ export function buildSummary(i: BuildSummaryInput): RunSummary {
     unresolved: tests.filter(isUnresolved).map((t) => ({ key: t.key, reason: t.note ?? t.category ?? 'failed' })),
     reporters,
     runnerError: i.results?.runnerError ?? null,
+    mode: i.config.reporting?.mode ?? null,
+    reportGeneration: { ok: true, durationMs: 0, failed: [], bytes: 0, files: 0 },
+    generatedFrom: {
+      executionResultsSha256: hashIfPresent(i.results ? resultsFile(runDir(i.rootDir, reporterRunId), 'initial') : null),
+      regressionResultsSha256: hashIfPresent(path.join(i.runDir, ARTIFACTS.regressionResults)),
+    },
     paths: {
       runDir: rel(i.runDir),
       evidence: rel(path.join(i.rootDir, EVIDENCE_DIR, i.manifest.runId)),
@@ -231,11 +282,28 @@ export function buildSummary(i: BuildSummaryInput): RunSummary {
       ...Object.fromEntries(Object.entries(i.manifest.artifacts).map(([k, v]) => [k, rel(path.join(i.runDir, v))])),
     },
   };
+  summary.reportGeneration = {
+    ok: reporters.every((r) => r.status === 'generated'),
+    durationMs: Date.now() - started,
+    failed: reporters.filter((r) => r.status !== 'generated').map((r) => ({ name: r.name, status: r.status, detail: r.detail })),
+    bytes: reporters.reduce((n, r) => n + (r.bytes ?? 0), 0),
+    files: reporters.reduce((n, r) => n + (r.files ?? 0), 0),
+  };
   mkdirSync(i.runDir, { recursive: true });
   writeJsonAtomic(path.join(i.runDir, ARTIFACTS.summary), summary);
   writeFileSync(path.join(i.runDir, ARTIFACTS.summaryMarkdown), renderSummaryMarkdown(summary));
   return summary;
 }
+
+function resultsFile(runDirectory: string, label: string): string {
+  return label === 'initial' ? path.join(runDirectory, ARTIFACTS.executionResults) : path.join(runDirectory, ARTIFACTS.rerunsDir, `${label}.json`);
+}
+
+function hashIfPresent(file: string | null): string | null {
+  return file && existsSync(file) ? sha256File(file) : null;
+}
+
+const kb = (bytes: number): string => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(bytes > 0 ? 1 : 0, Math.round(bytes / 1024))} KB`);
 
 export function reportersOk(s: RunSummary): boolean {
   return s.reporters.every((r) => r.status === 'generated');
@@ -266,7 +334,13 @@ export function renderSummaryMarkdown(s: RunSummary): string {
     lines.push('');
   }
   if (s.unresolved.length) lines.push('## Unresolved', '', ...s.unresolved.map((u) => `- ${u.key}: ${u.reason}`), '');
-  lines.push('## Reports', '', ...s.reporters.map((r) => `- ${r.name}: ${r.status}${r.path ? ` — ${r.path}` : ''}${r.detail ? ` (${r.detail})` : ''}`), '');
+  const g = s.reportGeneration;
+  lines.push(
+    '## Reports', '',
+    `Mode: ${s.mode ?? 'not set (reporters used as chosen)'} · generated in ${(g.durationMs / 1000).toFixed(1)} s · ${g.files} file(s), ${kb(g.bytes)}`,
+    `Report generation: ${g.ok ? 'ok' : `FAILED for ${g.failed.map((f) => f.name).join(', ')} — this is not a test failure`}`, '',
+    ...s.reporters.map((r) => `- ${r.name}: ${r.status}${r.path ? ` — ${r.path}` : ''}${r.detail ? ` (${r.detail})` : ''}${r.bytes ? ` · ${kb(r.bytes)}` : ''}`), '',
+  );
   lines.push('## Paths', '', ...Object.entries(s.paths).map(([k, v]) => `- ${k}: ${v}`), '');
   return lines.join('\n');
 }

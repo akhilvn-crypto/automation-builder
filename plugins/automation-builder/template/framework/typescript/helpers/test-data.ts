@@ -13,9 +13,24 @@ export function requireEnv(name: string, env: NodeJS.ProcessEnv = process.env): 
   return v;
 }
 
-// Unique suffix for records a test creates, so parallel tests and reruns don't collide.
-export function uniqueSuffix(prefix = 't'): string {
-  return `${prefix}-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+// Unique suffix for records a test creates, so parallel tests and reruns don't collide. Pass the worker's
+// `testInfo.parallelIndex` to also keep data created by different workers visibly apart.
+export function uniqueSuffix(prefix = 't', workerIndex?: number): string {
+  const worker = workerIndex === undefined ? '' : `w${workerIndex}-`;
+  return `${prefix}-${worker}${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+}
+
+// Per-worker accounts: with execution.isolation "per-worker-accounts" each parallel worker needs its own login, supplied as
+// NAME_1 .. NAME_N next to NAME (worker 0 uses NAME_1). The names are env var NAMES; values are read, never logged.
+export function workerEnvName(base: string, parallelIndex: number): string {
+  return `${base}_${parallelIndex + 1}`;
+}
+
+// The worker's own variable when a pool is configured; otherwise the single shared one.
+export function requireWorkerEnv(base: string, parallelIndex: number, env: NodeJS.ProcessEnv = process.env): string {
+  const pooled = workerEnvName(base, parallelIndex);
+  if (env[pooled] !== undefined && env[pooled] !== '') return requireEnv(pooled, env);
+  return requireEnv(base, env);
 }
 
 // Replace every occurrence of the given secret values (min length 3) with "***".

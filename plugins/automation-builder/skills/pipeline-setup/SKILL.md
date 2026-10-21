@@ -50,16 +50,23 @@ Rules for asking (use AskUserQuestion; group independent choices into one call, 
 | `evidence.video` | off / on / retain-on-failure | retain-on-failure |
 | `evidence.screenshot` | off / on / only-on-failure | only-on-failure |
 | `evidence.trace` | off / on / on-first-retry / retain-on-failure | retain-on-failure |
-| `reporters` | multiSelect (max 4 options): **html, allure, junit, evidence-pdf**. `json` is mandatory (pipeline state), so add it to the saved list yourself and do not offer it. Describe `evidence-pdf` as the *custom evidence report*: one PDF that lists every executed step with the screenshot taken when it ended, plus expected results and failures. Say what it costs: a screenshot per step for every test (passing ones too), and Chromium is used to print the PDF (no extra package). Never preselect it for the user | html + json + allure |
+| `reporting.mode` | standard / full / audit. Show what each produces with `node dependencies/engine/cli/pipeline.ts config mode-preset <mode>` (nothing is saved) and use its `reporters` and `evidence` as the proposal. `standard` = JSON + Playwright HTML, failure-focused evidence; `full` = + Allure and failure videos; `audit` = + opt-in step screenshots and the evidence PDF. Ask separately whether audit should switch on step screenshots and the evidence PDF (`--step-screenshots`, `--evidence-pdf`): both are off by default | standard |
+| `reporters` | multiSelect (max 4 options) of what to add on top of the mode's: **junit**, and in audit mode **evidence-pdf**. `json` is mandatory (pipeline state) and the mode sets the minimum (standard = html + json; full and audit = html + json + allure), so add those yourself and do not offer them again. Describe `evidence-pdf` as the *custom evidence report*: one PDF that lists every executed step with the screenshot taken when it ended, plus expected results and failures. Say what it costs: a screenshot per step for every test (passing ones too), and Chromium is used to print the PDF (no extra package). It requires `reporting.mode: audit` with `stepScreenshots: true`. Never preselect it for the user | per mode |
 | `browsers` | multiSelect chromium/firefox/webkit | chromium |
 | `app.baseUrl`, `app.environment` | Free text. **Never invent a URL.** Must be an authorized test environment. | — |
 | `input.testCasesPath` | Path relative to `dependencies/`. **Don't ask in `/playwright-pipeline`:** the orchestrator already asked where the test cases are and imported them into `input/test-cases`, so use that. Ask only when no import happened (e.g. `/generate-tests` with the files already placed by hand) | `input/test-cases` |
 | `auth.approach` | none / ui-login / storage-state; `credentialEnvVars` = env var **names** only. Don't ask for credentials or their names: those in the test cases are created in `automation/.env` by `specs parse` and redacted automatically, so `credentialEnvVars` may be `[]` | — |
+| `auth.state` | Only for storage-state: `probePath` (a path on the app that needs login; ask the user, never guess; it lets the pipeline confirm a saved session is still accepted), `maxAgeHours` (default 8), `loggedOutPattern` (regex for a logout redirect). Optional | probePath if the user knows one |
+| `execution.isolation` | Only when more than one worker is wanted: `serial` (tests change shared data), `shared-readonly` (they never do), `per-worker-accounts` (one login per worker: `NAME_1..NAME_N` in `automation/.env`, needs ui-login). Unanswered = tests in a file run in order | serial if unsure |
+| `execution.workers` | Leave unset (a conservative default of 2) unless the user wants a number. More workers only after `run compare` shows no test got worse | unset |
 
 Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.
-`evidence-pdf` is independent of `evidence.screenshot`: its per-step screenshots are always taken, so the screenshot mode
-only controls Playwright's own failure screenshot. If the user picks `evidence-pdf` without `chromium` in `browsers`,
-preflight adds a `browser:chromium` requirement (purpose "Render the evidence PDF"), approved like any other dependency.
+`evidence-pdf` is independent of `evidence.screenshot`: its per-step screenshots are always taken (password fields and
+`reporting.maskSelectors` are masked, visible page data is not), so the screenshot mode only controls Playwright's own failure
+screenshot. If the user picks `evidence-pdf` without `chromium` in `browsers`, preflight adds a `browser:chromium` requirement
+(purpose "Render the evidence PDF"), approved like any other dependency. Standard mode rejects record-everything evidence
+(`on` for video/screenshot/trace); full and audit allow it. `config report-plan` lists the software the chosen reporters need and
+which of it is missing; it never installs anything.
 Extent Reports: only offer after verifying a maintained Playwright integration exists; otherwise say so.
 
 Write the candidate to a scratch JSON file, then `node dependencies/engine/cli/pipeline.ts config save --file <path>`.
@@ -73,7 +80,7 @@ not applied to it (show `detail`) and let them choose between updating it themse
 
 ## 3. Dependencies — one approval per dependency
 
-Re-run preflight after configuration (required-ness depends on config). For **each** check with
+Re-run preflight after configuration (required-ness depends on config). The `secrets-ignored` check fails when `.env` or `auth/storage-state*.json` are not covered by `automation/.gitignore` while the configuration uses credentials or saved login state: have the user add them (do not edit `.gitignore` silently). For **each** check with
 `required: true` and `status: "missing"`, in this order: `typescript` (only required for a TypeScript scaffold), `@playwright/test`, `browser:*`,
 `@playwright/cli`, `allure-playwright`, `allure-cli`:
 

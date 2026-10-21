@@ -19,12 +19,39 @@ export function requireEnv(name, env = process.env) {
 }
 
 /**
- * Unique suffix for records a test creates, so parallel tests and reruns don't collide.
+ * Unique suffix for records a test creates, so parallel tests and reruns don't collide. Pass the worker's
+ * `testInfo.parallelIndex` to also keep data created by different workers visibly apart.
  * @param {string} [prefix]
+ * @param {number} [workerIndex]
  * @returns {string}
  */
-export function uniqueSuffix(prefix = 't') {
-  return `${prefix}-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+export function uniqueSuffix(prefix = 't', workerIndex = undefined) {
+  const worker = workerIndex === undefined ? '' : `w${workerIndex}-`;
+  return `${prefix}-${worker}${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+}
+
+/**
+ * Per-worker accounts: with execution.isolation "per-worker-accounts" each parallel worker needs its own login, supplied as
+ * NAME_1 .. NAME_N next to NAME (worker 0 uses NAME_1). The names are env var NAMES; values are read, never logged.
+ * @param {string} base
+ * @param {number} parallelIndex
+ * @returns {string}
+ */
+export function workerEnvName(base, parallelIndex) {
+  return `${base}_${parallelIndex + 1}`;
+}
+
+/**
+ * The worker's own variable when a pool is configured; otherwise the single shared one.
+ * @param {string} base
+ * @param {number} parallelIndex
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string}
+ */
+export function requireWorkerEnv(base, parallelIndex, env = process.env) {
+  const pooled = workerEnvName(base, parallelIndex);
+  if (env[pooled] !== undefined && env[pooled] !== '') return requireEnv(pooled, env);
+  return requireEnv(base, env);
 }
 
 /**

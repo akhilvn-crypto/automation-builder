@@ -10,11 +10,18 @@
 // PIPELINE_RUN_ID and PIPELINE_LABEL, reporter output goes to reports/<run-id>/<label>/ and evidence (screenshots,
 // video, traces) to test-results/<run-id>/<label>/. A plain `npx playwright test` uses reports/adhoc/ and
 // test-results/adhoc/, so it never wipes a pipeline run's evidence (Playwright cleans its outputDir on start).
+//
+// Saved login state: with auth.approach "storage-state" the browser projects normally depend on a `setup` project that logs in.
+// The executor sets PIPELINE_AUTH_STATE=reuse only after it has checked the saved state (pipeline/auth-state.ts); then the
+// setup project is left out and the saved state is used as it is. Anything else (including a plain `npx playwright test`)
+// logs in. Workers and in-file parallelism come from pipeline/execution-plan.ts (a conservative default; PW_WORKERS, which the
+// executor sets after reading the per-worker accounts from .env, overrides the number).
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ADHOC_SCOPE, EVIDENCE_DIR, REPORTS_DIR } from '../pipeline/artifact-manager.ts';
+import { resolveExecutionPlan } from '../pipeline/execution-plan.ts';
 import { loadConfig } from './load-config.ts';
 import type { AutomationConfig, Browser } from './schema.ts';
 
@@ -55,11 +62,13 @@ export function renderPlaywrightConfig(config: AutomationConfig, opts: RenderOpt
     // 'evidence-pdf' has no Playwright reporter: the fixture records step screenshots and report_generation builds the PDF.
   }
 
+  // The fallback worker count when nothing sets PW_WORKERS: the plan without per-worker accounts (they are read from .env at run time).
+  const plan = resolveExecutionPlan(config, {}, Number.MAX_SAFE_INTEGER);
   const projects: string[] = [];
-  if (storageState) projects.push(`    { name: 'setup', testDir: ${q(`./${AUTH_DIR}`)}, testMatch: ${q(`**/*.setup.${ext}`)} },`);
+  if (storageState) projects.push(`    ...(reuseSavedLogin ? [] : [{ name: 'setup', testDir: ${q(`./${AUTH_DIR}`)}, testMatch: ${q(`**/*.setup.${ext}`)} }]),`);
   for (const b of config.browsers) {
     const use = storageState
-      ? `{ ...devices[${q(DEVICE[b])}], storageState: \`\${import.meta.dirname}/${AUTH_STATE_FILE}\` }, dependencies: ['setup']`
+      ? `{ ...devices[${q(DEVICE[b])}], storageState: \`\${import.meta.dirname}/${AUTH_STATE_FILE}\` }, dependencies: reuseSavedLogin ? [] : ['setup']`
       : `{ ...devices[${q(DEVICE[b])}] }`;
     projects.push(`    { name: ${q(b)}, use: ${use} },`);
   }
@@ -84,15 +93,16 @@ export function renderPlaywrightConfig(config: AutomationConfig, opts: RenderOpt
     "  ? `${process.env.PIPELINE_RUN_ID}/${process.env.PIPELINE_LABEL ?? 'initial'}`",
     `  : ${q(ADHOC_SCOPE)};`,
     '',
+    ...(storageState ? ["// Set by the pipeline once it has verified the saved login (auth/storage-state.json); then no login runs.", "const reuseSavedLogin = process.env.PIPELINE_AUTH_STATE === 'reuse';", ''] : []),
     'export default defineConfig({',
     "  testDir: './tests',",
     `  testMatch: ${q(`**/*.spec.${ext}`)},`,
     `  outputDir: \`./${EVIDENCE_DIR}/\${scope}\`,`,
     `  timeout: ${config.execution.timeoutMs},`,
-    '  fullyParallel: true,',
+    `  fullyParallel: ${plan.fullyParallel},`,
     '  forbidOnly: true,',
     `  retries: process.env.PW_RETRIES ? Number(process.env.PW_RETRIES) : ${config.execution.retries},`,
-    `  workers: process.env.PW_WORKERS ? Number(process.env.PW_WORKERS) : ${config.execution.workers ?? 'undefined'},`,
+    `  workers: process.env.PW_WORKERS ? Number(process.env.PW_WORKERS) : ${plan.workers},`,
     '  reporter: [',
     ...reporters.map((r) => `    ${r},`),
     '  ],',

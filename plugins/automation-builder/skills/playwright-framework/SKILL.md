@@ -21,8 +21,8 @@ only with a clear responsibility. No other top-level folders in `automation/`.
 | Path | Owner | Notes |
 |---|---|---|
 | `playwright.config.<ext>` | framework (user-editable) | standard `defineConfig`, literal values written from `config/automation.config.json` by `config save`/`config render`; a hand-edited file is never overwritten without `--force`. Don't edit it from generated tests or healing |
-| `fixtures/test.<ext>` | framework | exports `test`, `expect`; auto `diagnostics` fixture attaches console/page/network errors on failure; auto `stepEvidence` fixture (only with the `evidence-pdf` reporter) screenshots every `test.step` and the final state |
-| `helpers/test-data.<ext>` | framework | `requireEnv(name)`, `uniqueSuffix(prefix)`, `redact()`; generic helpers only, page behaviour belongs in `pages/` |
+| `fixtures/test.<ext>` | framework | exports `test`, `expect`; auto `diagnostics` fixture attaches console/page/network errors on failure; auto `stepEvidence` fixture (only with the `evidence-pdf` reporter) screenshots every `test.step` and the final state, masking password fields |
+| `helpers/test-data.<ext>` | framework | `requireEnv(name)`, `requireWorkerEnv(name, parallelIndex)`, `uniqueSuffix(prefix, workerIndex?)`, `redact()`; generic helpers only, page behaviour belongs in `pages/` |
 | `test-data/` | humans | non-sensitive data files only, never credentials |
 | `pages/BasePage.<ext>` | framework | base class (`path`, `open()`, `byTestId()`) |
 | `pages/<Name>Page.<ext>` | generator | page objects extending `BasePage`, named for the page, shared across modules |

@@ -2,6 +2,7 @@
 // overrides each one with evidence (via `triage classify`) before any repair is attempted.
 
 import { writeJsonAtomic } from '../utils/fs.ts';
+import { GENERIC_LOGGED_OUT } from './auth-state.ts';
 import type { ExecutionResults, TestResult } from './execution.ts';
 
 export const CATEGORIES = [
@@ -99,7 +100,12 @@ export function buildFailureAnalysis(results: ExecutionResults, now = new Date()
   const failures = results.tests
     .filter((t) => t.outcome === 'failed' || t.outcome === 'flaky')
     .map((t): FailureEntry => {
-      const c = classifyResult(t);
+      let c = classifyResult(t);
+      // Logged out although a fresh login was done in this run: the account or its credentials are the problem, not the
+      // test script, so it is never offered for repair.
+      if (results.authState && t.outcome === 'failed' && t.attempts.some((a) => a.errors.some((e) => GENERIC_LOGGED_OUT.test(`${e.message}\n${e.stack ?? ''}`)))) {
+        c = { category: 'test_data_or_precondition', confidence: 'high', signals: ['logged out despite a fresh login (check the test account and credentials)'] };
+      }
       const failed = t.attempts.find((a) => a.errors.length > 0);
       return {
         key: t.key, testId: t.testId, title: t.title, file: t.file, line: t.line, project: t.project, outcome: t.outcome,

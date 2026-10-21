@@ -8,6 +8,8 @@
 //   ("tests/login.spec.ts"); test-case input paths are relative to dependencies/ ("input/test-cases").
 //   preflight
 //   config check | show | save --file <json> | render [--force]
+//   config mode-preset <standard|full|audit> [--step-screenshots] [--evidence-pdf]   what a report mode would set (nothing is saved)
+//   config report-plan                           configured reporters/mode and the software they need (nothing is installed)
 //                                                save writes the choices and refreshes automation/playwright.config.* from them;
 //                                                render redoes only that file (it never overwrites a hand-edited one without --force)
 // Output is compact JSON (add --pretty to indent). `run create|stage|set-config|counts` print a short status line
@@ -20,6 +22,9 @@
 //   run counts <runId> --file <json>
 //   run healing-attempt <runId> <testId>
 //   run finalize <runId>
+//   run metrics <runId> [--write]                per-stage timing/status/artifact sizes, cache and agent use (--write -> metrics.json in the run)
+//   run baseline [runId...]                      slowest stages across runs (default: all runs)
+//   run compare <baselineRunId> <candidateRunId> same tests + no worse outcome first, then the time difference per stage
 //   input validate <runId> [--path <p>]          specs parse <runId> [--path <p>]   (also writes credentials/emails found in the
 //                                                  test cases to automation/.env and reports env.missing; names only)
 //   input import --from <file-or-folder> [--overwrite]
@@ -35,8 +40,24 @@
 //   env run -- <command> [args...]               run a command with automation/.env loaded; secret values masked in the
 //                                                JSON output (use single quotes so the child shell expands $VAR, e.g.
 //                                                env run -- sh -c 'playwright-cli fill e5 "$TEST_PASSWORD"')
-//   explore validate <runId>                     generate validate <runId>
-//   review static <runId> | add <runId> --file <json> | resolve <runId> <id> --status fixed|accepted
+//   explore validate <runId>
+//   explore plan <runId> [--fresh]               per test case: explore | revalidate | reuse, with reasons
+//   explore revalidate <runId> --page <url|path> --file <snapshot, relative to run dir>
+//   explore assemble <runId>                     fresh.json + revalidated saved evidence -> exploration.json
+//   explore invalidate <runId> --page <url|path> --reason <text> [--locator <expr>]
+//   explore store <runId>                        summary of the saved observations
+//   generate plan <runId> [--force] [--no-cache]   per test case: generate | reuse (with reasons) + one batch per module file
+//   generate assemble <runId>                    batch manifests + reused tests -> generation-manifest.json
+//   generate validate <runId>
+//   review static <runId> [--no-cache] | plan <runId> | seal <runId> | add <runId> --file <json> | resolve <runId> <id> --status fixed|accepted
+//   cache status <runId>                         hits/misses of the run, and the reason for every rebuild
+//   cache inspect <kind> <name>                  one cached artifact's inputs, versions and validation (kind: specs|generation|review|typecheck)
+//   agents plan <runId> <stage>                  which stages need an agent (and why), plus its bounded brief in briefs/
+//   agents record <runId> <stage> --agent <name> [--input-tokens n --output-tokens n]
+//   agents show <runId>                          decisions, invocations and tokens (only when reported)
+//   auth check                                   is saved login state safe to reuse? (age, cookies, origin, optional probe; no secrets printed)
+//   auth clear                                   remove the saved session so the next run logs in again
+//   exec plan <runId>                            workers/isolation the next execution would use, and the login-state decision
 //   exec run <runId> [--label L] [--test-file f]... [--test-id id]... [--project p]... [--retries n]
 //   triage run <runId> | classify <runId> <key> --category C --confidence C --rationale R
 //   heal begin|check|revert|record <runId> <testId> --test-file f [--attempt n] [--rationale R] [--evidence p]...
@@ -50,8 +71,10 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { loadConfig, saveConfig } from '../config/load-config.ts';
 import { syncFromSavedConfig } from '../config/playwright-config.ts';
+import { REPORT_MODES, type ReportMode } from '../config/schema.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
+import { presetFor, reportPlan } from '../pipeline/reporting-mode.ts';
 import {
   HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt, type RunManifest,
   recordSetupChange, resumeLatest, setRunConfig, setTestCounts, updateStage, type TestCounts,
@@ -135,6 +158,16 @@ export function main(argv: string[]): number {
       overwrite: { type: 'boolean' },
       force: { type: 'boolean' },
       pretty: { type: 'boolean' },
+      write: { type: 'boolean' },
+      fresh: { type: 'boolean' },
+      page: { type: 'string' },
+      locator: { type: 'string' },
+      'no-cache': { type: 'boolean' },
+      agent: { type: 'string' },
+      'input-tokens': { type: 'string' },
+      'output-tokens': { type: 'string' },
+      'step-screenshots': { type: 'boolean' },
+      'evidence-pdf': { type: 'boolean' },
     },
   });
   if (values.pretty) pretty = true;
@@ -167,7 +200,26 @@ export function main(argv: string[]): number {
         if (!result) return out(loadConfig(root, { env: {} }), 2);
         return out({ ok: result.status !== 'kept', playwrightConfig: result }, result.status === 'kept' ? 2 : 0);
       }
-      throw new UsageError('config <check|show|save|render [--force]>');
+      // What a report mode would set (reporters, evidence, the software it needs). Nothing is saved or installed.
+      if (action === 'mode-preset') {
+        const mode = need(rest[0], 'mode') as ReportMode;
+        if (!REPORT_MODES.includes(mode)) throw new UsageError(`mode must be one of: ${REPORT_MODES.join(', ')}`);
+        return out({ ok: true, ...presetFor(mode, { stepScreenshots: values['step-screenshots'], evidencePdf: values['evidence-pdf'] }) });
+      }
+      // The configured reporters and mode, with the status of the software they need. Missing software is never installed here.
+      if (action === 'report-plan') {
+        const state = loadConfig(root);
+        if (state.status !== 'valid') return out(state, 2);
+        const plan = reportPlan(state.config);
+        const checks = runPreflight(root).checks;
+        const requires = plan.requires.map((r) => {
+          const c = checks.find((x) => x.id === r.id);
+          return { ...r, status: c?.status ?? 'unknown', installCommand: c?.status === 'ok' ? null : c?.installCommand ?? null };
+        });
+        const missing = requires.filter((r) => r.status !== 'ok');
+        return out({ ok: missing.length === 0, ...plan, requires, missing: missing.map((m) => m.id), approvalNeeded: missing.length > 0 ? 'ask the user before installing each missing item, one at a time' : null }, missing.length === 0 ? 0 : 2);
+      }
+      throw new UsageError('config <check|show|save|render [--force]|mode-preset|report-plan>');
     }
 
     case 'run': {
@@ -225,12 +277,12 @@ export function main(argv: string[]): number {
             if (err instanceof HealingLimitError) return out({ ok: false, limitReached: true, message: err.message }, 2);
             throw err;
           }
-        case 'finalize': {
+        case 'finalize': case 'metrics': case 'baseline': case 'compare': {
           const r = stageCommand(root, group, action, rest, values);
           return out(r.value, r.code);
         }
         default:
-          throw new UsageError('run <create|list|show|resume|resumable|stage|set-config|counts|healing-attempt|finalize>');
+          throw new UsageError('run <create|list|show|resume|resumable|stage|set-config|counts|healing-attempt|finalize|metrics|baseline|compare>');
       }
     }
 
@@ -251,13 +303,13 @@ export function main(argv: string[]): number {
     }
 
     case 'input': case 'specs': case 'env': case 'explore': case 'generate': case 'review':
-    case 'exec': case 'triage': case 'heal': case 'report': {
+    case 'exec': case 'triage': case 'heal': case 'report': case 'agents': case 'cache': case 'auth': {
       const r = stageCommand(root, group, action, rest, values);
       return out(r.value, r.code);
     }
 
     default:
-      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report> ...');
+      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report|agents|cache|auth> ...');
   }
 }
 

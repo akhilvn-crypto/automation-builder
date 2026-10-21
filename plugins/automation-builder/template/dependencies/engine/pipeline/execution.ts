@@ -6,9 +6,11 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
-import { redact } from '../utils/redact.ts';
+import { redactAll } from '../utils/redact.ts';
 import { ARTIFACTS, assertExecutionLabel, reportsDirFor } from './artifact-manager.ts';
+import type { AuthRunInfo } from './auth-state.ts';
 import { secretValuesFor } from './env-file.ts';
+import type { ExecutionPlan } from './execution-plan.ts';
 
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const OUTCOMES = ['passed', 'failed', 'flaky', 'skipped'] as const;
@@ -52,6 +54,13 @@ export interface ExecutionResults {
   runnerLog: string; // relative to automation/
   stats: Record<Outcome, number> & { total: number };
   tests: TestResult[];
+  // The login step that precedes the tests when saved authentication state is used. It is infrastructure, not a test:
+  // it is not counted in `stats`, but its failure is a runner error.
+  authSetup?: { outcome: 'passed' | 'failed' | 'skipped'; error: string | null };
+  // How saved login state was handled (reused, refreshed, recovered). Never contains cookie or token values.
+  authState?: AuthRunInfo;
+  // The worker count and isolation rules this run used, and why.
+  executionPlan?: ExecutionPlan;
 }
 
 // ---- running ----
@@ -64,6 +73,7 @@ export interface RunOptions {
   projects?: string[];
   retries?: number; // override, e.g. 0 for healing reruns so a retry can't mask the result
   timeoutMs?: number;
+  extraEnv?: NodeJS.ProcessEnv; // added to the runner's environment (e.g. PIPELINE_AUTH_STATE, PW_WORKERS)
 }
 
 export interface Spawner {
@@ -107,10 +117,10 @@ export function runPlaywright(rootDir: string, config: AutomationConfig, o: RunO
   }
   const r = spawn(process.execPath, [cli, ...args], {
     cwd: rootDir,
-    env: { ...env, PIPELINE_RUN_ID: o.runId, PIPELINE_LABEL: o.label, FORCE_COLOR: '0' },
+    env: { ...env, ...o.extraEnv, PIPELINE_RUN_ID: o.runId, PIPELINE_LABEL: o.label, FORCE_COLOR: '0' },
     timeoutMs: o.timeoutMs ?? 60 * 60_000,
   });
-  writeFileSync(runnerLogAbs, redact(`$ playwright ${args.join(' ')}\n\n${r.stdout}\n${r.stderr}`, secrets));
+  writeFileSync(runnerLogAbs, redactAll(`$ playwright ${args.join(' ')}\n\n${r.stdout}\n${r.stderr}`, secrets));
 
   const report = readJson(rawReportAbs);
   if (!report.ok) {
@@ -159,6 +169,8 @@ interface PwSpec { title: string; file?: string; line?: number; tests?: PwTest[]
 interface PwSuite { title?: string; file?: string; specs?: PwSpec[]; suites?: PwSuite[] }
 interface PwReport { config?: { rootDir?: string }; suites?: PwSuite[]; errors?: PwError[] }
 
+// Reserved Playwright project that logs in and writes the storage state (see playwright-config.ts).
+export const SETUP_PROJECT = 'setup';
 const ANSI = /\u001b\[[0-9;]*m/g;
 const TITLE_ID = /^\[([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*)\]/;
 
@@ -179,9 +191,10 @@ function outcomeOf(t: PwTest): Outcome {
 export function normalizeReport(raw: unknown, ctx: { rootDir: string; runId: string; label: string; secrets: string[]; now: Date }): ExecutionResults {
   const report = raw as PwReport;
   const testRoot = report.config?.rootDir ?? path.join(ctx.rootDir, 'tests');
-  const clean = (s: string | undefined) => redact((s ?? '').replace(ANSI, ''), ctx.secrets);
+  const clean = (s: string | undefined) => redactAll((s ?? '').replace(ANSI, ''), ctx.secrets);
   const rel = (p: string) => toPosixRelative(ctx.rootDir, path.isAbsolute(p) ? p : path.join(testRoot, p));
   const tests: TestResult[] = [];
+  const setup: { outcome: Outcome; error: string | null }[] = [];
 
   const walk = (suite: PwSuite, inheritedFile: string | undefined) => {
     const file = suite.file ?? inheritedFile;
@@ -189,6 +202,11 @@ export function normalizeReport(raw: unknown, ctx: { rootDir: string; runId: str
       const specFile = rel(spec.file ?? file ?? 'unknown');
       for (const t of spec.tests ?? []) {
         const project = t.projectName || 'default';
+        if (project === SETUP_PROJECT) {
+          const failure = (t.results ?? []).flatMap((r) => (r.errors?.length ? r.errors : r.error ? [r.error] : [])).find((e) => e.message);
+          setup.push({ outcome: outcomeOf(t), error: failure ? clean(failure.message).slice(0, 1000) : null });
+          continue;
+        }
         const testId = testIdFor(spec.title, t.annotations, specFile);
         tests.push({
           key: `${testId}@${project}`,
@@ -219,6 +237,11 @@ export function normalizeReport(raw: unknown, ctx: { rootDir: string; runId: str
   const stats = { total: tests.length, passed: 0, failed: 0, flaky: 0, skipped: 0 };
   for (const t of tests) stats[t.outcome]++;
   const topErrors = (report.errors ?? []).map((e) => clean(e.message)).filter(Boolean);
+  const authSetup: ExecutionResults['authSetup'] = setup.length === 0 ? undefined : {
+    outcome: setup.some((s) => s.outcome === 'failed') ? 'failed' : setup.every((s) => s.outcome === 'skipped') ? 'skipped' : 'passed',
+    error: setup.find((s) => s.error)?.error ?? null,
+  };
+  const setupError = authSetup?.outcome === 'failed' ? `authentication setup failed${authSetup.error ? `: ${authSetup.error.split('\n')[0]}` : ''}` : null;
   return {
     schemaVersion: EXECUTION_SCHEMA_VERSION,
     runId: ctx.runId,
@@ -226,11 +249,12 @@ export function normalizeReport(raw: unknown, ctx: { rootDir: string; runId: str
     executedAt: ctx.now.toISOString(),
     command: [],
     exitCode: null,
-    runnerError: topErrors.length ? `runner errors: ${topErrors.join(' | ').slice(0, 4000)}` : tests.length === 0 ? 'no tests were found or run' : null,
+    runnerError: topErrors.length ? `runner errors: ${topErrors.join(' | ').slice(0, 4000)}` : setupError ?? (tests.length === 0 ? 'no tests were found or run' : null),
     rawReport: null,
     runnerLog: '',
     stats,
     tests,
+    ...(authSetup ? { authSetup } : {}),
   };
 }
 

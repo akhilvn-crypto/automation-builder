@@ -53,6 +53,23 @@ role+name or test id; **medium** = text/label that could repeat; **low** = needs
 reach directly by URL. Record `tool: "aria-snapshot-fallback"` and mark specs needing interaction as `partial`,
 with the reason in `uncertainties`.
 
+## Reuse of earlier observations
+
+Saved observations (`dependencies/state/exploration-store/`, per base-URL origin) are **evidence to re-check, not truth**. Start with
+`node dependencies/engine/cli/pipeline.ts explore plan <runId> [--fresh]` → per ready spec: `explore`, `revalidate` or `reuse`, each with a
+reason, plus `groups` (specs by module, with the pages they share) and `pagesToRevalidate`. `--fresh` forces full exploration.
+
+| Plan says | Do |
+|---|---|
+| `explore` | explore it as described above (new/changed test case, unknown/stale/ambiguous locator, no store, corrupt store) |
+| `revalidate` | for each page in `pagesToRevalidate`: reach it (same login/navigation the spec needs), take **one** accessibility snapshot into `runs/<runId>/exploration/<name>.aria.yml`, then `explore revalidate <runId> --page <url-or-path> --file exploration/<name>.aria.yml`. (In Git Bash pass the full URL: a bare `/login` is rewritten to a Windows path.) |
+| `reuse` | nothing to do |
+
+`explore revalidate` looks for each saved control's role + accessible name in your fresh snapshot: exactly one match = still valid; none
+or several = marked **stale with a reason** and the specs that rely on it become `explore`; controls without a role+name (test-id only)
+cannot be proven and are never reused. Explore the shared pages of a module once and let every spec in the group point at them.
+Never copy a saved locator into your own record by hand, and never reuse CLI element refs (`e12`) across sessions.
+
 ## Safety
 
 - Only the configured base URL (an authorized test environment). Don't follow links to other domains.
@@ -61,6 +78,12 @@ with the reason in `uncertainties`.
 
 ## Record
 
-Write `exploration/exploration.json` (schema in `engine/pipeline/exploration.ts`): pages (url, title, evidence paths,
-elements with `candidateLocator` + confidence), per-spec steps with the observation and the locators used, and
-`uncertainties`. Validate with `node dependencies/engine/cli/pipeline.ts explore validate <runId>`.
+Write what you **observed in this run** to `exploration/fresh.json` (schema in `engine/pipeline/exploration.ts`): pages (url, title,
+evidence paths, elements with `candidateLocator` + confidence), per-spec steps with the observation and the locators used, and
+`uncertainties`. List only pages you visited and only the specs you explored (`pages: []`, `specs: []` is fine when everything was reused). Then
+`node dependencies/engine/cli/pipeline.ts explore assemble <runId>` merges your observations with the revalidated saved evidence into
+`exploration/exploration.json` (reused pages carry `provenance` and this run's snapshot), validates it, refuses if a ready spec has neither fresh
+nor revalidated evidence, and updates the store. Finally `explore validate <runId>`.
+
+After execution, `triage run` marks saved observations stale when their locator failed to resolve, and records why. Use
+`explore invalidate <runId> --page <p> --reason <text> [--locator <expr>]` when you learn evidence is out of date.

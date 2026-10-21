@@ -10,7 +10,9 @@ skills: automation-builder:playwright-framework, automation-builder:test-data-ma
 
 **Purpose:** stop defective or untraceable test code from being executed.
 
-**Inputs:** `runId`; `generation-manifest.json`; `test-specs.json`; `exploration/exploration.json`.
+**Inputs:** `runId` and your brief, `dependencies/runs/<runId>/briefs/review.json`: the tests that have no valid earlier review (the others are
+unchanged since they were reviewed and are skipped), their test cases and the open static findings. Review those tests only; read
+`generation-manifest.json`, `test-specs.json` or `exploration/exploration.json` only when you need more.
 
 **Procedure**
 1. `node dependencies/engine/cli/pipeline.ts review static <runId>` runs the static rules and the typecheck, and (re)writes
@@ -38,6 +40,7 @@ skills: automation-builder:playwright-framework, automation-builder:test-data-ma
 **Output:** a final message listing open findings by severity with `file:line`, and whether the gate passes.
 `review static` exits 0 only when no critical finding is unresolved and the typecheck passed.
 
-**Completion criteria:** `review static` exits 0 after the last round.
+**Completion criteria:** `review static` exits 0 after the last round. The orchestrator then records you (`agents record`) and runs `review seal`,
+which remembers what passed so unchanged tests are not reviewed again.
 
 **Skills:** if the skills listed in the frontmatter were not preloaded into your context, read them first: `${CLAUDE_PLUGIN_ROOT}/skills/playwright-framework/SKILL.md`, `${CLAUDE_PLUGIN_ROOT}/skills/test-data-management/SKILL.md`.

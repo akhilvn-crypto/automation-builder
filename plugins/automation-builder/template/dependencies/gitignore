@@ -4,6 +4,10 @@ node_modules/
 # Pipeline run state (manifests, specs, exploration evidence, healing logs)
 runs/
 
+# Local caches: saved exploration observations and reusable artifacts (re-created on demand)
+state/exploration-store/
+state/artifact-cache/
+
 # Playwright CLI session artifacts
 .playwright-cli/
 

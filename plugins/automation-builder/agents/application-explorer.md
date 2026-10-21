@@ -10,7 +10,8 @@ skills: automation-builder:application-exploration, automation-builder:test-data
 
 **Purpose:** observe the real application for each ready spec so the generator can use verified, durable locators.
 
-**Inputs:** `runId`; `app.baseUrl` and `exploration.tool` from the run's config (`node dependencies/engine/cli/pipeline.ts run show <runId>`);
+**Inputs:** `runId` and your brief `dependencies/runs/<runId>/briefs/exploration.json` (only the test cases to explore or revalidate and the pages
+to snapshot); `app.baseUrl` and `exploration.tool` from the run's config (`node dependencies/engine/cli/pipeline.ts run show <runId>`);
 `dependencies/runs/<runId>/test-specs.json`. Explore only specs with `status: "ready"`.
 
 **Permitted work**
@@ -20,7 +21,10 @@ skills: automation-builder:application-exploration, automation-builder:test-data
   write them to files, or keep them in saved snapshots. Their values are in `automation/.env`, which your shell does not
   load: run steps that need them with `pipeline.ts env run -- sh -c '… "$VAR" …'` (see the application-exploration skill).
   If a name has no value, stop and report it: the orchestrator tells the user to fill it in `automation/.env`.
-- Write only under `dependencies/runs/<runId>/exploration/`: `exploration.json`, `*.aria.yml` snapshots, `*.png` screenshots.
+- Start from `explore plan <runId>`: explore only the specs it marks `explore`; for `revalidate` take one snapshot per listed page and call
+  `explore revalidate` (see the skill's *Reuse* section). Saved observations are never trusted without that snapshot.
+- Write only under `dependencies/runs/<runId>/exploration/`: `fresh.json`, `*.aria.yml` snapshots, `*.png` screenshots. `exploration.json`,
+  `exploration-plan.json`, `revalidation.json` and the observation store are written by the CLI.
   Run the Playwright CLI from `dependencies/`, never from `automation/` (the framework folder stays free of session files).
 
 **Not permitted**
@@ -31,9 +35,10 @@ skills: automation-builder:application-exploration, automation-builder:test-data
 - Inferring expected behaviour the spec doesn't state. Record surprises in `uncertainties`.
 - Installing anything or switching to a different browser automation stack.
 
-**Output:** `exploration/exploration.json` (schema: `engine/pipeline/exploration.ts`); then
-`node dependencies/engine/cli/pipeline.ts explore validate <runId>` must exit 0. Final message: per-spec status
-(explored / partial / blocked), key uncertainties, avoided actions, and the validate result.
+**Output:** `exploration/fresh.json` (schema: `engine/pipeline/exploration.ts`), then
+`node dependencies/engine/cli/pipeline.ts explore assemble <runId>` (writes `exploration/exploration.json`) and `explore validate <runId>` must
+exit 0. Final message: per-spec status (explored / partial / blocked) and whether it was explored fresh or reused (with the plan's reason),
+key uncertainties, avoided actions, and the validate result.
 
 **Completion criteria:** every ready spec has an entry, `partial`/`blocked` entries explain why in `uncertainties`,
 and `explore validate` exits 0. If the app is unreachable or login fails, stop and report it as an environment or

@@ -1,10 +1,91 @@
-# Test-spec schema (`test-specs.json`, schemaVersion 2)
+# Test cases: the canonical schema and the test-spec view
 
-Produced by `node dependencies/engine/cli/pipeline.ts specs parse <runId>` from the configured input (Markdown, CSV or Excel
-`.xlsx`, in the user's own column layout). Source: `engine/pipeline/test-spec.ts` (types + validator),
-`engine/pipeline/test-case-parser.ts` + `input-table.ts` (parser and column mapping) and `engine/utils/xlsx.ts` (Excel reader),
-all under `dependencies/`. Input formats are described in the plugin's `test-case-parser` skill; examples are in
-`dependencies/docs/examples/`. Source paths in the document are relative to `dependencies/`.
+Test cases come in as Markdown (`.md`), CSV (`.csv`) or Excel (`.xlsx`), in any layout, and are **normalized once** by
+`node dependencies/engine/cli/pipeline.ts specs parse <runId>` into the canonical document below. Nothing downstream (exploration,
+generation, review, execution) reads the original files: they read `test-specs.json`, which is a projection of the canonical
+document and is accepted only while it matches it. Any other file type is rejected with the way to convert it.
+
+```
+.md / .csv / .xlsx  ->  readers (one per format)  ->  draft cases  ->  normalization  ->  canonical-test-cases.json
+                                                                                              |  projectSpecs (pure)
+                                                                                              v
+                                                                                       test-specs.json  ->  explore / generate / review ...
+```
+
+Source: `engine/pipeline/canonical.ts` (types, validator, projection), `test-case-parser.ts` (readers + normalization),
+`input-table.ts` + `column-inference.ts` (column mapping), `markdown-table.ts`, `engine/utils/xlsx.ts`, all under
+`dependencies/`. Input formats are described in the plugin's `test-case-parser` skill; examples are in `dependencies/docs/examples/`.
+Source paths in the documents are relative to `dependencies/`.
+
+## Canonical test cases (`canonical-test-cases.json`, schemaVersion `1.0.0`)
+
+```jsonc
+{
+  "schemaVersion": "1.0.0",
+  "generatedAt": "2026-10-21T04:00:00.000Z",
+  "sources": [{ "path": "input/test-cases/cases.xlsx", "sha256": "…", "format": "xlsx" }],
+  "validation": {                         // the whole input
+    "status": "warning",                  // valid | warning | needs_clarification | invalid  (the worst of the cases and findings)
+    "counts": { "valid": 5, "warning": 1, "needs_clarification": 1, "invalid": 0 },
+    "errors": [],                         // unreadable / unsupported files: { path, message }
+    "findings": []                        // tables that needed a person or a second look (see "Reading a layout")
+  },
+  "testCases": [{
+    "schemaVersion": "1.0.0",
+    "testCaseId": "CRT-1",                // source ID, or AUTO-<8 hex>; sheet-prefixed when a workbook restarts its numbering
+    "title": "Add item",
+    "module": "Cart", "moduleSlug": "cart", "suite": null,
+    "preconditions": ["The shop has stock"],
+    "steps": [
+      { "stepNumber": 1, "action": "Open the shop", "testData": [{ "name": "item", "value": "apple", "envVar": null, "declaredLiteral": false }], "expectedResult": "Shop is shown" },
+      { "stepNumber": 2, "action": "Add {item} to cart" }
+    ],                                    // testData and expectedResult are omitted when the step has none
+    "expectedResults": ["The cart has the item"],     // case-level, original wording
+    "testData": [{ "name": "item", "value": "apple", "envVar": null, "declaredLiteral": false }],
+    "priority": "High", "tags": ["smoke"],
+    "source": {
+      "file": "input/test-cases/cases.xlsx", "fileName": "cases.xlsx", "format": "xlsx", "sheet": "Cart",
+      "row": 2, "endRow": 4,              // spreadsheet row / CSV record line, first and last row of the case (null for Markdown)
+      "line": null, "endLine": null,      // Markdown line and last line (null for CSV / Excel)
+      "heading": null, "originalId": "CRT-1"
+    },
+    "metadata": { "Status": "Pass" },     // every source column / label no field claims, under its own name; credentials redacted
+    "validation": { "status": "valid", "blocking": [], "warnings": [] }   // issues: { code, severity, message, stepNumber|null }
+  }]
+}
+```
+
+Statuses of a case:
+
+| Status | Meaning | Automated? |
+|---|---|---|
+| `valid` | nothing to report | yes |
+| `warning` | usable; a non-blocking remark (`vague_expected_result`) | yes |
+| `needs_clarification` | a person must answer something: `missing_expected_result`, `missing_steps`, `empty_step`, `duplicate_id`, `undefined_data_reference`, `ambiguous_column_mapping`, `possible_secret_literal` | no |
+| `invalid` | the case cannot be identified or used as written: `untitled_case` (no ID and no title) | no |
+
+Nothing is invented: a missing step, expected result, credential or data value stays missing and is reported.
+`validation.status` must agree with the issues, so a case can't be marked valid by hand.
+
+Reading a layout (`validation.findings`, and the `tables` block of `specs parse` / `input inspect`):
+
+- Headers are matched to fields by name (ID, title, module, steps, expected, preconditions, data, priority, tags), case- and
+  punctuation-insensitively. A header that fits a field less well loses to one that fits better (`Test Case Title` beats `Test
+  Description`); of equally good columns an empty one is not a rival.
+- **Two equally good columns that both hold data** (`Steps` and `Test Steps`) are an `ambiguous_column_mapping`: the first is read,
+  but every case of that table is held back (`needs_clarification`) until `input map … --column steps="Test Steps"` names one.
+- **Unknown headers**: when no header names the steps / expected result / ID, the columns' content is read (numbered or
+  multi-line lists and instruction verbs → steps; "should be shown"-style wording → expected result; unique ID-shaped values →
+  ID). Only a reading at 90% confidence or better that completes the table is applied, and it is reported as an
+  `inferred_columns` warning. A title is never inferred, only proposed. Anything less is an error that lists the proposals as
+  questions; the answer is saved with `input map` and reused.
+- Columns no field claims are kept in `metadata`, never dropped.
+
+## Test specs (`test-specs.json`, schemaVersion 2): the view downstream stages read
+
+Projected from the canonical document (`projectSpecs`); it carries `canonical: { schemaVersion, sha256 }`, the hash of the
+canonical document it came from. `needs_clarification` and `invalid` cases both appear as `needs_clarification` here.
+Step-level data and metadata exist only in the canonical document.
 
 ```jsonc
 {
@@ -36,7 +117,7 @@ all under `dependencies/`. Input formats are described in the plugin's `test-cas
 }
 ```
 
-## Rules enforced by the validator
+## Rules enforced by the validators
 
 - `module` is required and `moduleSlug` must equal its slug. A module is, in order: the saved `input map --module`, the row's
   module column (an empty cell inherits the one above), the title prefix (`input map --module-from title-prefix`), the heading
@@ -51,16 +132,16 @@ all under `dependencies/`. Input formats are described in the plugin's `test-cas
 - Credential-looking literals (password/token/secret/API-key fields, username/email fields, any email address) are
   never stored: the parser writes `envVar: "TEST_<NAME>"` and `specs parse` puts the value in `automation/.env`.
   Email addresses typed inside steps become `{email}` placeholders with a Test Data entry. `literal:<value>` keeps a value as is.
-- `status` must agree with the ambiguities, so a case can't be marked ready by hand:
-
-| Ambiguity kind | Blocking? |
-|---|---|
-| `missing_expected_result`, `missing_steps`, `empty_step`, `duplicate_id`, `undefined_data_reference` | yes → `needs_clarification` |
-| `possible_secret_literal` (only for a value that cannot be stored in a `.env` file) | yes → `needs_clarification` |
-| `vague_expected_result` | no (warning) |
-
-- The `test_analysis` stage completes only if the document is valid and at least one spec is ready. Specs that need
-  clarification are never generated; they are reported as `blocked` tests with the reason.
+- `status` must agree with the ambiguities, so a case can't be marked ready by hand. Blocking kinds (`missing_expected_result`,
+  `missing_steps`, `empty_step`, `duplicate_id`, `undefined_data_reference`, `ambiguous_column_mapping`, `untitled_case`, and
+  `possible_secret_literal` for a value that cannot be stored in a `.env` file) make the spec `needs_clarification`;
+  `vague_expected_result` is a warning.
+- The `test_analysis` stage completes only if **both** `canonicalCases` and `testSpecs` are registered, the canonical document is
+  valid and has no input errors, at least one case is `valid` or `warning`, every source file still has the hash recorded in it,
+  and `test-specs.json` is exactly the projection of the canonical document (hash and content). `generate plan`, `generate
+  assemble`, `generate validate`, `explore plan/assemble` and `review plan/seal` repeat that last check, so a hand-edited
+  `test-specs.json` stops the pipeline. `specs check <runId>` runs it on demand and lists the cases that are not automatable.
+  Cases that are not `valid` or `warning` are never generated; they are reported as `blocked` tests with the reason.
 
 ## Other run artifacts
 
@@ -70,6 +151,7 @@ written to the framework: `automation/reports/<run-id>/<label>/` and `automation
 | File | Schema source |
 |---|---|
 | `manifest.json` | `engine/pipeline/run-manager.ts` |
+| `canonical-test-cases.json` | `engine/pipeline/canonical.ts` |
 | `input-validation.json` | `engine/pipeline/input-validation.ts` |
 | `exploration/exploration.json` | `engine/pipeline/exploration.ts` |
 | `generation-manifest.json` | `engine/pipeline/generation.ts` |

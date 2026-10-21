@@ -12,6 +12,20 @@
 The header row is the first of the first 25 rows that has both a steps and an expected-result column, so a title block above
 the table is fine. A lone ID-shaped cell (`TC-9`) in an otherwise empty row is an (incomplete) case and is flagged, not a heading.
 
+When two headers fit one field equally well (`Steps` and `Test Steps`) and both hold data, the table is an
+`ambiguous_column_mapping` and its cases wait for `input map … --column steps="Test Steps"`; a header that fits better wins
+outright (`Test Case Title` over `Test Description` for the title). When no header names steps / expected / ID at all, the
+columns are read by content and applied at 90% confidence or better (an `inferred_columns` warning); otherwise the table is an
+error listing proposals. Columns no field claims are kept under their own name in each case's `metadata`.
+
+## Canonical test cases (what `specs parse` writes first)
+
+`canonical-test-cases.json` holds every case once, whatever the format: `testCaseId`, `title`, `module`, `preconditions`, `steps`
+(each with optional `testData` and `expectedResult`), case-level `expectedResults` and `testData`, `priority`, `tags`, `source`
+(file, sheet, first and last row or line, original ID), `metadata`, and `validation` with `status` (`valid` / `warning` /
+`needs_clarification` / `invalid`) plus `blocking` and `warnings` issues. `test-specs.json` is projected from it. Fields are
+described in `dependencies/docs/test-spec-schema.md`.
+
 ## Markdown
 
 ```md

@@ -22,8 +22,8 @@ Same orchestrator role, shared modules and configuration as `/automation-builder
    `preflight` → `configuration` → `failure_triage` → `healing` → `regression_validation` → `report_generation` →
    `finalization`.
    - `failure_triage`: `triage run <runId>` reads the source run's results automatically.
-   - `healing`: **failure-healer** Phase B. The attempt limit is per test per run.
-   - `regression_validation`: rerun every test in the healed files (label `regression`).
+   - `healing`: `agents plan <runId> healing`, then **failure-healer** Phase B per eligible test. The attempt limit is per test per run.
+   - `regression_validation`: run `exec run <runId> --label regression --test-file <each healed file>` yourself (no agent).
 
 Finish with the stages.md summary, focusing on: healed tests (with diffs from `healing-log.json`), tests left failing
 and why (application defects are not healed), and attempts used.

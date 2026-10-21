@@ -72,9 +72,27 @@ dependencies/                                not framework
 - **Evidence PDF:** choosing the `evidence-pdf` reporter makes the shared fixture screenshot every `test.step`; `report build`
   then writes `automation/reports/<run-id>/evidence-report/evidence-report.pdf` (every executed step next to its screenshot,
   per attempt, with expected results and failures) using the project's own Playwright + Chromium: no extra package.
-  `--update` refreshes an unmodified older `fixtures/test.*` so existing projects can adopt it.
+  `--update` refreshes an unmodified older `fixtures/test.*` (0.6.x and 0.8.x copies) so existing projects can adopt it; the evidence PDF belongs to
+  `reporting.mode: audit` with `stepScreenshots`, and password fields are masked in the screenshots.
 - The template is organized as `template/dependencies` (engine, docs, demo, engine tests) and
   `template/framework/{common,typescript,javascript}`; the language-specific twins must stay functionally identical.
+
+## Doing less work, safely
+
+Each run reuses what is provably unchanged, asks an agent only where judgment is needed, and keeps parallel work from colliding.
+Mechanics, trade-offs and limits: `dependencies/docs/pipeline-efficiency.md` (scaffolded by `init`).
+
+- **Cross-run cache** (`dependencies/state/artifact-cache/`): normalized specs, generated tests, review results and the typecheck are reused
+  only while their inputs, the plugin version and the framework files each test imports are unchanged and the entry still validates.
+  `cache status <runId>` lists every reuse/rebuild with its reason. Execution results are never reused.
+- **Agents on demand:** `agents plan <runId> <stage>` decides in code whether a stage needs an agent and writes the bounded brief it gets.
+- **Saved login state** is checked (age, cookies, origin, optional probe) before reuse; a session rejected mid-run is discarded and the run
+  repeated once. `auth check` / `auth clear` explain and clean up.
+- **Parallelism:** a conservative default of 2 workers, capped by `execution.isolation`; generation batches (one per module file) never share a
+  file; all shared state updates are locked. `run compare <baseline> <candidate>` checks that no test went missing or got worse before it
+  believes a speed-up.
+- **Report modes:** `standard` (JSON + HTML), `full` (+ Allure, failure videos), `audit` (+ opt-in step screenshots and the evidence PDF).
+  `config mode-preset <mode>` shows what a mode sets; missing software is proposed, never installed.
 
 ## Setup and installation approvals
 
@@ -83,4 +101,4 @@ test-case path, browsers, evidence, reporters, auth) and saves them to `automati
 dependency (`typescript` for TypeScript projects only, `@playwright/test`, browsers, `@playwright/cli`, Allure) is offered separately with the
 exact command and installed only on an explicit yes, into `automation/`; decisions are logged in `dependencies/state/dependency-log.json`.
 
-Secrets go in `automation/.env` (git-ignored; copy `.env.example`). Credentials, usernames and emails found in your test cases are moved there automatically (`TEST_<NAME>` variables; `literal:<value>` opts a fake value out); you only fill in values the pipeline reports as missing. The pipeline asks where your test cases are (any path; Excel, CSV or Markdown in your own column layout), converts them to its Markdown format, one file per module, and saves them in `dependencies/input/test-cases/` (`input import --from <path>`; your original is never changed). Run state lives in `dependencies/runs/<run-id>/`; reports and evidence in `automation/reports/<run-id>/` and `automation/test-results/<run-id>/`.
+Secrets go in `automation/.env` (git-ignored; copy `.env.example`). Credentials, usernames and emails found in your test cases are moved there automatically (`TEST_<NAME>` variables; `literal:<value>` opts a fake value out); you only fill in values the pipeline reports as missing. The pipeline asks where your test cases are (any path; Excel, CSV or Markdown in your own column layout), converts them to its Markdown format, one file per module, and saves them in `dependencies/input/test-cases/` (`input import --from <path>`; your original is never changed). `specs parse` normalizes every case once into `canonical-test-cases.json` (a status per case: `valid`, `warning`, `needs_clarification`, `invalid`) and projects `test-specs.json` from it; two equally good columns for one field hold that table's cases until you pick one, and columns read from their content are used only at 90% confidence or better and reported. Known limits: step-level data does not survive the Markdown conversion (only case-level data does), and an unindented plain-text line in a Markdown case's steps or expected results can be read as metadata. Run state lives in `dependencies/runs/<run-id>/`; reports and evidence in `automation/reports/<run-id>/` and `automation/test-results/<run-id>/`.

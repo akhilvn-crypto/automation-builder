@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import type { AutomationConfig } from '../engine/config/schema.ts';
+import { CANONICAL_SCHEMA_VERSION, documentValidation, projectSpecs, validationOf, type CanonicalCase, type CanonicalDocument } from '../engine/pipeline/canonical.ts';
+import type { TestSpec, TestSpecDocument } from '../engine/pipeline/test-spec.ts';
 import { dependenciesDir } from '../engine/utils/layout.ts';
 
 // A throwaway project: <tmp>/automation is the framework root the engine receives, <tmp>/dependencies its sibling.
@@ -151,4 +153,35 @@ export function writeXlsx(root: string, rel: string, sheets: SheetData[]): strin
   mkdirSync(path.dirname(abs), { recursive: true });
   writeFileSync(abs, buildXlsx(sheets));
   return abs;
+}
+
+// Specs as the tests build them by hand, as a canonical document: the pipeline only accepts specs that project from one.
+export function canonicalFromSpecs(specs: TestSpec[], generatedAt = '2026-10-20T00:00:00Z'): CanonicalDocument {
+  const testCases = specs.map((s): CanonicalCase => ({
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
+    testCaseId: s.id, title: s.title, module: s.module, moduleSlug: s.moduleSlug, suite: s.suite,
+    preconditions: s.preconditions, expectedResults: s.expectedResults, testData: s.testData, priority: s.priority, tags: s.tags,
+    steps: s.steps.map((st) => ({ stepNumber: st.index, action: st.action, ...(st.expected ? { expectedResult: st.expected } : {}) })),
+    source: {
+      file: s.source.path, fileName: s.source.path.split('/').pop()!, format: s.source.sheet ? 'xlsx' : 'markdown', sheet: s.source.sheet,
+      row: s.source.sheet ? s.source.line : null, endRow: s.source.sheet ? s.source.line : null,
+      line: s.source.sheet ? null : s.source.line, endLine: s.source.sheet ? null : s.source.line, heading: s.suite, originalId: s.source.originalId,
+    },
+    metadata: {},
+    validation: validationOf(s.ambiguities),
+  }));
+  return {
+    schemaVersion: CANONICAL_SCHEMA_VERSION, generatedAt,
+    sources: [{ path: specs[0]?.source.path ?? 'input/cases.md', sha256: 'x', format: 'markdown' }],
+    validation: documentValidation(testCases, [], []), testCases,
+  };
+}
+
+// canonical-test-cases.json and the test-specs.json projected from it, written into a run.
+export function writeRunSpecs(root: string, runId: string, specs: TestSpec[]): TestSpecDocument {
+  const canonical = canonicalFromSpecs(specs);
+  const doc = projectSpecs(canonical);
+  writeDep(root, `runs/${runId}/canonical-test-cases.json`, JSON.stringify(canonical));
+  writeDep(root, `runs/${runId}/test-specs.json`, JSON.stringify(doc));
+  return doc;
 }

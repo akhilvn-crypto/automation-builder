@@ -3,7 +3,7 @@
 // with `run stage <runId> <stage> completed --artifact <name>=<path>`.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../config/load-config.ts';
 import { syncFromSavedConfig } from '../config/playwright-config.ts';
@@ -11,14 +11,31 @@ import { isAbsoluteOrEscaping, type AutomationConfig } from '../config/schema.ts
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { toRootRelative } from '../utils/paths.ts';
+import {
+  CACHE_KINDS, decide, readEntry, readLedger, recordDecisions, stripEntry, summarizeLedger, writeEntry, type CacheDecision,
+} from '../pipeline/artifact-cache.ts';
+import {
+  AGENT_BY_STAGE, boundBrief, planAgentStage, readAgentUsage, recordDecision, recordInvocation, summarizeUsage, type PlannerInput,
+} from '../pipeline/agent-planner.ts';
+import { clearAuthState, inspectAuthState, runWithAuthState } from '../pipeline/auth-state.ts';
+import { resolveExecutionPlan } from '../pipeline/execution-plan.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
+import { checkSpecsAgainstCanonical, validateCanonicalDocument, type CanonicalDocument } from '../pipeline/canonical.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
 import { missingEnvMessage, missingEnvVars, readEnvValues, referencedEnvVars, secretValuesFor, syncEnvFiles } from '../pipeline/env-file.ts';
-import { validateExplorationRecord } from '../pipeline/exploration.ts';
+import { validateExplorationRecord, type ExplorationRecord } from '../pipeline/exploration.ts';
+import {
+  REVALIDATION_SCHEMA_VERSION, applyRevalidation, assembleExploration, checkElements, emptyRevalidation, planExploration,
+  type ExplorationPlan, type Revalidation,
+} from '../pipeline/exploration-reuse.ts';
+import {
+  invalidateFromFailures, loadStore, markStale, pageKey, updateStore, type ExecutionInvalidation,
+} from '../pipeline/exploration-store.ts';
 import {
   CATEGORIES, CONFIDENCES, buildFailureAnalysis, reclassify, saveFailureAnalysis, validateFailureAnalysis,
   type Category, type Confidence, type FailureAnalysis,
 } from '../pipeline/failure-classifier.ts';
+import { mergeGeneration, planGeneration, type GenerationPlan } from '../pipeline/generation-reuse.ts';
 import { PAGE_OBJECTS_DIR, validateGenerationManifest, type GenerationManifest } from '../pipeline/generation.ts';
 import {
   checkAttempt, eligibleFailure, ensureHealingLog, healLabel, readHealingLog, recordAttempt, revertAttempt, snapshotForAttempt,
@@ -27,15 +44,18 @@ import { applyMapping, inspectInput } from '../pipeline/input-inspect.ts';
 import { IMPORT_DIR, cleanSourcePath, importInput } from '../pipeline/input-import.ts';
 import { loadMappings } from '../pipeline/input-table.ts';
 import { validateInput } from '../pipeline/input-validation.ts';
+import { buildBaseline, buildRunMetrics, compareRuns, writeRunMetrics } from '../pipeline/metrics.ts';
 import { planModules, writeNormalizedInput } from '../pipeline/modules.ts';
 import { buildSummary, reportersOk } from '../pipeline/reporting.ts';
 import {
-  HealingLimitError, loadManifest, pruneRuns, recordHealingAttempt, saveManifest, setTestCounts, type RunManifest,
+  HealingLimitError, loadManifest, mutateManifest, pruneRuns, recordHealingAttempt, setTestCounts, type RunManifest,
 } from '../pipeline/run-manager.ts';
+import { planReview, refreshAfterHeal, sealReview, typecheckKey, type ReviewPlan } from '../pipeline/review-reuse.ts';
+import { parseSpecsCached } from '../pipeline/specs-cache.ts';
+import { isStageName } from '../pipeline/state-manager.ts';
 import {
   REVIEW_SCHEMA_VERSION, SEVERITIES, reviewFiles, type ReviewFinding, type ReviewReport, type Severity,
 } from '../pipeline/static-review.ts';
-import { listInputFiles, parseInputs } from '../pipeline/test-case-parser.ts';
 import { validateTestSpecDocument, type TestSpecDocument } from '../pipeline/test-spec.ts';
 import { redact } from '../utils/redact.ts';
 
@@ -65,6 +85,16 @@ export interface Values {
   clear?: boolean;
   from?: string;
   overwrite?: boolean;
+  'no-cache'?: boolean;
+  force?: boolean;
+  agent?: string;
+  'input-tokens'?: string;
+  'output-tokens'?: string;
+  fresh?: boolean;
+  write?: boolean;
+  page?: string;
+  locator?: string;
+  reason?: string;
 }
 
 export interface Result {
@@ -94,6 +124,13 @@ function run(root: string, runId: string | undefined): RunCtx {
   return { root, runId: id, dir: runDir(root, id), manifest: loaded.manifest };
 }
 
+// setTestCounts rewrote the manifest after `run()` loaded it, so reload before deriving metrics.
+function loadFresh(r: RunCtx): RunManifest {
+  const loaded = loadManifest(r.root, r.runId);
+  if (!loaded.ok) throw new Error(`manifest for ${r.runId} is invalid: ${loaded.issues.join('; ')}`);
+  return loaded.manifest;
+}
+
 function configOf(r: RunCtx): AutomationConfig {
   if (!r.manifest.config) throw new Error(`run ${r.runId} has no configuration yet (configuration stage not done)`);
   return r.manifest.config;
@@ -115,6 +152,71 @@ function artifactWithSource<T>(r: RunCtx, rel: string): { value: T | null; from:
   return { value: null, from: null };
 }
 
+// The test specs generation, exploration and review may use: test-specs.json, and only when it is exactly what this run's canonical
+// test cases project to. A spec file that was edited by hand, or that does not come from validated canonical test cases, is refused.
+function validatedSpecs(r: RunCtx): { specs: TestSpecDocument | null; issues: string[] } {
+  const pick = (dir: string) => ({ specs: readArtifact<TestSpecDocument>(dir, ARTIFACTS.testSpecs), canonical: readArtifact<CanonicalDocument>(dir, ARTIFACTS.canonicalCases) });
+  let found = pick(r.dir);
+  if (!found.specs && r.manifest.sourceRunId) found = pick(runDir(r.root, r.manifest.sourceRunId));
+  if (!found.specs) return { specs: null, issues: [`${ARTIFACTS.testSpecs} is missing or not valid JSON`] };
+  if (!found.canonical) return { specs: null, issues: [`${ARTIFACTS.canonicalCases} is missing: test cases must be normalized first (run "specs parse")`] };
+  const issues = [...validateCanonicalDocument(found.canonical), ...checkSpecsAgainstCanonical(found.canonical, found.specs)];
+  return issues.length > 0 ? { specs: null, issues } : { specs: found.specs, issues: [] };
+}
+
+// Run-directory subfolders (exploration/) are created on first write, not when the run is created.
+function writeInRun(r: RunCtx, rel: string, data: unknown): void {
+  const abs = path.join(r.dir, rel);
+  mkdirSync(path.dirname(abs), { recursive: true });
+  writeJsonAtomic(abs, data);
+}
+
+function readRevalidation(r: RunCtx): Revalidation {
+  const saved = readArtifact<Revalidation>(r.dir, ARTIFACTS.explorationRevalidation);
+  // A missing or unreadable file proves nothing, so no saved evidence counts as revalidated.
+  return saved && saved.schemaVersion === REVALIDATION_SCHEMA_VERSION && typeof saved.pages === 'object' && saved.pages !== null ? saved : emptyRevalidation();
+}
+
+function previousPlan(r: RunCtx): ExplorationPlan | null {
+  return readArtifact<ExplorationPlan>(r.dir, ARTIFACTS.explorationPlan);
+}
+
+// Recomputes the explore/revalidate/reuse decisions from the store and this run's revalidation, and saves them.
+function currentPlan(r: RunCtx, forceFresh: boolean): { plan: ExplorationPlan | null; issues: string[] } {
+  const { specs, issues } = validatedSpecs(r);
+  if (!specs) return { plan: null, issues };
+  const baseUrl = configOf(r).app.baseUrl;
+  const plan = planExploration({
+    specs, baseUrl, state: loadStore(r.root, baseUrl), revalidation: readRevalidation(r),
+    forceFresh: forceFresh || (previousPlan(r)?.forcedFresh ?? false), now: new Date().toISOString(),
+  });
+  writeInRun(r, ARTIFACTS.explorationPlan, plan);
+  return { plan, issues: [] };
+}
+
+// Locators that failed to resolve in execution make the saved observations unproven.
+function invalidateObservations(r: RunCtx, analysis: FailureAnalysis): ExecutionInvalidation[] {
+  const baseUrl = r.manifest.config?.app.baseUrl;
+  if (!baseUrl) return [];
+  return updateStore(r.root, baseUrl, (state) => {
+    if (state.status !== 'ok') return { store: null, result: [] };
+    const result = invalidateFromFailures(state.store, analysis, new Date().toISOString());
+    return { store: result.invalidated.length > 0 ? result.store : null, result: result.invalidated };
+  });
+}
+
+// The environment the tests will see: .env values, with the real environment winning (as in `env run`).
+function envWithDotEnv(root: string): NodeJS.ProcessEnv {
+  return { ...Object.fromEntries(readEnvValues(root)), ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v)) };
+}
+
+// The worker plan for a run. A PW_WORKERS in the environment counts as an explicit request, as it does for Playwright itself.
+function planFor(root: string, config: AutomationConfig) {
+  const env = envWithDotEnv(root);
+  const requested = env.PW_WORKERS && /^\d+$/.test(env.PW_WORKERS) ? Number(env.PW_WORKERS) : null;
+  return resolveExecutionPlan(requested === null ? config : { ...config, execution: { ...config.execution, workers: requested } }, env);
+}
+
 function inputPathOf(r: RunCtx, v: Values): string {
   return v.path ?? configOf(r).input.testCasesPath;
 }
@@ -126,7 +228,7 @@ export function stageCommand(root: string, group: string, action: string | undef
       const inputPath = inputPathOf(r, v);
       const report = validateInput(inputBaseDir(root), r.dir, inputPath, new Date(), loadMappings(root));
       // Record input files and hashes on the manifest for traceability.
-      saveManifest(root, { ...r.manifest, inputs: report.files.map((f) => ({ path: f.path, sha256: f.sha256 })) });
+      mutateManifest(root, r.runId, (m) => ({ ...m, inputs: report.files.map((f) => ({ path: f.path, sha256: f.sha256 })) }));
       // The full report (with every file hash) is saved as the artifact; the session only needs what to act on.
       const shown = {
         inputPath: report.inputPath, files: report.files.map((f) => f.path), unsupported: report.unsupported, errors: report.errors,
@@ -179,18 +281,26 @@ export function stageCommand(root: string, group: string, action: string | undef
       const r = run(root, rest[0]);
       const inputPath = inputPathOf(r, v);
       const base = inputBaseDir(root);
-      const { document, errors, unsupported, tables, credentials } = parseInputs(base, listInputFiles(base, inputPath), new Date(), loadMappings(root));
+      const { canonical, document, errors, unsupported, tables, credentials, decision } = parseSpecsCached(root, base, r.runId, inputPath, { useCache: !v['no-cache'] });
+      recordDecisions(r.dir, [decision]);
+      // The canonical test cases first; test-specs.json is their projection and carries their hash.
+      writeJsonAtomic(path.join(r.dir, ARTIFACTS.canonicalCases), canonical);
       writeJsonAtomic(path.join(r.dir, ARTIFACTS.testSpecs), document);
       // The same cases in the pipeline's own Markdown format, one file per module: a record of how the input was understood.
-      const normalized = writeNormalizedInput(path.join(r.dir, ARTIFACTS.normalizedInputDir), document);
-      const issues = validateTestSpecDocument(document);
+      const metadataById = new Map(canonical.testCases.map((c) => [c.testCaseId, c.metadata]));
+      const normalized = writeNormalizedInput(path.join(r.dir, ARTIFACTS.normalizedInputDir), document, (id) => metadataById.get(id));
+      const issues = [...validateCanonicalDocument(canonical), ...validateTestSpecDocument(document)];
       const ready = document.specs.filter((s) => s.status === 'ready');
       const blocked = document.specs.filter((s) => s.status === 'needs_clarification');
+      const statusOf = new Map(canonical.testCases.map((c) => [c.testCaseId, c.validation.status]));
       // Credentials and emails found in the test cases go to automation/.env; only names leave this function.
       const env = syncEnvFiles(root, new Map(credentials.map((c) => [c.envVar, c.value])), referencedEnvVars(document));
       const value = {
         ok: issues.length === 0 && errors.length === 0 && ready.length > 0,
         artifact: ARTIFACTS.testSpecs,
+        // Register both with the stage: --artifact canonicalCases=<path> --artifact testSpecs=<path>
+        canonicalArtifact: ARTIFACTS.canonicalCases,
+        validation: { status: canonical.validation.status, counts: canonical.validation.counts, findings: canonical.validation.findings },
         counts: { total: document.specs.length, ready: ready.length, needsClarification: blocked.length },
         modules: normalized.map((m) => ({
           module: m.module, moduleSlug: m.moduleSlug, cases: m.cases,
@@ -198,15 +308,32 @@ export function stageCommand(root: string, group: string, action: string | undef
           normalizedFile: `${ARTIFACTS.normalizedInputDir}/${m.file}`,
         })),
         // Spreadsheet/CSV layouts: which header fed which field, and the columns that were left out (so nothing is dropped silently).
-        tables: tables.map((t) => ({ path: t.path, sheet: t.sheet, status: t.status, reason: t.reason, headerLine: t.headerLine, mapped: t.mapped, ignoredColumns: t.ignoredColumns, moduleFrom: t.moduleFrom, sections: t.sections, titlePrefixes: t.titlePrefixes, cases: t.cases })),
-        needsClarification: blocked.map((s) => ({ id: s.id, title: s.title, source: s.source, ambiguities: s.ambiguities })),
-        warnings: document.specs.flatMap((s) => s.ambiguities.filter((a) => a.kind === 'vague_expected_result').map((a) => ({ id: s.id, ...a }))),
+        tables: tables.map((t) => ({ path: t.path, sheet: t.sheet, status: t.status, reason: t.reason, headerLine: t.headerLine, mapped: t.mapped, ignoredColumns: t.ignoredColumns, ambiguous: t.ambiguous, inferred: t.inferred, suggestions: t.suggestions, moduleFrom: t.moduleFrom, sections: t.sections, titlePrefixes: t.titlePrefixes, cases: t.cases })),
+        needsClarification: blocked.map((s) => ({ id: s.id, title: s.title, status: statusOf.get(s.id), source: s.source, ambiguities: s.ambiguities })),
+        warnings: canonical.testCases.flatMap((c) => c.validation.warnings.map((w) => ({ id: c.testCaseId, ...w }))),
         env: {
           ...env,
           detected: credentials.map((c) => ({ envVar: c.envVar, usedBy: document.specs.filter((s) => s.testData.some((d) => d.envVar === c.envVar)).map((s) => s.id) })),
           action: missingEnvMessage(root, env.missing),
         },
         errors, unsupported, issues,
+        cache: stripEntry(decision),
+      };
+      return { value, code: value.ok ? 0 : 2 };
+    }
+
+    // Is test-specs.json exactly what this run's canonical test cases say, and which cases may be automated?
+    case 'specs check': {
+      const r = run(root, rest[0]);
+      const { specs, issues } = validatedSpecs(r);
+      const canonical = artifactWithSource<CanonicalDocument>(r, ARTIFACTS.canonicalCases).value;
+      const automatable = canonical?.testCases.filter((c) => c.validation.status === 'valid' || c.validation.status === 'warning').length ?? 0;
+      const value = {
+        ok: specs !== null && automatable > 0,
+        issues: specs === null ? issues : automatable === 0 ? ['no test case is valid: every case needs clarification or is invalid'] : [],
+        validation: canonical ? { status: canonical.validation.status, counts: canonical.validation.counts } : null,
+        notAutomatable: canonical?.testCases.filter((c) => c.validation.status === 'needs_clarification' || c.validation.status === 'invalid')
+          .map((c) => ({ id: c.testCaseId, status: c.validation.status, blocking: c.validation.blocking.map((b) => b.message) })) ?? [],
       };
       return { value, code: value.ok ? 0 : 2 };
     }
@@ -259,17 +386,179 @@ export function stageCommand(root: string, group: string, action: string | undef
       return { value: { ok: issues.length === 0, artifact: ARTIFACTS.exploration, issues }, code: issues.length ? 2 : 0 };
     }
 
+    case 'explore plan': {
+      const r = run(root, rest[0]);
+      const { plan, issues } = currentPlan(r, Boolean(v.fresh));
+      if (!plan) return notReady({ ok: false, issues });
+      return ok({ ok: true, artifact: ARTIFACTS.explorationPlan, ...plan });
+    }
+
+    case 'explore revalidate': {
+      const r = run(root, rest[0]);
+      const baseUrl = configOf(r).app.baseUrl;
+      const key = pageKey(need(v.page, '--page'), baseUrl);
+      if (key === null) throw new UsageError(`--page must be a path or URL on ${baseUrl}`);
+      const file = need(v.file, '--file');
+      if (isAbsoluteOrEscaping(file)) throw new UsageError('--file must be relative to the run directory');
+      const snapshotAbs = path.join(r.dir, file);
+      if (!existsSync(snapshotAbs)) throw new UsageError(`snapshot ${file} does not exist in the run directory`);
+      const now = new Date().toISOString();
+      const outcome = updateStore<{ issues: string[] } | { checks: ReturnType<typeof checkElements> }>(root, baseUrl, (state) => {
+        if (state.status !== 'ok') return { store: null, result: { issues: [`no usable observation store: ${state.reason}`] } };
+        const saved = state.store.pages[key];
+        if (!saved) return { store: null, result: { issues: [`page ${key} is not in the store; explore it fresh`] } };
+        const checks = checkElements(saved, readFileSync(snapshotAbs, 'utf8'));
+        return { store: applyRevalidation(state.store, key, checks, r.runId, now), result: { checks } };
+      });
+      if ('issues' in outcome) return notReady({ ok: false, issues: outcome.issues });
+      const checks = outcome.checks;
+      const revalidation = readRevalidation(r);
+      revalidation.pages[key] = { revalidatedAt: now, snapshot: file, elements: checks };
+      writeInRun(r, ARTIFACTS.explorationRevalidation, revalidation);
+      const plan = currentPlan(r, false).plan!;
+      return ok({
+        ok: true, page: key, elements: checks,
+        // Test cases on this page and what happens to them now.
+        specs: plan.specs.filter((s) => s.pages.includes(key) || s.action === 'explore'),
+        summary: plan.summary,
+      });
+    }
+
+    case 'explore assemble': {
+      const r = run(root, rest[0]);
+      const { specs, issues: specIssues } = validatedSpecs(r);
+      if (!specs) return notReady({ ok: false, issues: specIssues });
+      const fresh = readArtifact(r.dir, ARTIFACTS.explorationFresh);
+      if (!fresh) return notReady({ ok: false, issues: [`${ARTIFACTS.explorationFresh} is missing or not valid JSON; write what you observed this run there first`] });
+      const baseUrl = configOf(r).app.baseUrl;
+      const result = updateStore(root, baseUrl, (state) => {
+        const assembled = assembleExploration({
+          runId: r.runId, runDir: r.dir, specs, baseUrl, state,
+          revalidation: readRevalidation(r), fresh, forceFresh: previousPlan(r)?.forcedFresh ?? false, now: new Date().toISOString(),
+        });
+        return { store: assembled.ok ? assembled.store : null, result: assembled };
+      });
+      writeInRun(r, ARTIFACTS.explorationPlan, result.plan);
+      if (!result.ok) return notReady({ ok: false, issues: result.issues, summary: result.plan.summary });
+      writeInRun(r, ARTIFACTS.exploration, result.record);
+      // Exploration reuse is decided by exploration-reuse.ts; the ledger just makes it visible next to the other caches.
+      recordDecisions(r.dir, result.plan.specs.map((p): CacheDecision => ({
+        kind: 'exploration', name: p.testId, action: result.record.reuse?.reusedSpecs.includes(p.testId) ? 'reuse' : 'rebuild',
+        reason: result.record.reuse?.reasons[p.testId] ?? p.reason, changed: [],
+      })));
+      return ok({ ok: true, artifact: ARTIFACTS.exploration, reuse: result.record.reuse, store: result.plan.store });
+    }
+
+    case 'explore invalidate': {
+      const r = run(root, rest[0]);
+      const baseUrl = configOf(r).app.baseUrl;
+      const key = pageKey(need(v.page, '--page'), baseUrl);
+      if (key === null) throw new UsageError(`--page must be a path or URL on ${baseUrl}`);
+      const reason = `${r.runId}: ${need(v.reason, '--reason')}`;
+      const marked = updateStore<{ issues: string[] } | { changed: number }>(root, baseUrl, (state) => {
+        if (state.status !== 'ok') return { store: null, result: { issues: [`no usable observation store: ${state.reason}`] } };
+        const m = markStale(state.store, key, v.locator ?? null, reason, new Date().toISOString());
+        return { store: m.changed > 0 ? m.store : null, result: { changed: m.changed } };
+      });
+      if ('issues' in marked) return notReady({ ok: false, issues: marked.issues });
+      return ok({ ok: true, page: key, locator: v.locator ?? null, invalidatedElements: marked.changed });
+    }
+
+    case 'explore store': {
+      const r = run(root, rest[0]);
+      const state = loadStore(root, configOf(r).app.baseUrl);
+      if (state.status !== 'ok') return ok({ ok: true, store: state });
+      const elements = Object.values(state.store.pages).flatMap((p) => p.elements);
+      return ok({
+        ok: true, status: 'ok', updatedAt: state.store.updatedAt,
+        pages: Object.keys(state.store.pages).length, specs: Object.keys(state.store.specs).length,
+        elements: { verified: elements.filter((e) => e.status === 'verified').length, stale: elements.filter((e) => e.status === 'stale').length },
+        recentInvalidations: state.store.invalidations.slice(-10),
+      });
+    }
+
+    case 'generate plan': {
+      const r = run(root, rest[0]);
+      const { specs, issues: specIssues } = validatedSpecs(r);
+      if (!specs) return notReady({ ok: false, issues: specIssues });
+      const { plan, decisions } = planGeneration({
+        rootDir: root, specs, record: readArtifact<ExplorationRecord>(r.dir, ARTIFACTS.exploration), config: configOf(r),
+        force: Boolean(v.force), useCache: !v['no-cache'],
+      });
+      writeInRun(r, ARTIFACTS.generationPlan, plan);
+      recordDecisions(r.dir, decisions);
+      return ok({
+        ok: true, artifact: ARTIFACTS.generationPlan, summary: plan.summary, batches: plan.batches,
+        reuse: plan.specs.filter((p) => p.action === 'reuse').map((p) => p.testId),
+        generate: plan.specs.filter((p) => p.action === 'generate').map((p) => ({ testId: p.testId, reason: p.reason })),
+      });
+    }
+
+    // Folds batch manifests (parallel generation) and reused tests into the single generation-manifest.json.
+    case 'generate assemble': {
+      const r = run(root, rest[0]);
+      const { specs, issues: specIssues } = validatedSpecs(r);
+      if (!specs) return notReady({ ok: false, issues: specIssues });
+      const merged = mergeGeneration({
+        rootDir: root, runDir: r.dir, specs, config: configOf(r), plan: readArtifact<GenerationPlan>(r.dir, ARTIFACTS.generationPlan),
+      });
+      if (!merged.ok) return notReady({ ok: false, issues: merged.issues });
+      writeJsonAtomic(path.join(r.dir, ARTIFACTS.generationManifest), merged.manifest);
+      const report = path.join(r.dir, ARTIFACTS.generationReport);
+      if (!existsSync(report)) {
+        const reuse = merged.manifest.reuse;
+        const list = (ids: string[] | undefined) => ids?.join(', ') || 'none';
+        writeFileSync(report, ['# Generation', '', `Generated now: ${list(reuse?.generatedTests)}`, `Reused unchanged from earlier runs: ${list(reuse?.reusedTests)}`, ''].join('\n'));
+      }
+      return ok({ ok: true, artifacts: [ARTIFACTS.generationManifest, ARTIFACTS.generationReport], tests: merged.manifest.tests.length, reuse: merged.manifest.reuse });
+    }
+
     case 'generate validate': {
       const r = run(root, rest[0]);
       const g = readArtifact(r.dir, ARTIFACTS.generationManifest);
       if (!g) return notReady({ ok: false, issues: [`${ARTIFACTS.generationManifest} is missing or not valid JSON`] });
-      const issues = validateGenerationManifest(g, { rootDir: root, specs: readArtifact<TestSpecDocument>(r.dir, ARTIFACTS.testSpecs) });
+      const checked = validatedSpecs(r);
+      const issues = [...checked.issues.filter((m) => !m.endsWith('is missing or not valid JSON')), ...validateGenerationManifest(g, { rootDir: root, specs: checked.specs })];
       if (!existsSync(path.join(r.dir, ARTIFACTS.generationReport))) issues.push(`${ARTIFACTS.generationReport} is missing`);
       return { value: { ok: issues.length === 0, artifacts: [ARTIFACTS.generationManifest, ARTIFACTS.generationReport], issues }, code: issues.length ? 2 : 0 };
     }
 
     case 'review static':
-      return reviewStatic(run(root, rest[0]));
+      return reviewStatic(run(root, rest[0]), !v['no-cache']);
+
+    case 'review plan': {
+      const r = run(root, rest[0]);
+      const { specs, issues: specIssues } = validatedSpecs(r);
+      const generation = readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest);
+      if (!specs || !generation) return notReady({ ok: false, issues: [...specIssues, ...(generation ? [] : [`${ARTIFACTS.generationManifest} is required`])] });
+      const { plan, decisions } = planReview({
+        rootDir: root, specs, record: readArtifact<ExplorationRecord>(r.dir, ARTIFACTS.exploration), config: configOf(r), generation,
+        force: Boolean(v.force), useCache: !v['no-cache'],
+      });
+      writeJsonAtomic(path.join(r.dir, ARTIFACTS.reviewPlan), plan);
+      recordDecisions(r.dir, decisions);
+      return ok({
+        ok: true, artifact: ARTIFACTS.reviewPlan, summary: plan.summary, filesToReview: plan.filesToReview,
+        skip: plan.tests.filter((t) => t.action === 'skip').map((t) => t.testId),
+        review: plan.tests.filter((t) => t.action === 'review').map((t) => ({ testId: t.testId, reason: t.reason })),
+      });
+    }
+
+    // Records a finished, clean review so the next run can skip unchanged tests.
+    case 'review seal': {
+      const r = run(root, rest[0]);
+      const { specs, issues: specIssues } = validatedSpecs(r);
+      const generation = readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest);
+      const report = readArtifact<ReviewReport>(r.dir, ARTIFACTS.reviewReport);
+      if (!specs || !generation || !report) return notReady({ ok: false, issues: [...specIssues, ...(generation && report ? [] : [`${ARTIFACTS.generationManifest} and ${ARTIFACTS.reviewReport} are required`])] });
+      if (v['no-cache']) return ok({ ok: true, sealed: [], notSealed: [], note: 'cache disabled: nothing recorded' });
+      const reviewerRan = readAgentUsage(r.dir).invocations.some((x) => x.stage === 'script_review' && x.agent === 'test-reviewer');
+      const res = sealReview({
+        rootDir: root, runId: r.runId, specs, record: readArtifact<ExplorationRecord>(r.dir, ARTIFACTS.exploration), config: configOf(r),
+        generation, report, plan: readArtifact<ReviewPlan>(r.dir, ARTIFACTS.reviewPlan), reviewerRan,
+      });
+      return { value: res, code: res.ok ? 0 : 2 };
+    }
 
     case 'review add': {
       const r = run(root, rest[0]);
@@ -300,22 +589,55 @@ export function stageCommand(root: string, group: string, action: string | undef
     case 'exec run': {
       const r = run(root, rest[0]);
       const label = v.label ?? 'initial';
+      // A previous result is history, never the current result: every execution runs the tests.
+      recordDecisions(r.dir, [{ kind: 'execution', name: label, action: 'rebuild', reason: 'execution results are never reused across runs', changed: [] }]);
       // Catches a config saved before a dependency (e.g. allure-playwright) was installed; a hand-edited file is left as it is.
       syncFromSavedConfig(root);
-      const results = runPlaywright(root, configOf(r), {
+      const config = configOf(r);
+      const executionPlan = planFor(root, config);
+      const options = {
         runId: r.runId, label,
         files: v['test-file'], testIds: v['test-id'], projects: v.project,
         retries: v.retries === undefined ? undefined : Number(v.retries),
-      });
+      };
+      // Saved login state is checked first; a rejected session is replaced and the tests run again (once). The worker count
+      // is the plan's (it needs the per-worker accounts from .env, which the generated Playwright config reads only at run time).
+      const results = {
+        ...runWithAuthState(root, config, {
+          runOnce: (extra) => runPlaywright(root, config, { ...options, extraEnv: { PW_WORKERS: String(executionPlan.workers), ...extra } }),
+        }),
+        executionPlan,
+      };
       const file = saveResults(r.dir, results);
+      if (results.authState) writeInRun(r, ARTIFACTS.authState, { label, ...results.authState });
       const value = {
         ok: results.runnerError === null,
         artifact: toPosixRelative(r.dir, file),
         label, exitCode: results.exitCode, runnerError: results.runnerError, stats: results.stats,
+        executionPlan: { workers: executionPlan.workers, fullyParallel: executionPlan.fullyParallel, isolation: executionPlan.isolation, limits: executionPlan.limits, warnings: executionPlan.warnings },
+        authState: results.authState ?? null,
         notPassed: results.tests.filter((t) => t.outcome !== 'passed').map((t) => ({ key: t.key, outcome: t.outcome, file: t.file, line: t.line })),
         runnerLog: results.runnerLog,
       };
       return { value, code: value.ok ? 0 : 2 };
+    }
+
+    // What the next execution would do about workers and saved login state, without running anything.
+    case 'exec plan': {
+      const r = run(root, rest[0]);
+      const config = configOf(r);
+      return ok({ ok: true, executionPlan: planFor(root, config), authState: inspectAuthState(root, config) });
+    }
+
+    case 'auth check': {
+      const state = loadConfig(root);
+      if (state.status !== 'valid') return notReady({ ok: false, issues: state.issues });
+      return ok({ ok: true, ...inspectAuthState(root, state.config) });
+    }
+
+    // Explicit cleanup: removes the saved session and its record. The next run logs in again.
+    case 'auth clear': {
+      return ok({ ok: true, removed: clearAuthState(root) });
     }
 
     case 'triage run': {
@@ -325,7 +647,8 @@ export function stageCommand(root: string, group: string, action: string | undef
       if (src.value.runnerError) return notReady({ ok: false, issues: [`source execution had a runner error: ${src.value.runnerError}`] });
       const analysis = buildFailureAnalysis(src.value);
       saveFailureAnalysis(path.join(r.dir, ARTIFACTS.failureAnalysis), analysis);
-      return ok({ ok: true, artifact: ARTIFACTS.failureAnalysis, resultsFrom: src.from, failures: analysis.failures.map(brief), eligibleForHealing: analysis.failures.filter((f) => f.healingEligible).map((f) => f.key) });
+      const invalidatedObservations = invalidateObservations(r, analysis);
+      return ok({ ok: true, artifact: ARTIFACTS.failureAnalysis, resultsFrom: src.from, failures: analysis.failures.map(brief), eligibleForHealing: analysis.failures.filter((f) => f.healingEligible).map((f) => f.key), invalidatedObservations });
     }
 
     case 'triage classify': {
@@ -383,6 +706,8 @@ export function stageCommand(root: string, group: string, action: string | undef
         failure: eligibleFailure(loadAnalysis(r), testId),
         rerun, rerunFile: rerun ? toPosixRelative(r.dir, rerunFile) : null,
       });
+      // The healed source is the one that passed its rerun: keep a cached generation in step with it.
+      if (entry.outcome === 'healed') refreshAfterHeal(root, testId, entry.file, r.runId);
       const remaining = (r.manifest.healing.maxAttemptsPerTest ?? 0) - attempt;
       return ok({ ok: true, artifact: ARTIFACTS.healingLog, outcome: entry.outcome, reverted: entry.reverted, guard: entry.guard, attemptsRemaining: Math.max(0, remaining) });
     }
@@ -410,7 +735,16 @@ export function stageCommand(root: string, group: string, action: string | undef
         generation: artifactWithSource<GenerationManifest>(r, ARTIFACTS.generationManifest).value,
       });
       const good = reportersOk(summary) && !summary.runnerError;
-      return { value: { ok: good, artifacts: [ARTIFACTS.summary, ARTIFACTS.summaryMarkdown], counts: summary.counts, reporters: summary.reporters, unresolved: summary.unresolved, runnerError: summary.runnerError }, code: good ? 0 : 2 };
+      // Report generation and test outcomes are separate questions: a broken reporter says nothing about the tests, and
+      // failing tests say nothing about whether the reports could be built.
+      const value = {
+        ok: good,
+        artifacts: [ARTIFACTS.summary, ARTIFACTS.summaryMarkdown],
+        mode: summary.mode,
+        reportGeneration: summary.reportGeneration,
+        counts: summary.counts, reporters: summary.reporters, unresolved: summary.unresolved, runnerError: summary.runnerError,
+      };
+      return { value, code: good ? 0 : 2 };
     }
 
     case 'run finalize': {
@@ -418,7 +752,103 @@ export function stageCommand(root: string, group: string, action: string | undef
       const summary = readArtifact<{ counts: Parameters<typeof setTestCounts>[2] }>(r.dir, ARTIFACTS.summary);
       if (summary) setTestCounts(root, r.runId, summary.counts);
       const pruned = pruneRuns(root, r.manifest.config?.retention.keepRuns ?? null, r.runId);
-      return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null });
+      // Metrics are derived data: failing to write them must never block finalization.
+      let metrics: { file: string; slowest: unknown } | { error: string };
+      try {
+        const written = writeRunMetrics(root, loadFresh(r), new Date());
+        metrics = { file: written.file, slowest: written.metrics.slowest };
+      } catch (err) {
+        metrics = { error: (err as Error).message };
+      }
+      return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null, metrics });
+    }
+
+    case 'run metrics': {
+      const r = run(root, rest[0]);
+      if (v.write) {
+        const written = writeRunMetrics(root, r.manifest);
+        return ok({ ...written.metrics, file: written.file });
+      }
+      return ok(buildRunMetrics(root, r.manifest));
+    }
+
+    // Is the candidate run really better than the baseline? Correctness first, then time.
+    case 'run compare':
+      return ok(compareRuns(root, need(rest[0], 'baselineRunId'), need(rest[1], 'candidateRunId')));
+
+    // Slowest-stage report over the given runs (default: every run on disk).
+    case 'run baseline':
+      return ok(buildBaseline(root, rest));
+
+    case 'agents plan': {
+      const r = run(root, rest[0]);
+      const stage = need(rest[1], 'stage');
+      if (!isStageName(stage)) throw new UsageError(`unknown stage ${JSON.stringify(stage)}`);
+      const input: PlannerInput = {
+        stage, rootDir: root,
+        specs: readArtifact<TestSpecDocument>(r.dir, ARTIFACTS.testSpecs),
+        explorationPlan: readArtifact<ExplorationPlan>(r.dir, ARTIFACTS.explorationPlan),
+        exploration: readArtifact<ExplorationRecord>(r.dir, ARTIFACTS.exploration),
+        generationPlan: readArtifact<GenerationPlan>(r.dir, ARTIFACTS.generationPlan),
+        generation: readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest),
+        reviewPlan: readArtifact<ReviewPlan>(r.dir, ARTIFACTS.reviewPlan),
+        reviewReport: readArtifact<ReviewReport>(r.dir, ARTIFACTS.reviewReport),
+        analysis: artifactWithSource<FailureAnalysis>(r, ARTIFACTS.failureAnalysis).value,
+        attemptsByTest: r.manifest.healing.attemptsByTest, maxAttempts: r.manifest.healing.maxAttemptsPerTest,
+        inputTables: readArtifact<{ tables?: PlannerInput['inputTables'] }>(r.dir, ARTIFACTS.inputValidation)?.tables ?? null,
+      };
+      const { decision, briefs } = planAgentStage(input);
+      const truncated: string[] = [];
+      for (const b of briefs) {
+        const bounded = boundBrief(b);
+        if (bounded.truncated) truncated.push(b.name);
+        writeInRun(r, `${ARTIFACTS.briefsDir}/${b.name}.json`, bounded.brief.content);
+      }
+      recordDecision(r.dir, decision);
+      return ok({ ok: true, ...decision, truncatedBriefs: truncated });
+    }
+
+    // The orchestrator reports each agent call it makes (and the tokens, only when it knows them).
+    case 'agents record': {
+      const r = run(root, rest[0]);
+      const stage = need(rest[1], 'stage');
+      if (!isStageName(stage)) throw new UsageError(`unknown stage ${JSON.stringify(stage)}`);
+      // The plugin's agents are also addressed as "automation-builder:<name>"; both spellings name the same agent.
+      const agent = need(v.agent, '--agent').replace(/^automation-builder:/, '');
+      const expected = AGENT_BY_STAGE[stage];
+      if (!expected) throw new UsageError(`stage ${stage} has no agent`);
+      if (agent !== expected) throw new UsageError(`stage ${stage} is handled by ${expected}, not ${agent}`);
+      const tokens = (x: string | undefined): number | null => {
+        if (x === undefined) return null;
+        if (!/^\d+$/.test(x)) throw new UsageError('token counts must be non-negative integers');
+        return Number(x);
+      };
+      const inv = recordInvocation(r.dir, { stage, agent, inputTokens: tokens(v['input-tokens']), outputTokens: tokens(v['output-tokens']), brief: v.file ?? null });
+      return ok({ ok: true, recorded: inv });
+    }
+
+    case 'agents show': {
+      const r = run(root, rest[0]);
+      const usage = readAgentUsage(r.dir);
+      return ok({ ok: true, ...summarizeUsage(usage), decisions: usage.decisions });
+    }
+
+    case 'cache status': {
+      const r = run(root, rest[0]);
+      const ledger = readLedger(r.dir);
+      // Hits are counted; only the rebuilds are listed with their reasons.
+      return ok({ ok: true, ...summarizeLedger(ledger), rebuilt: ledger.decisions.filter((d) => d.action === 'rebuild').map(({ at: _at, ...d }) => d) });
+    }
+
+    // Look at one cached artifact without using it: its inputs, versions and recorded validation.
+    case 'cache inspect': {
+      const kind = need(rest[0], 'kind');
+      const name = need(rest[1], 'name');
+      if (!(CACHE_KINDS as readonly string[]).includes(kind)) throw new UsageError(`kind must be one of ${CACHE_KINDS.join(', ')}`);
+      const read = readEntry(root, kind as (typeof CACHE_KINDS)[number], name);
+      if (read.status !== 'ok') return ok({ ok: true, ...read });
+      const { payload: _payload, ...meta } = read.entry;
+      return ok({ ok: true, status: 'ok', entry: meta });
     }
 
     default:
@@ -474,7 +904,23 @@ export function typecheckGenerated(root: string, language: AutomationConfig['lan
   return { ran: true, ok: r.status === 0, output: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().slice(0, 8000) || null };
 }
 
-function reviewStatic(r: RunCtx): Result {
+// The project type check is the slow part of a review. A passing result is reused while nothing it reads has changed.
+function cachedTypecheck(r: RunCtx, files: string[], useCache: boolean): ReviewReport['typecheck'] {
+  const language = configOf(r).language;
+  if (language === 'javascript') return typecheckGenerated(r.root, language, files); // a per-file syntax check is cheap
+  const key = typecheckKey(r.root);
+  const decision: CacheDecision = useCache
+    ? decide(r.root, 'typecheck', 'framework', key)
+    : { kind: 'typecheck', name: 'framework', action: 'rebuild', reason: 'the artifact cache was bypassed (--no-cache)', changed: [] };
+  recordDecisions(r.dir, [decision]);
+  if (decision.action === 'reuse') return { ran: true, ok: true, output: null, cached: true };
+  const result = typecheckGenerated(r.root, language, files);
+  // Keyed by the files as they were before the check ran, and only a pass is ever kept.
+  if (result.ran && result.ok === true) writeEntry(r.root, { kind: 'typecheck', name: 'framework', ...key, payload: { ok: true, files: files.length }, by: 'review static', runId: r.runId });
+  return result;
+}
+
+function reviewStatic(r: RunCtx, useCache: boolean): Result {
   const testFiles = generatedFiles(r);
   const support = supportFiles(r);
   const files = [...testFiles, ...support];
@@ -491,7 +937,7 @@ function reviewStatic(r: RunCtx): Result {
     schemaVersion: REVIEW_SCHEMA_VERSION,
     reviewedAt: new Date().toISOString(),
     files,
-    typecheck: typecheckGenerated(r.root, configOf(r).language, files),
+    typecheck: cachedTypecheck(r, files, useCache),
     findings: [...fresh, ...carried, ...prevFixed],
   };
   return saveReview(r, report);

@@ -6,6 +6,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { readJson, writeJsonAtomic } from '../utils/fs.ts';
 import { stateDir } from '../utils/layout.ts';
+import { withFileLock } from '../utils/lock.ts';
 
 export const DEPENDENCY_LOG_FILE = 'dependency-log.json'; // inside dependencies/state/
 
@@ -52,8 +53,10 @@ export function validateDependencyChange(v: Partial<DependencyChange>): string[]
 export function appendDependencyChange(rootDir: string, change: DependencyChange): void {
   const errors = validateDependencyChange(change);
   if (errors.length > 0) throw new Error(`invalid dependency change: ${errors.join('; ')}`);
-  const log = readDependencyLog(rootDir);
-  log.push(change);
   mkdirSync(path.dirname(dependencyLogPath(rootDir)), { recursive: true });
-  writeJsonAtomic(dependencyLogPath(rootDir), log);
+  withFileLock(`${dependencyLogPath(rootDir)}.lock`, () => {
+    const log = readDependencyLog(rootDir);
+    log.push(change);
+    writeJsonAtomic(dependencyLogPath(rootDir), log);
+  });
 }

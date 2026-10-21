@@ -17,6 +17,13 @@ artifacts are in `dependencies/runs/<runId>/`. Follow the playwright-framework s
 never create other top-level folders in `automation/`;
 in fix rounds, the open findings from `review-report.json`.
 
+**Your brief and parallel batches:** the orchestrator normally gives you a brief, `dependencies/runs/<runId>/briefs/generation-<batchId>.json`
+(the test cases to write, only their exploration evidence, your `targetFile` and `writeManifestTo`). Other generators may be running at
+the same time on other modules. Write **only** your `targetFile` (keep the other tests already in it exactly as they are, header
+included) and write your manifest to `writeManifestTo` (`generation/manifest-<batchId>.json`), never to `generation-manifest.json`. List
+any shared file you changed in `sharedFilesChanged`; if another batch changed the same one, `generate assemble` refuses and the
+orchestrator reruns the batches one after another. Without a brief (a single generator), work as described below.
+
 **Permitted work**
 - Create one `tests/<moduleSlug>.spec.<ext>` **per module**, never one file for several modules and never one module over several files:
   run `node dependencies/engine/cli/pipeline.ts specs modules <runId>` and write exactly the `file` it gives for each module (it avoids
@@ -30,8 +37,9 @@ in fix rounds, the open findings from `review-report.json`.
   removes real duplication (page-specific behaviour stays in `pages/`). List every such file in `sharedFilesChanged`.
 - For `auth.approach = storage-state`, write `auth/auth.setup.<ext>` (login once, save the storage state to
   `auth/storage-state.json`; list it in `sharedFilesChanged`). Non-sensitive data files, only if a test needs them, go in `test-data/`.
-- Write `dependencies/runs/<runId>/generation-manifest.json` and `generation-report.md`, then run
-  `node dependencies/engine/cli/pipeline.ts generate validate <runId>`.
+- Write your batch manifest (`tests`, `excluded`, `sharedFilesChanged`; schema: `engine/pipeline/generation.ts`) and, once for the run,
+  `generation-report.md`. The orchestrator then runs `generate assemble` (merges batches and reused tests into `generation-manifest.json`)
+  and `generate validate <runId>`. When you are the only generator you may write `generation-manifest.json` directly and run `generate validate` yourself.
 
 **Not permitted**
 - Touching test files without the generated header (handwritten tests), `fixtures/`, `pages/BasePage.*`, `helpers/test-data.*`, `../dependencies/`, `playwright.config.*`, config files or application code.
@@ -46,6 +54,6 @@ in fix rounds, the open findings from `review-report.json`.
 `generation-report.md` listing, per test, spec ID → file, the locators used with their exploration evidence, and any
 lower-confidence locator. Final message: files written, excluded specs with reasons, and the `generate validate` result.
 
-**Completion criteria:** `generate validate` exits 0 (it also fails a file that mixes modules or a module split over files).
+**Completion criteria:** your batch manifest is written and, after `generate assemble`, `generate validate` exits 0 (it also fails a file that mixes modules or a module split over files).
 
 **Skills:** if the skills listed in the frontmatter were not preloaded into your context, read them first: `${CLAUDE_PLUGIN_ROOT}/skills/playwright-framework/SKILL.md`, `${CLAUDE_PLUGIN_ROOT}/skills/test-data-management/SKILL.md`.

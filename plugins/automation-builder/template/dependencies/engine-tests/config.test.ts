@@ -4,7 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { configPath, loadConfig, saveConfig } from '../engine/config/load-config.ts';
 import { UNCONFIGURED, renderPlaywrightConfig, syncFromSavedConfig } from '../engine/config/playwright-config.ts';
-import { validateConfig } from '../engine/config/schema.ts';
+import { validateConfig, type AutomationConfig } from '../engine/config/schema.ts';
 import { tmpRoot, validConfig, writeDep, writeFile } from './helpers.ts';
 
 test('valid config passes validation', () => {
@@ -179,9 +179,19 @@ test('storage-state auth adds a setup project the browser projects depend on', (
   const cfg = validConfig();
   cfg.auth = { approach: 'storage-state', credentialEnvVars: ['TEST_USER_PASSWORD'] };
   const text = renderPlaywrightConfig(cfg, { allure: false });
-  assert.match(text, /\{ name: 'setup', testDir: '\.\/auth', testMatch: '\*\*\/\*\.setup\.ts' \}/);
+  // The login only runs unless the executor has verified the saved state and sets PIPELINE_AUTH_STATE=reuse.
+  assert.match(text, /const reuseSavedLogin = process\.env\.PIPELINE_AUTH_STATE === 'reuse';/);
+  assert.match(text, /\.\.\.\(reuseSavedLogin \? \[\] : \[\{ name: 'setup', testDir: '\.\/auth', testMatch: '\*\*\/\*\.setup\.ts' \}\]\),/);
   // Playwright resolves a relative storageState against the working directory, so it is anchored to the config's folder.
-  assert.match(text, /storageState: `\$\{import\.meta\.dirname\}\/auth\/storage-state\.json` \}, dependencies: \['setup'\]/);
+  assert.match(text, /storageState: `\$\{import\.meta\.dirname\}\/auth\/storage-state\.json` \}, dependencies: reuseSavedLogin \? \[\] : \['setup'\]/);
+  assert.doesNotMatch(renderPlaywrightConfig(validConfig(), { allure: false }), /reuseSavedLogin/, 'no saved login, nothing to reuse');
+});
+
+test('workers and in-file parallelism come from the execution plan', () => {
+  const text = (execution: Partial<AutomationConfig['execution']>) => renderPlaywrightConfig({ ...validConfig(), execution: { ...validConfig().execution, ...execution } }, { allure: false });
+  assert.match(text({}), /fullyParallel: false,[\s\S]*Number\(process\.env\.PW_WORKERS\) : 2,/, 'conservative by default');
+  assert.match(text({ workers: 4, isolation: 'shared-readonly' }), /fullyParallel: true,[\s\S]*: 4,/);
+  assert.match(text({ workers: 4, isolation: 'serial' }), /fullyParallel: false,[\s\S]*: 1,/);
 });
 
 test('config save writes playwright.config; a hand-edited file is kept, --force rewrites it', (t) => {
@@ -195,13 +205,13 @@ test('config save writes playwright.config; a hand-edited file is kept, --force 
   assert.equal(syncFromSavedConfig(root)?.status, 'unchanged');
 
   // A saved setting changes and the file is still as generated: it follows.
-  saveConfig(root, { ...validConfig(), execution: { workers: 2, retries: 0, timeoutMs: 45_000 } });
+  saveConfig(root, { ...validConfig(), execution: { workers: 2, retries: 0, timeoutMs: 45_000, isolation: 'shared-readonly' } });
   assert.equal(syncFromSavedConfig(root)?.status, 'written');
   assert.match(readFileSync(file, 'utf8'), /timeout: 45000,[\s\S]*Number\(process\.env\.PW_WORKERS\) : 2,/);
 
   // The user edits it: later saves leave it alone.
   writeFileSync(file, readFileSync(file, 'utf8').replace('fullyParallel: true', 'fullyParallel: false'));
-  saveConfig(root, { ...validConfig(), execution: { workers: null, retries: 3, timeoutMs: 30_000 } });
+  saveConfig(root, { ...validConfig(), execution: { workers: null, retries: 3, timeoutMs: 30_000, isolation: 'shared-readonly' } });
   const kept = syncFromSavedConfig(root);
   assert.equal(kept?.status, 'kept');
   assert.match(kept?.detail ?? '', /edited by hand/);

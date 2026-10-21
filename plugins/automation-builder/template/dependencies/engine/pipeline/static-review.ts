@@ -96,6 +96,31 @@ function withIds(file: string, findings: Omit<ReviewFinding, 'id'>[]): ReviewFin
   return findings.map((f, i) => ({ ...f, id: `S${String(i + 1).padStart(3, '0')}-${path.basename(file)}` }));
 }
 
+export interface TestBlock {
+  testId: string | null; // from the "[ID] " title prefix
+  title: string;
+  startLine: number; // 1-based
+  endLine: number;
+  text: string; // from this test( call up to the next one
+}
+
+// Splits a spec file into its test() blocks, the same way reviewSource attributes assertions to tests. Used to hash and
+// locate one test inside a file that holds several.
+export function testBlocks(source: string): TestBlock[] {
+  const calls = [...source.matchAll(TEST_CALL)];
+  return calls.map((m, k) => {
+    const end = calls[k + 1]?.index ?? source.length;
+    const title = m[2]!;
+    return {
+      testId: /^\[([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*)\] /.exec(title)?.[1] ?? null,
+      title,
+      startLine: source.slice(0, m.index).split(/\r?\n/).length,
+      endLine: source.slice(0, end).split(/\r?\n/).length,
+      text: source.slice(m.index, end),
+    };
+  });
+}
+
 export function reviewFiles(rootDir: string, files: string[], supportFiles: string[] = []): ReviewFinding[] {
   return [
     ...files.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8'))),
@@ -109,7 +134,7 @@ export interface ReviewReport {
   schemaVersion: typeof REVIEW_SCHEMA_VERSION;
   reviewedAt: string;
   files: string[];
-  typecheck: { ran: boolean; ok: boolean | null; output: string | null };
+  typecheck: { ran: boolean; ok: boolean | null; output: string | null; cached?: boolean };
   findings: ReviewFinding[];
 }
 

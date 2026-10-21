@@ -14,7 +14,7 @@ Language: **{{LANGUAGE}}** (chosen at `/automation-builder:init`; fixed for this
 pages/                  Page Object Model classes: locators and page-specific actions (BasePage.{{EXT}} + one class per page)
 tests/                  every test (*.spec.{{EXT}}). Files the pipeline wrote start with "// @automation-builder:generated" and are
                         regenerated/healed by it; delete that line to take a file over. All other files are yours: never modified
-helpers/                reusable utilities shared by tests and pages (test-data.{{EXT}}: requireEnv, uniqueSuffix, redact)
+helpers/                reusable utilities shared by tests and pages (test-data.{{EXT}}: requireEnv, requireWorkerEnv, uniqueSuffix, redact)
 fixtures/               the shared `test` / `expect` (test.{{EXT}}) — import these, never @playwright/test directly
 config/                 automation.config.json: approved, non-secret choices (base URL, browsers, evidence, reporters)
 reports/<run-id>/       reporter output per pipeline run (html, json, junit, allure, and evidence-report/ with the evidence PDF); reports/adhoc/ for plain `npm test` (git-ignored)

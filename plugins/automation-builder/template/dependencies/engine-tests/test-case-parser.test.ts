@@ -46,7 +46,7 @@ test('bundled examples parse into valid, ready specs with source traceability', 
 
 test('markdown labels ("Steps:", "Expected Result:") work as well as headings', () => {
   const [c] = parseMarkdown('## TC-5: Labels\nSteps:\n1. Open home\nExpected Result: Home is shown\n');
-  assert.deepEqual(c!.steps, [{ action: 'Open home', expected: null }]);
+  assert.deepEqual(c!.steps, [{ action: 'Open home', expected: null, data: [] }]);
   assert.deepEqual(c!.expectedResults, ['Home is shown']);
 });
 
@@ -99,7 +99,8 @@ test('unsupported files and empty inputs are reported', (t) => {
   const e = writeFile(root, 'in/empty.md', '# Only a title\n');
   const { document, errors, unsupported } = parseInputs(root, [x, e]);
   assert.deepEqual(unsupported, ['in/suite.txt']);
-  assert.match(errors[0]!.message, /no test cases found/);
+  assert.match(errors.find((x) => x.path === 'in/suite.txt')!.message, /unsupported file type "\.txt".*\.md, \.csv, \.xlsx/);
+  assert.match(errors.find((x) => x.path === 'in/empty.md')!.message, /no test cases found/);
   assert.ok(validateTestSpecDocument(document).some((i) => /no test cases/.test(i)));
 });
 

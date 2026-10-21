@@ -16,6 +16,15 @@ user-invocable: false
   `initial`), `regression-results.json` (`regression`), `reruns/<label>.json` (anything else, e.g. `heal-TC-2-1`).
   Evidence and report paths in them are relative to `automation/` (e.g. `test-results/<runId>/initial/…/trace.zip`).
 - `--test-id` greps titles starting with `[ID]`. Healing reruns use `--retries 0`, so a retry can't mask the result.
+- Workers: `execution.workers` unset means a conservative 2 (not Playwright's CPU-based default); `execution.isolation` caps it (`serial` = 1;
+  `per-worker-accounts` = the number of `NAME_1..NAME_N` accounts in `automation/.env`) and decides whether tests inside one file may run in
+  parallel. The plan, with the reason for every limit, is in the `exec run` output (`executionPlan`), in the normalized results, and available
+  beforehand from `exec plan <runId>`. The generated `playwright.config.*` carries the same defaults for a plain `npx playwright test`.
+- Saved login (`auth.approach: storage-state`): before the run the pipeline checks the saved state (exists, well-formed, same origin, young
+  enough, cookies not expired, accepted by the app when `auth.state.probePath` is set). Valid → the setup login is skipped; anything else → a
+  fresh login. If state that looked fine is rejected mid-run (tests fail as logged out), it is diagnosed, discarded and the run is repeated once
+  with a fresh login (`authState.recovered`). A login that fails is a `runnerError` ("authentication setup failed"), not a pile of test failures.
+  `auth check` explains the decision without printing secrets; `auth clear` removes the saved session.
 - Exit 0 = the runner worked (tests may still have failed). Exit 2 = `runnerError` (config error, crash, no tests,
   missing browser). That is an environment/config problem, never a test result. The execution stage is then `failed`.
 

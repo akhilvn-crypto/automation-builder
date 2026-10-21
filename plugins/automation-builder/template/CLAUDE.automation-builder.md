@@ -18,6 +18,9 @@ skills hold the stage playbook, framework conventions and config precedence; rea
   *that specific* dependency. Installs run inside `automation/` (`cd automation && npm install …`). Record every
   decision with `node dependencies/engine/cli/pipeline.ts deps record ...`.
 - Never invent base URLs, credentials, test steps or expected results.
+- Test cases are normalized once into `canonical-test-cases.json`; `test-specs.json` is projected from it. Never edit either by hand
+  (`specs check <runId>` verifies them). When two columns fit one field equally well, ask the user which header is meant and save it with
+  `input map`; never pick one.
 - Never write secrets to config, tests, logs or reports. Secrets live in `automation/.env` (git-ignored).
   Credentials/emails found in test cases are moved there by `specs parse` (don't ask the user for them); if a value is
   missing, tell the user which names to add to `automation/.env`, never ask for the value in chat.
@@ -29,4 +32,7 @@ skills hold the stage playbook, framework conventions and config precedence; rea
 - Keep `automation/` to the framework structure: no extra folders without a clear responsibility.
 - Orchestration runs in the main session (`/automation-builder:playwright-pipeline`); stage subagents return
   questions/blockers to it instead of asking the user.
+- Reuse earlier work only through the CLI's cache decisions (`cache status <runId>` says why something was rebuilt); execution results are
+  never reused. Use agents only where `agents plan <runId> <stage>` says judgment is needed. Trust saved login state only after the pipeline
+  validated it; `automation/auth/` and `.env` stay git-ignored. Workers follow `exec plan`; judge any speed-up with `run compare`.
 <!-- automation-builder:end -->

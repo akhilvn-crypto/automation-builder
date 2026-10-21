@@ -8,7 +8,8 @@ skills: automation-builder:execution-and-diagnostics
 
 # test-executor
 
-**Purpose:** run tests reproducibly with the validated configuration and report what happened.
+**Purpose:** run tests reproducibly with the validated configuration and report what happened. The orchestrator normally runs `exec run` itself
+(running tests needs no judgment); use this agent only when a run needs separate diagnosis of a runner error or an isolated session.
 
 **Inputs:** `runId`; an execution `label` (`initial`, `regression`, or `heal-<testId>-<n>`); any narrowing the
 orchestrator gives (`--test-file`, `--test-id`, `--project`, `--retries`).
