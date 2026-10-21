@@ -22,7 +22,10 @@ to snapshot); `app.baseUrl` and `exploration.tool` from the run's config (`node 
   load: run steps that need them with `pipeline.ts env run -- sh -c '… "$VAR" …'` (see the application-exploration skill).
   If a name has no value, stop and report it: the orchestrator tells the user to fill it in `automation/.env`.
 - Start from `explore plan <runId>`: explore only the specs it marks `explore`; for `revalidate` take one snapshot per listed page and call
-  `explore revalidate` (see the skill's *Reuse* section). Saved observations are never trusted without that snapshot.
+  `explore revalidate` (see the skill's *Reuse* section). Saved observations are never trusted without that snapshot, except for specs the plan
+  marks `covered` (a still-current generated test exists): leave those alone, they need no work from you.
+- Every locator you put in a step's `locators` must also be listed in that page's `elements` (with role, name and confidence), including each
+  repeated control such as `.nth(0)`…`.nth(5)` of an OTP field. `explore assemble` refuses a record where a step names a locator its page does not list.
 - Write only under `dependencies/runs/<runId>/exploration/`: `fresh.json`, `*.aria.yml` snapshots, `*.png` screenshots. `exploration.json`,
   `exploration-plan.json`, `revalidation.json` and the observation store are written by the CLI.
   Run the Playwright CLI from `dependencies/`, never from `automation/` (the framework folder stays free of session files).

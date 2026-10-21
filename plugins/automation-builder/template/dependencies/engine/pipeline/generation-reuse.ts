@@ -62,8 +62,10 @@ export interface GenerationPlan {
 
 // ---- hashing what a generated test depends on ----
 
-// The observed evidence a test case's generated test relied on, without run-local ids or free-text narrative that can
-// differ between two explorations of the same page.
+// The observed evidence a test case's generated test relied on: its steps, the page each ran on and, for every locator a step
+// names, what was observed for it. Run-local page ids, free-text narrative, the way pages were split and elements other test
+// cases recorded on the same page are left out, so two explorations of the same thing hash the same. (Generators use only
+// the locators their test case's steps list; see the playwright-generator agent.)
 export function explorationEvidenceHash(record: ExplorationRecord | null, testId: string): string {
   if (!record) return 'no-exploration';
   const entry = record.specs.find((s) => s.testId === testId);
@@ -73,14 +75,16 @@ export function explorationEvidenceHash(record: ExplorationRecord | null, testId
     const p = id === null ? undefined : byId.get(id);
     return p ? pageKey(p.url, record.baseUrl) ?? p.url : null;
   };
-  const used = [...new Set(entry.steps.map((s) => s.pageId).filter((id): id is string => id !== null))];
   return hashValue({
     status: entry.status,
-    steps: entry.steps.map((s) => ({ index: s.index, page: keyOf(s.pageId), locators: [...s.locators].sort() })),
-    pages: used.map((id) => byId.get(id)).filter((p) => p !== undefined).map((p) => ({
-      url: keyOf(p.id),
-      elements: p.elements.map((e) => [e.role, e.name, e.testId, e.candidateLocator, e.confidence].join('|')).sort(),
-    })).sort((a, b) => String(a.url).localeCompare(String(b.url))),
+    steps: entry.steps.map((s) => ({
+      index: s.index,
+      page: keyOf(s.pageId),
+      locators: [...s.locators].sort().map((loc) => {
+        const e = s.pageId === null ? undefined : byId.get(s.pageId)?.elements.find((x) => x.candidateLocator === loc);
+        return [loc, e?.role ?? null, e?.name ?? null, e?.testId ?? null, e?.confidence ?? null].join('|');
+      }),
+    })),
   });
 }
 
@@ -192,21 +196,39 @@ export interface PlanInput {
   now?: Date;
 }
 
+// Reuse or rebuild for one test case's generated test, with the reason.
+export function decideGeneration(
+  i: { rootDir: string; config: AutomationConfig; force?: boolean; useCache?: boolean }, spec: TestSpec, record: ExplorationRecord | null,
+  versions = ruleVersions(i.rootDir),
+): CacheDecision {
+  const prior = readEntry(i.rootDir, 'generation', spec.id);
+  const priorFile = prior.status === 'ok' ? asPayload(prior.entry.payload)?.file ?? null : null;
+  const inputs = generationInputs(spec, record, i.config, priorFile ? testDependencyHash(i.rootDir, priorFile, spec.id) : 'no-file');
+  const check = checkGeneratedPayload(i.rootDir, spec.id, i.config.language);
+  // The cached test is gone from its file: say that, rather than reporting its (now unreadable) imports as changed.
+  const gone = prior.status === 'ok' && inputs.deps === 'no-file' ? check(prior.entry.payload) : [];
+  return i.force || i.useCache === false
+    ? { kind: 'generation', name: spec.id, action: 'rebuild', reason: i.force ? 'regeneration was requested' : 'the artifact cache is disabled', changed: [] }
+    : gone.length > 0
+      ? { kind: 'generation', name: spec.id, action: 'rebuild', reason: `cached artifact no longer valid: ${gone.join('; ')}`, changed: [] }
+      : decide(i.rootDir, 'generation', spec.id, { inputs, versions }, check);
+}
+
+// For the exploration planner: why this test case's generated test would be reused as it stands if the saved evidence were
+// handed over unchanged (null when it would be regenerated, so the evidence has to be looked at again).
+export function generationStillCurrent(
+  i: { rootDir: string; config: AutomationConfig }, spec: TestSpec, record: ExplorationRecord, versions = ruleVersions(i.rootDir),
+): string | null {
+  const d = decideGeneration(i, spec, record, versions);
+  const file = d.action === 'reuse' && d.entry ? asPayload(d.entry.payload)?.file : null;
+  return file ? `the generated test in ${file} is unchanged and still valid; this run's execution re-checks its locators` : null;
+}
+
 export function planGeneration(i: PlanInput): { plan: GenerationPlan; decisions: CacheDecision[] } {
   const versions = ruleVersions(i.rootDir);
   const decisions: CacheDecision[] = [];
   const entries: PlanEntry[] = i.specs.specs.filter((s) => s.status === 'ready').map((spec) => {
-    const prior = readEntry(i.rootDir, 'generation', spec.id);
-    const priorFile = prior.status === 'ok' ? asPayload(prior.entry.payload)?.file ?? null : null;
-    const inputs = generationInputs(spec, i.record, i.config, priorFile ? testDependencyHash(i.rootDir, priorFile, spec.id) : 'no-file');
-    const check = checkGeneratedPayload(i.rootDir, spec.id, i.config.language);
-    // The cached test is gone from its file: say that, rather than reporting its (now unreadable) imports as changed.
-    const gone = prior.status === 'ok' && inputs.deps === 'no-file' ? check(prior.entry.payload) : [];
-    const d: CacheDecision = i.force || i.useCache === false
-      ? { kind: 'generation', name: spec.id, action: 'rebuild', reason: i.force ? 'regeneration was requested' : 'the artifact cache is disabled', changed: [] }
-      : gone.length > 0
-        ? { kind: 'generation', name: spec.id, action: 'rebuild', reason: `cached artifact no longer valid: ${gone.join('; ')}`, changed: [] }
-          : decide(i.rootDir, 'generation', spec.id, { inputs, versions }, check);
+    const d = decideGeneration(i, spec, i.record, versions);
     decisions.push(d);
     const payload = d.entry ? asPayload(d.entry.payload) : null;
     return { testId: spec.id, module: moduleOf(spec), action: d.action === 'reuse' ? 'reuse' : 'generate', reason: d.reason, changed: d.changed, file: payload?.file ?? null };

@@ -4,7 +4,10 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { stageCommand } from '../engine/cli/stage-commands.ts';
 import { runDir } from '../engine/pipeline/artifact-manager.ts';
+import { writeEntry } from '../engine/pipeline/artifact-cache.ts';
 import { validateExplorationRecord, type ExplorationRecord } from '../engine/pipeline/exploration.ts';
+import { GENERATED_HEADER } from '../engine/pipeline/generation.ts';
+import { explorationEvidenceHash, generationInputs, ruleVersions, testBlockHash, testDependencyHash } from '../engine/pipeline/generation-reuse.ts';
 import { checkElements, parseAriaSnapshot } from '../engine/pipeline/exploration-reuse.ts';
 import {
   invalidateFromFailures, loadStore, locatorsInError, pageKey, specFingerprint, storePath, type ObservationStore, type StoredPage,
@@ -129,7 +132,7 @@ test('first run explores everything and saves observations; nothing is reused wi
   const root = tmpRoot(t);
   const runId = newRun(root, [mkSpec('TC-1', ['open login']), mkSpec('TC-2', ['open login', 'sign in'])]);
   const plan = call(root, 'plan', runId).value;
-  assert.deepEqual(plan.summary, { explore: 2, revalidate: 0, reuse: 0 });
+  assert.deepEqual(plan.summary, { explore: 2, revalidate: 0, reuse: 0, covered: 0 });
   assert.equal(plan.store.status, 'missing');
   assert.deepEqual(plan.groups.map((g: any) => [g.module, g.specIds]), [['Auth', ['TC-1', 'TC-2']]]);
 
@@ -155,7 +158,7 @@ test('unchanged test cases are reused only after a snapshot from the new run con
 
   const second = newRun(root, specs);
   const plan = call(root, 'plan', second).value;
-  assert.deepEqual(plan.summary, { explore: 0, revalidate: 2, reuse: 0 }, 'saved evidence alone is not enough');
+  assert.deepEqual(plan.summary, { explore: 0, revalidate: 2, reuse: 0, covered: 0 }, 'saved evidence alone is not enough');
   assert.deepEqual(plan.pagesToRevalidate.map((p: any) => p.key), ['/login']);
   assert.deepEqual(plan.groups[0].sharedPages, ['/login'], 'both cases share one page');
 
@@ -167,7 +170,7 @@ test('unchanged test cases are reused only after a snapshot from the new run con
 
   const snap = writeSnapshot(root, second, 'login-recheck.aria.yml', LOGIN_SNAPSHOT);
   const rv = call(root, 'revalidate', second, { page: '/login', file: snap });
-  assert.deepEqual(rv.value.summary, { explore: 0, revalidate: 0, reuse: 2 });
+  assert.deepEqual(rv.value.summary, { explore: 0, revalidate: 0, reuse: 2, covered: 0 });
 
   const res = call(root, 'assemble', second);
   assert.equal(res.code, 0, JSON.stringify(res.value));
@@ -226,7 +229,7 @@ test('a locator missing from the new snapshot is invalidated with a reason and f
   });
   assert.equal(rv.value.elements[SIGN_IN].state, 'missing');
   assert.equal(rv.value.elements[EMAIL].state, 'present');
-  assert.deepEqual(rv.value.summary, { explore: 1, revalidate: 0, reuse: 0 });
+  assert.deepEqual(rv.value.summary, { explore: 1, revalidate: 0, reuse: 0, covered: 0 });
   assert.match(rv.value.specs[0].reason, /is stale: revalidation \(.+\): no button named "Sign in" in the current snapshot/);
 
   const state = loadStore(root, BASE);
@@ -396,4 +399,161 @@ test('manual invalidation records the reason and survives for the next run', (t)
   const plan = call(root, 'plan', newRun(root, specs)).value;
   assert.match(plan.specs[0].reason, /login page was redesigned/);
   assert.equal(call(root, 'store', second).value.elements.stale, 1);
+});
+
+// ---------- consistency: a step may only name locators its page lists ----------
+
+test('a step locator that its page does not list is rejected, and the validator says how to fix it', (t) => {
+  const root = tmpRoot(t);
+  const el = (loc: string) => ({ role: 'textbox', name: null, testId: null, candidateLocator: loc, confidence: 'high', notes: null });
+  const record = (listed: string[]) => ({
+    schemaVersion: 1, tool: 'playwright-cli', toolVersion: null, session: null, baseUrl: BASE, startedAt: '', endedAt: '',
+    pages: [{ id: 'otp', url: '/', title: null, snapshot: null, screenshot: null, elements: listed.map(el) }],
+    specs: [{ testId: 'TC-1', status: 'explored', uncertainties: [], notes: null, steps: [{ index: 1, observed: 'six digit boxes', pageId: 'otp', locators: ["getByRole('textbox').nth(0)", "getByRole('textbox').nth(5)"] }] }],
+    avoidedActions: [],
+  });
+  const issues = validateExplorationRecord(record(["getByRole('textbox').nth(0)"]), { runDir: root, specs: null });
+  assert.equal(issues.length, 1);
+  assert.match(issues[0]!, /TC-1 step 1: locator getByRole\('textbox'\)\.nth\(5\) is not listed in the elements of page "otp"; add it there/);
+  assert.deepEqual(validateExplorationRecord(record(["getByRole('textbox').nth(0)", "getByRole('textbox').nth(5)"]), { runDir: root, specs: null }), []);
+});
+
+test('assemble refuses an explorer record whose steps name unlisted locators, so the store never holds them', (t) => {
+  const root = tmpRoot(t);
+  const runId = newRun(root, [mkSpec('TC-1', ['open login'])]);
+  writeFresh(root, runId, ['TC-1'], { withEmail: false }); // steps name EMAIL, the page lists only Sign in
+  const res = call(root, 'assemble', runId);
+  assert.equal(res.code, 2);
+  assert.match(res.value.issues.join(), /not listed in the elements of page "login"/);
+  assert.equal(loadStore(root, BASE).status, 'missing', 'nothing was saved');
+});
+
+// ---------- covered: a still-current generated test makes exploration unnecessary ----------
+
+const SPEC_FILE = 'tests/auth.spec.ts';
+const GENERATED = (extra = '') => `${GENERATED_HEADER}
+import { test, expect } from '../fixtures/test.ts';
+
+test.describe('Auth', () => {
+  test('[TC-1] TC-1 title', { annotation: { type: 'testId', description: 'TC-1' } }, async ({ page }) => {
+    await page.goto('/login');${extra}
+    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+  });
+});
+`;
+
+// What the generator and the review seal leave in the artifact cache for a test case.
+function sealGenerated(root: string, runId: string, spec: TestSpec): void {
+  const rec = readRecord(root, runId);
+  writeEntry(root, {
+    kind: 'generation', name: spec.id, runId, by: 'test',
+    inputs: generationInputs(spec, rec, validConfig(), testDependencyHash(root, SPEC_FILE, spec.id)),
+    versions: ruleVersions(root),
+    payload: { testId: spec.id, file: SPEC_FILE, title: `[${spec.id}] ${spec.title}`, testSha256: testBlockHash(root, SPEC_FILE, spec.id)! },
+  });
+}
+
+function firstRunWithGeneratedTest(root: string, spec: TestSpec): string {
+  const first = newRun(root, [spec]);
+  writeFresh(root, first, [spec.id]);
+  assert.equal(call(root, 'assemble', first).code, 0);
+  writeFile(root, SPEC_FILE, GENERATED());
+  sealGenerated(root, first, spec);
+  return first;
+}
+
+test('an unchanged test case with a still-current generated test is covered: no exploration, no revalidation, no explorer', (t) => {
+  const root = tmpRoot(t);
+  const spec = mkSpec('TC-1', ['open login']);
+  const first = firstRunWithGeneratedTest(root, spec);
+
+  const second = newRun(root, [spec]);
+  const plan = call(root, 'plan', second).value;
+  assert.deepEqual(plan.summary, { explore: 0, revalidate: 0, reuse: 0, covered: 1 });
+  assert.deepEqual(plan.pagesToRevalidate, [], 'no snapshot is asked for');
+  assert.match(plan.specs[0].reason, /generated test in tests\/auth\.spec\.ts is unchanged and still valid/);
+
+  // No explorer ran, so there is no fresh.json: assemble builds the record from the store.
+  const res = call(root, 'assemble', second);
+  assert.equal(res.code, 0, JSON.stringify(res.value));
+  const rec = readRecord(root, second);
+  assert.deepEqual(rec.reuse?.reusedSpecs, ['TC-1']);
+  assert.deepEqual(rec.reuse?.coveredSpecs, ['TC-1']);
+  assert.deepEqual(rec.reuse?.freshSpecs, []);
+  assert.equal(rec.pages[0]!.provenance?.source, 'saved');
+  assert.equal(rec.pages[0]!.snapshot, null);
+  assert.deepEqual(validateExplorationRecord(rec, { runDir: runDir(root, second), specs: null }), []);
+
+  // The evidence hash does not change, so generation is reused too: the whole run needs no agent before execution.
+  assert.equal(explorationEvidenceHash(rec, 'TC-1'), explorationEvidenceHash(readRecord(root, first), 'TC-1'));
+  const gen = stageCommand(root, 'generate', 'plan', [second], {});
+  assert.deepEqual((gen.value as any).summary, { generate: 0, reuse: 1 });
+});
+
+test('--revalidate, --fresh and --no-cache switch coverage off for the run', (t) => {
+  const root = tmpRoot(t);
+  const spec = mkSpec('TC-1', ['open login']);
+  firstRunWithGeneratedTest(root, spec);
+
+  const revalidate = newRun(root, [spec]);
+  assert.equal(call(root, 'plan', revalidate, { revalidate: true }).value.specs[0].action, 'revalidate');
+  assert.equal(call(root, 'plan', revalidate).value.specs[0].action, 'revalidate', 'the choice sticks to the run');
+
+  const fresh = newRun(root, [spec]);
+  assert.equal(call(root, 'plan', fresh, { fresh: true }).value.specs[0].action, 'explore');
+
+  const noCache = newRun(root, [spec]);
+  assert.equal(call(root, 'plan', noCache, { 'no-cache': true }).value.specs[0].action, 'revalidate');
+});
+
+test('coverage needs the generated test to be current: an edited test, a changed test case or stale evidence is not covered', (t) => {
+  const root = tmpRoot(t);
+  const spec = mkSpec('TC-1', ['open login']);
+  const first = firstRunWithGeneratedTest(root, spec);
+  const planned = (specs: TestSpec[]) => call(root, 'plan', newRun(root, specs)).value.specs[0];
+
+  assert.equal(planned([spec]).action, 'covered');
+
+  writeFile(root, SPEC_FILE, GENERATED('\n    await page.waitForTimeout(1);'));
+  assert.equal(planned([spec]).action, 'revalidate', 'the test was edited after it was reviewed');
+
+  writeFile(root, SPEC_FILE, GENERATED());
+  assert.equal(planned([spec]).action, 'covered', 'restoring the reviewed test makes it current again');
+
+  assert.equal(planned([mkSpec('TC-1', ['open login', 'sign in'])]).action, 'explore', 'the test case changed');
+
+  call(root, 'invalidate', first, { page: '/login', reason: 'redesigned', locator: SIGN_IN });
+  assert.equal(planned([spec]).action, 'explore', 'stale evidence is explored again');
+});
+
+test('coverage is not offered when no generated test was ever sealed', (t) => {
+  const root = tmpRoot(t);
+  const spec = mkSpec('TC-1', ['open login']);
+  const first = newRun(root, [spec]);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+  assert.equal(call(root, 'plan', newRun(root, [spec])).value.specs[0].action, 'revalidate');
+});
+
+test('a covered test case stays valid when a fresh exploration of another case covers the same page', (t) => {
+  const root = tmpRoot(t);
+  const spec = mkSpec('TC-1', ['open login']);
+  const other = mkSpec('TC-2', ['open login', 'sign in']);
+  const first = newRun(root, [spec]);
+  writeFresh(root, first, ['TC-1']);
+  call(root, 'assemble', first);
+  writeFile(root, SPEC_FILE, GENERATED());
+  sealGenerated(root, first, spec);
+
+  const second = newRun(root, [spec, other]);
+  const plan = call(root, 'plan', second).value;
+  assert.deepEqual(plan.specs.map((s: any) => [s.testId, s.action]), [['TC-1', 'covered'], ['TC-2', 'explore']]);
+  // The explorer lists only what TC-2 uses; TC-1's saved locators are carried onto that page.
+  writeFresh(root, second, ['TC-2'], { locators: [SIGN_IN], withEmail: false });
+  const res = call(root, 'assemble', second);
+  assert.equal(res.code, 0, JSON.stringify(res.value));
+  const rec = readRecord(root, second);
+  assert.deepEqual(rec.reuse?.coveredSpecs, ['TC-1']);
+  assert.ok(rec.pages[0]!.elements.some((e) => e.candidateLocator === EMAIL), 'TC-1 locator carried over');
+  assert.deepEqual(validateExplorationRecord(rec, { runDir: runDir(root, second), specs: null }), []);
 });

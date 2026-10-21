@@ -158,12 +158,14 @@ export function planAgentStage(i: PlannerInput): { decision: AgentDecision; brie
     case 'application_exploration': {
       const plan = i.explorationPlan;
       if (!plan) return none('no exploration plan yet', ['explore plan']);
-      const todo = plan.specs.filter((s) => s.action !== 'reuse');
+      const todo = plan.specs.filter((s) => s.action !== 'reuse' && s.action !== 'covered');
       if (todo.length === 0 && plan.pagesToRevalidate.length === 0) {
-        return none('every test case has saved evidence that was already revalidated in this run', ['explore assemble']);
+        return none((plan.summary.covered ?? 0) > 0
+          ? `every test case has saved evidence: ${plan.summary.reuse} revalidated in this run, ${plan.summary.covered} covered by a still-valid generated test (its execution is the check)`
+          : 'every test case has saved evidence that was already revalidated in this run', ['explore assemble']);
       }
       const c = cut(todo);
-      return withAgent(1, `${todo.length} test case(s) need fresh exploration or revalidation; ${plan.summary.reuse} reuse saved evidence`, [{
+      return withAgent(1, `${todo.length} test case(s) need fresh exploration or revalidation; ${plan.summary.reuse + (plan.summary.covered ?? 0)} reuse saved evidence`, [{
         name: 'exploration',
         content: {
           stage: i.stage, baseUrl: plan.baseUrl, specs: c.items, omitted: c.omitted, pagesToRevalidate: plan.pagesToRevalidate,

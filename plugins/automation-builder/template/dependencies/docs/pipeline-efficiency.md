@@ -13,8 +13,12 @@ CLI: `node dependencies/engine/cli/pipeline.ts` (`pl` below). Run state is in `d
   `run finalize`) reports duration, final status, attempts and interrupted attempts per stage, artifact sizes, retries, healing
   attempts, report time, cache decisions and agent calls. `run baseline` ranks stages by median completed duration.
 - **Exploration reuse:** saved observations (`state/exploration-store/`, per base-URL origin) are evidence to re-check, not truth.
-  `explore plan` decides per test case: `explore`, `revalidate` (one fresh snapshot confirms each saved role + name) or `reuse`. A changed
-  test case, an unknown/stale/ambiguous locator or a locator that failed in execution is explored again; the reason is recorded.
+  `explore plan` decides per test case: `explore`, `revalidate` (one fresh snapshot confirms each saved role + name), `covered` or `reuse`.
+  A changed test case, an unknown/stale/ambiguous locator or a locator that failed in execution is explored again; the reason is recorded.
+  `covered` means the test case is unchanged, its saved evidence is consistent and verified, and its generated test is still current
+  (cache hit on evidence, rules, imports and the reviewed source): nothing is explored or revalidated, because the run's own execution is the
+  check and a locator that fails to resolve there makes the evidence stale. `explore plan --revalidate` (or `--no-cache`) turns this off for a run.
+  Evidence is saved only if every locator a step names is listed in its page's elements, so a half-recorded step can no longer force a re-exploration.
 
 ## 2. Cross-run artifact reuse
 
@@ -60,7 +64,7 @@ the whole brief to 40 KB, with the cut reported).
 | Stage | Runs without an agent when | Otherwise |
 |---|---|---|
 | test_analysis | every case parsed without ambiguity and every input table was read cleanly | test-analyst gets the ambiguous cases and the noted tables |
-| application_exploration | every case has evidence already revalidated in this run | explorer gets only cases to explore/revalidate |
+| application_exploration | every case has evidence revalidated in this run or is `covered` by a still-current generated test | explorer gets only cases to explore/revalidate |
 | test_generation | every test is reusable | one generator per module batch, each with only its tests and evidence |
 | script_review | every test has a valid earlier review | reviewer gets only the other tests |
 | failure_triage | no failures, or all high-confidence from clear evidence | healer (Phase A) gets only the uncertain failures |

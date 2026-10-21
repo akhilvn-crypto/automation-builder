@@ -23,8 +23,9 @@ export interface ObservedElement {
 
 export interface PageProvenance {
   // fresh = observed by the explorer in this run; reused = carried over from the observation store and
-  // revalidated against a snapshot taken in this run (`snapshot` below is that snapshot).
-  source: 'fresh' | 'reused';
+  // revalidated against a snapshot taken in this run (`snapshot` below is that snapshot); saved = carried over from the
+  // store without a snapshot because a reviewed generated test already covers it and this run's execution is the check.
+  source: 'fresh' | 'reused' | 'saved';
   fromRunId?: string;
   revalidatedAt?: string;
 }
@@ -42,6 +43,7 @@ export interface ObservedPage {
 // Written by `explore assemble`: which evidence was reused and why everything else was explored.
 export interface ReuseSummary {
   reusedSpecs: string[];
+  coveredSpecs?: string[]; // the part of reusedSpecs taken from the store without a revalidation snapshot
   freshSpecs: string[];
   reusedPages: string[]; // page keys
   freshPages: string[];
@@ -95,8 +97,10 @@ export function validateExplorationRecord(v: unknown, ctx: { runDir: string; spe
   if (issues.length) return issues;
 
   const pageIds = new Set<string>();
+  const locatorsByPage = new Map<string, Set<string>>();
   for (const p of r.pages!) {
     pageIds.add(p.id);
+    locatorsByPage.set(p.id, new Set((p.elements ?? []).map((e) => e.candidateLocator)));
     for (const [kind, rel] of [['snapshot', p.snapshot], ['screenshot', p.screenshot]] as const) {
       if (rel === null || rel === undefined) continue;
       if (isAbsoluteOrEscaping(rel)) issues.push(`page ${p.id} ${kind} path must be relative to the run dir`);
@@ -120,6 +124,11 @@ export function validateExplorationRecord(v: unknown, ctx: { runDir: string; spe
       for (const loc of st.locators ?? []) {
         const err = checkLocatorExpression(loc);
         if (err) issues.push(`${s.testId} step ${st.index}: ${err}`);
+        // A step may only name locators its page lists as elements. Otherwise the saved evidence is self-contradictory and
+        // the next run cannot reuse it (the locator is "not in the store").
+        else if (st.pageId !== null && locatorsByPage.get(st.pageId) && !locatorsByPage.get(st.pageId)!.has(loc)) {
+          issues.push(`${s.testId} step ${st.index}: locator ${loc} is not listed in the elements of page "${st.pageId}"; add it there (role, name, confidence) or remove it from the step`);
+        }
       }
     }
     if (s.status !== 'explored' && (s.uncertainties ?? []).length === 0) {

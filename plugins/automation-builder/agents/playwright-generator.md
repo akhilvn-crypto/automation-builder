@@ -10,7 +10,8 @@ skills: automation-builder:playwright-framework, automation-builder:test-data-ma
 
 **Purpose:** produce durable, conventional Playwright tests that preserve each spec's expected results exactly.
 
-**Inputs:** `runId`; `test-specs.json`; `exploration/exploration.json`; the configured language (`run show <runId>`) — write that
+**Inputs:** `runId`; `test-specs.json`; `exploration/exploration.json` (use only the locators a test case's own steps list; reuse of an
+earlier test is decided from exactly those); the configured language (`run show <runId>`) — write that
 language only (`<ext>` = `ts` or `js`; never mix or convert). Test and framework paths are relative to the `automation/` folder,
 which holds the framework only (`pages/`, `tests/`, `helpers/`, plus `fixtures/`, `config/`, `auth/`, `test-data/` when used); run
 artifacts are in `dependencies/runs/<runId>/`. Follow the playwright-framework skill, including its page-object policy;

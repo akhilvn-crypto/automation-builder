@@ -25,7 +25,7 @@ import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } fro
 import { missingEnvMessage, missingEnvVars, readEnvValues, referencedEnvVars, secretValuesFor, syncEnvFiles } from '../pipeline/env-file.ts';
 import { validateExplorationRecord, type ExplorationRecord } from '../pipeline/exploration.ts';
 import {
-  REVALIDATION_SCHEMA_VERSION, applyRevalidation, assembleExploration, checkElements, emptyRevalidation, planExploration,
+  REVALIDATION_SCHEMA_VERSION, applyRevalidation, assembleExploration, checkElements, emptyFreshRecord, emptyRevalidation, planExploration,
   type ExplorationPlan, type Revalidation,
 } from '../pipeline/exploration-reuse.ts';
 import {
@@ -35,7 +35,7 @@ import {
   CATEGORIES, CONFIDENCES, buildFailureAnalysis, reclassify, saveFailureAnalysis, validateFailureAnalysis,
   type Category, type Confidence, type FailureAnalysis,
 } from '../pipeline/failure-classifier.ts';
-import { mergeGeneration, planGeneration, type GenerationPlan } from '../pipeline/generation-reuse.ts';
+import { generationStillCurrent, mergeGeneration, planGeneration, type GenerationPlan } from '../pipeline/generation-reuse.ts';
 import { PAGE_OBJECTS_DIR, validateGenerationManifest, type GenerationManifest } from '../pipeline/generation.ts';
 import {
   checkAttempt, eligibleFailure, ensureHealingLog, healLabel, readHealingLog, recordAttempt, revertAttempt, snapshotForAttempt,
@@ -56,7 +56,7 @@ import { isStageName } from '../pipeline/state-manager.ts';
 import {
   REVIEW_SCHEMA_VERSION, SEVERITIES, reviewFiles, type ReviewFinding, type ReviewReport, type Severity,
 } from '../pipeline/static-review.ts';
-import { validateTestSpecDocument, type TestSpecDocument } from '../pipeline/test-spec.ts';
+import { validateTestSpecDocument, type TestSpec, type TestSpecDocument } from '../pipeline/test-spec.ts';
 import { redact } from '../utils/redact.ts';
 
 export class UsageError extends Error {}
@@ -91,6 +91,7 @@ export interface Values {
   'input-tokens'?: string;
   'output-tokens'?: string;
   fresh?: boolean;
+  revalidate?: boolean;
   write?: boolean;
   page?: string;
   locator?: string;
@@ -181,14 +182,23 @@ function previousPlan(r: RunCtx): ExplorationPlan | null {
   return readArtifact<ExplorationPlan>(r.dir, ARTIFACTS.explorationPlan);
 }
 
-// Recomputes the explore/revalidate/reuse decisions from the store and this run's revalidation, and saves them.
-function currentPlan(r: RunCtx, forceFresh: boolean): { plan: ExplorationPlan | null; issues: string[] } {
+// "Covered" test cases (unchanged, with a still-current generated test) are decided against the artifact cache. --revalidate,
+// --fresh and --no-cache turn that off for the run, and the choice sticks to the run like --fresh does.
+function coverageOptions(r: RunCtx) {
+  const config = configOf(r);
+  return { coverage: (spec: TestSpec, record: ExplorationRecord) => generationStillCurrent({ rootDir: r.root, config }, spec, record) };
+}
+
+// Recomputes the explore/revalidate/covered/reuse decisions from the store and this run's revalidation, and saves them.
+function currentPlan(r: RunCtx, forceFresh: boolean, skipCoverage = false): { plan: ExplorationPlan | null; issues: string[] } {
   const { specs, issues } = validatedSpecs(r);
   if (!specs) return { plan: null, issues };
   const baseUrl = configOf(r).app.baseUrl;
+  const prior = previousPlan(r);
+  const fresh = forceFresh || (prior?.forcedFresh ?? false);
   const plan = planExploration({
     specs, baseUrl, state: loadStore(r.root, baseUrl), revalidation: readRevalidation(r),
-    forceFresh: forceFresh || (previousPlan(r)?.forcedFresh ?? false), now: new Date().toISOString(),
+    forceFresh: fresh, skipCoverage: fresh || skipCoverage || (prior?.skipCoverage ?? false), ...coverageOptions(r), now: new Date().toISOString(),
   });
   writeInRun(r, ARTIFACTS.explorationPlan, plan);
   return { plan, issues: [] };
@@ -388,7 +398,7 @@ export function stageCommand(root: string, group: string, action: string | undef
 
     case 'explore plan': {
       const r = run(root, rest[0]);
-      const { plan, issues } = currentPlan(r, Boolean(v.fresh));
+      const { plan, issues } = currentPlan(r, Boolean(v.fresh), Boolean(v.revalidate) || Boolean(v['no-cache']));
       if (!plan) return notReady({ ok: false, issues });
       return ok({ ok: true, artifact: ARTIFACTS.explorationPlan, ...plan });
     }
@@ -428,13 +438,19 @@ export function stageCommand(root: string, group: string, action: string | undef
       const r = run(root, rest[0]);
       const { specs, issues: specIssues } = validatedSpecs(r);
       if (!specs) return notReady({ ok: false, issues: specIssues });
-      const fresh = readArtifact(r.dir, ARTIFACTS.explorationFresh);
-      if (!fresh) return notReady({ ok: false, issues: [`${ARTIFACTS.explorationFresh} is missing or not valid JSON; write what you observed this run there first`] });
       const baseUrl = configOf(r).app.baseUrl;
+      let fresh = readArtifact(r.dir, ARTIFACTS.explorationFresh);
+      if (!fresh) {
+        // No explorer ran. That is only legitimate when every test case reuses revalidated evidence or is covered.
+        const planned = currentPlan(r, false).plan;
+        if (planned && planned.specs.every((s) => s.action === 'reuse' || s.action === 'covered')) fresh = emptyFreshRecord(baseUrl, new Date().toISOString());
+      }
+      if (!fresh) return notReady({ ok: false, issues: [`${ARTIFACTS.explorationFresh} is missing or not valid JSON; write what you observed this run there first`] });
       const result = updateStore(root, baseUrl, (state) => {
         const assembled = assembleExploration({
           runId: r.runId, runDir: r.dir, specs, baseUrl, state,
-          revalidation: readRevalidation(r), fresh, forceFresh: previousPlan(r)?.forcedFresh ?? false, now: new Date().toISOString(),
+          revalidation: readRevalidation(r), fresh, forceFresh: previousPlan(r)?.forcedFresh ?? false,
+          skipCoverage: (previousPlan(r)?.forcedFresh ?? false) || (previousPlan(r)?.skipCoverage ?? false), ...coverageOptions(r), now: new Date().toISOString(),
         });
         return { store: assembled.ok ? assembled.store : null, result: assembled };
       });

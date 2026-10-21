@@ -56,13 +56,15 @@ with the reason in `uncertainties`.
 ## Reuse of earlier observations
 
 Saved observations (`dependencies/state/exploration-store/`, per base-URL origin) are **evidence to re-check, not truth**. Start with
-`node dependencies/engine/cli/pipeline.ts explore plan <runId> [--fresh]` → per ready spec: `explore`, `revalidate` or `reuse`, each with a
-reason, plus `groups` (specs by module, with the pages they share) and `pagesToRevalidate`. `--fresh` forces full exploration.
+`node dependencies/engine/cli/pipeline.ts explore plan <runId> [--fresh|--revalidate]` → per ready spec: `explore`, `revalidate`, `covered` or
+`reuse`, each with a reason, plus `groups` (specs by module, with the pages they share) and `pagesToRevalidate`. `--fresh` forces full
+exploration; `--revalidate` (or `--no-cache`) turns `covered` off so saved evidence is revalidated with a snapshot instead.
 
 | Plan says | Do |
 |---|---|
 | `explore` | explore it as described above (new/changed test case, unknown/stale/ambiguous locator, no store, corrupt store) |
 | `revalidate` | for each page in `pagesToRevalidate`: reach it (same login/navigation the spec needs), take **one** accessibility snapshot into `runs/<runId>/exploration/<name>.aria.yml`, then `explore revalidate <runId> --page <url-or-path> --file exploration/<name>.aria.yml`. (In Git Bash pass the full URL: a bare `/login` is rewritten to a Windows path.) |
+| `covered` | nothing to do: the test case is unchanged, its saved evidence is consistent and verified, and its generated test is still current (same evidence, rules and reviewed source). This run's execution is the check; a locator that fails to resolve there makes the evidence stale, so the next run explores it |
 | `reuse` | nothing to do |
 
 `explore revalidate` looks for each saved control's role + accessible name in your fresh snapshot: exactly one match = still valid; none
@@ -80,7 +82,7 @@ Never copy a saved locator into your own record by hand, and never reuse CLI ele
 
 Write what you **observed in this run** to `exploration/fresh.json` (schema in `engine/pipeline/exploration.ts`): pages (url, title,
 evidence paths, elements with `candidateLocator` + confidence), per-spec steps with the observation and the locators used, and
-`uncertainties`. List only pages you visited and only the specs you explored (`pages: []`, `specs: []` is fine when everything was reused). Then
+`uncertainties`. List only pages you visited and only the specs you explored (`pages: []`, `specs: []` is fine when everything was reused; with no explorer at all, `explore assemble` works without a fresh.json when every spec is `reuse` or `covered`). Every locator in a step must be listed in that page's `elements`. Then
 `node dependencies/engine/cli/pipeline.ts explore assemble <runId>` merges your observations with the revalidated saved evidence into
 `exploration/exploration.json` (reused pages carry `provenance` and this run's snapshot), validates it, refuses if a ready spec has neither fresh
 nor revalidated evidence, and updates the store. Finally `explore validate <runId>`.

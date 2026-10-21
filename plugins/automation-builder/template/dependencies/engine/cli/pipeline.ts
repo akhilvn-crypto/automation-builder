@@ -41,7 +41,7 @@
 //                                                JSON output (use single quotes so the child shell expands $VAR, e.g.
 //                                                env run -- sh -c 'playwright-cli fill e5 "$TEST_PASSWORD"')
 //   explore validate <runId>
-//   explore plan <runId> [--fresh]               per test case: explore | revalidate | reuse, with reasons
+//   explore plan <runId> [--fresh|--revalidate]  per test case: explore | revalidate | covered | reuse, with reasons
 //   explore revalidate <runId> --page <url|path> --file <snapshot, relative to run dir>
 //   explore assemble <runId>                     fresh.json + revalidated saved evidence -> exploration.json
 //   explore invalidate <runId> --page <url|path> --reason <text> [--locator <expr>]
@@ -160,6 +160,7 @@ export function main(argv: string[]): number {
       pretty: { type: 'boolean' },
       write: { type: 'boolean' },
       fresh: { type: 'boolean' },
+      revalidate: { type: 'boolean' },
       page: { type: 'string' },
       locator: { type: 'string' },
       'no-cache': { type: 'boolean' },

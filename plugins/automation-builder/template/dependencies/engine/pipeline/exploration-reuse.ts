@@ -5,12 +5,15 @@
 // Rules this module enforces:
 //  - Reuse is never granted from the store alone. Every reused page needs a revalidation snapshot
 //    from this run, and every locator a reused test case relies on must be found in it exactly once.
+//    The one exception is "covered": an unchanged test case whose evidence is consistent and verified AND whose generated
+//    test is still current (same evidence, same rules, reviewed, untouched) needs no exploration at all - the run's own
+//    execution is the check, and a locator that fails to resolve there makes the evidence stale for the next run.
 //  - A changed test case, an unknown/stale/ambiguous locator, or a changed environment means that
 //    test case is explored again. Reasons are recorded either way.
 //  - Only semantic locators are stored or reused; CLI element refs never are.
 
 import {
-  validateExplorationRecord,
+  EXPLORATION_SCHEMA_VERSION, validateExplorationRecord,
   type ExplorationRecord, type ObservedElement, type ObservedPage, type ReuseSummary, type SpecExploration,
 } from './exploration.ts';
 import {
@@ -99,7 +102,7 @@ export function applyRevalidation(
 
 // ---- plan ----
 
-export const ACTIONS = ['explore', 'revalidate', 'reuse'] as const;
+export const ACTIONS = ['explore', 'revalidate', 'reuse', 'covered'] as const;
 export type Action = (typeof ACTIONS)[number];
 
 export interface PlanSpec {
@@ -116,6 +119,7 @@ export interface ExplorationPlan {
   baseUrl: string;
   store: { status: StoreState['status']; reason: string | null };
   forcedFresh: boolean;
+  skipCoverage: boolean; // "covered" was switched off (--revalidate, --fresh or --no-cache): saved evidence is revalidated instead
   // Test cases grouped by module (suite). sharedPages are explored or revalidated once for the whole group.
   groups: { module: string; specIds: string[]; sharedPages: string[] }[];
   specs: PlanSpec[];
@@ -147,6 +151,10 @@ export interface PlanInput {
   revalidation: Revalidation | null;
   forceFresh: boolean;
   now: string;
+  // Returns why this test case's generated test is still current (null = it is not, or cannot be shown to be), given the
+  // evidence as the store would hand it over. Left out = nothing is ever "covered".
+  coverage?: (spec: TestSpec, record: ExplorationRecord) => string | null;
+  skipCoverage?: boolean;
 }
 
 function classify(spec: TestSpec, input: PlanInput): Omit<PlanSpec, 'testId' | 'module'> & { needs: Ref[] } {
@@ -178,6 +186,10 @@ function classify(spec: TestSpec, input: PlanInput): Omit<PlanSpec, 'testId' | '
     if (check.state !== 'present') return explore(`locator ${ref.locator} on ${ref.key} is ${check.state}: ${check.detail ?? 'cannot be proven'}`);
   }
   const pages = [...new Set(refs.map((r) => r.key))];
+  if (pending && input.coverage && !input.skipCoverage) {
+    const why = input.coverage(spec, savedRecord(store, spec.id, input.baseUrl, input.now));
+    if (why) return { action: 'covered', reason: why, pages, needs: refs };
+  }
   return pending
     ? { action: 'revalidate', reason: 'unchanged test case with saved evidence; needs a snapshot from this run', pages, needs: refs }
     : { action: 'reuse', reason: `saved evidence from ${saved.runId} revalidated in this run`, pages, needs: refs };
@@ -209,7 +221,7 @@ export function planExploration(input: PlanInput): ExplorationPlan {
     return { module, specIds: inModule.map((s) => s.testId), sharedPages: [...usage].filter(([, n]) => n > 1).map(([k]) => k) };
   });
 
-  const summary: Record<Action, number> = { explore: 0, revalidate: 0, reuse: 0 };
+  const summary: Record<Action, number> = { explore: 0, revalidate: 0, reuse: 0, covered: 0 };
   for (const s of specs) summary[s.action]++;
   return {
     schemaVersion: PLAN_SCHEMA_VERSION,
@@ -217,7 +229,28 @@ export function planExploration(input: PlanInput): ExplorationPlan {
     baseUrl: input.baseUrl,
     store: { status: input.state.status, reason: input.state.status === 'ok' ? null : input.state.reason },
     forcedFresh: input.forceFresh,
+    skipCoverage: input.skipCoverage ?? false,
     groups, specs, pagesToRevalidate, summary,
+  };
+}
+
+// The evidence for one test case exactly as the store holds it, shaped like an exploration record (pages keyed by their store
+// key). It is what assemble hands over for a covered test case, so the same evidence hash comes out of both.
+export function savedRecord(store: ObservationStore, testId: string, baseUrl: string, now: string): ExplorationRecord {
+  const saved = store.specs[testId]!;
+  const keys = [...new Set(refsOf(saved.exploration).map((r) => r.key))];
+  const ids = new Map(keys.map((k) => [k, `saved-${slug(k)}`]));
+  return {
+    schemaVersion: EXPLORATION_SCHEMA_VERSION, tool: 'playwright-cli', toolVersion: null, session: null, baseUrl, startedAt: now, endedAt: now,
+    pages: keys.map((k) => {
+      const p = store.pages[k];
+      return {
+        id: ids.get(k)!, url: p?.url ?? k, title: p?.title ?? null, snapshot: null, screenshot: null,
+        elements: (p?.elements ?? []).filter((e) => e.status === 'verified').map(toObservedElement), provenance: { source: 'saved' as const },
+      };
+    }),
+    specs: [{ ...saved.exploration, steps: saved.exploration.steps.map((s) => ({ ...s, pageId: s.pageId === null ? null : ids.get(s.pageId)! })) }],
+    avoidedActions: [],
   };
 }
 
@@ -233,11 +266,22 @@ export interface AssembleInput {
   fresh: unknown; // exploration/fresh.json as written by the explorer
   forceFresh: boolean;
   now: string;
+  coverage?: PlanInput['coverage'];
+  skipCoverage?: boolean;
 }
 
 export type AssembleResult =
   | { ok: true; record: ExplorationRecord; store: ObservationStore; plan: ExplorationPlan }
   | { ok: false; issues: string[]; plan: ExplorationPlan };
+
+// What "nothing was explored" looks like, for runs where every test case reuses or is covered by saved evidence and no
+// explorer ran. Assemble accepts it in place of the explorer's fresh.json.
+export function emptyFreshRecord(baseUrl: string, now: string): ExplorationRecord {
+  return {
+    schemaVersion: EXPLORATION_SCHEMA_VERSION, tool: 'playwright-cli', toolVersion: null, session: null, baseUrl, startedAt: now, endedAt: now,
+    pages: [], specs: [], avoidedActions: [],
+  };
+}
 
 const slug = (key: string): string => key.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'root';
 
@@ -250,7 +294,7 @@ function toObservedElement(e: StoredElement): ObservedElement {
 }
 
 export function assembleExploration(input: AssembleInput): AssembleResult {
-  const plan = planExploration({ specs: input.specs, baseUrl: input.baseUrl, state: input.state, revalidation: input.revalidation, forceFresh: input.forceFresh, now: input.now });
+  const plan = planExploration({ specs: input.specs, baseUrl: input.baseUrl, state: input.state, revalidation: input.revalidation, forceFresh: input.forceFresh, now: input.now, coverage: input.coverage, skipCoverage: input.skipCoverage });
   const freshIssues = validateExplorationRecord(input.fresh, { runDir: input.runDir, specs: null });
   if (freshIssues.length > 0) return { ok: false, issues: freshIssues.map((i) => `fresh.json: ${i}`), plan };
   const fresh = input.fresh as ExplorationRecord;
@@ -258,10 +302,12 @@ export function assembleExploration(input: AssembleInput): AssembleResult {
 
   const freshIds = new Set(fresh.specs.map((s) => s.testId));
   const reusedSpecs: string[] = [];
+  const coveredSpecs: string[] = [];
   const reasons: Record<string, string> = {};
   for (const p of plan.specs) {
     if (freshIds.has(p.testId)) { reasons[p.testId] = p.action === 'explore' ? p.reason : `explored fresh (saved evidence was available: ${p.reason})`; continue; }
     if (p.action === 'reuse') { reusedSpecs.push(p.testId); reasons[p.testId] = p.reason; continue; }
+    if (p.action === 'covered') { reusedSpecs.push(p.testId); coveredSpecs.push(p.testId); reasons[p.testId] = `covered: ${p.reason}`; continue; }
     issues.push(`${p.testId}: ${p.action === 'explore' ? `needs fresh exploration (${p.reason})` : 'saved evidence has not been revalidated yet (snapshot its pages and run "explore revalidate")'}`);
   }
   if (issues.length > 0) return { ok: false, issues, plan };
@@ -279,17 +325,18 @@ export function assembleExploration(input: AssembleInput): AssembleResult {
   for (const key of reusedKeys) {
     if (keyToId.has(key)) continue;
     const saved = store.pages[key]!;
-    const rev = input.revalidation.pages[key]!;
+    const rev = input.revalidation.pages[key]; // absent for a page only covered test cases use
     let id = `reused-${slug(key)}`;
     while (usedIds.has(id)) id += '-r';
     usedIds.add(id);
     keyToId.set(key, id);
-    const present = saved.elements.filter((e) => e.status === 'verified' && rev.elements[e.candidateLocator]?.state === 'present');
+    const present = saved.elements.filter((e) => e.status === 'verified' && (rev ? rev.elements[e.candidateLocator]?.state === 'present' : true));
+    const fromRunId = present[0]?.runId ?? store.specs[reusedSpecs[0]!]?.runId;
     pages.push({
       id, url: saved.url, title: saved.title,
-      snapshot: rev.snapshot, screenshot: null, // evidence from this run, not a path into a possibly pruned old run
+      snapshot: rev ? rev.snapshot : null, screenshot: null, // evidence from this run, not a path into a possibly pruned old run
       elements: present.map(toObservedElement),
-      provenance: { source: 'reused', fromRunId: present[0]?.runId ?? store.specs[reusedSpecs[0]!]?.runId, revalidatedAt: rev.revalidatedAt },
+      provenance: rev ? { source: 'reused', fromRunId, revalidatedAt: rev.revalidatedAt } : { source: 'saved', fromRunId },
     });
   }
 
@@ -297,11 +344,27 @@ export function assembleExploration(input: AssembleInput): AssembleResult {
     const e = store.specs[id]!.exploration;
     return { ...e, steps: e.steps.map((s) => ({ ...s, pageId: s.pageId === null ? null : keyToId.get(s.pageId)! })) };
   });
+  // A fresh page that stands in for a saved one may not list everything the saved test case's steps name: carry those over.
+  const keyOfId = new Map([...keyToId].map(([k, id]) => [id, k]));
+  for (const entry of reusedEntries) {
+    for (const st of entry.steps) {
+      const page = st.pageId === null ? undefined : pages.find((p) => p.id === st.pageId);
+      if (!page) continue;
+      for (const loc of st.locators) {
+        if (page.elements.some((e) => e.candidateLocator === loc)) continue;
+        const stored = store.pages[keyOfId.get(page.id) ?? '']?.elements.find((e) => e.candidateLocator === loc && e.status === 'verified');
+        if (stored) page.elements.push(toObservedElement(stored));
+        else issues.push(`${entry.testId}: saved locator ${loc} could not be carried onto page ${page.id}`);
+      }
+    }
+  }
+  if (issues.length > 0) return { ok: false, issues, plan };
+
   const record: ExplorationRecord = {
     ...fresh,
     pages,
     specs: [...fresh.specs, ...reusedEntries],
-    reuse: summarize(plan, reusedSpecs, fresh, pages, reasons, input.baseUrl),
+    reuse: summarize(plan, reusedSpecs, coveredSpecs, fresh, pages, reasons, input.baseUrl),
   };
   const mergedIssues = validateExplorationRecord(record, { runDir: input.runDir, specs: input.specs });
   if (mergedIssues.length > 0) return { ok: false, issues: mergedIssues, plan };
@@ -310,13 +373,14 @@ export function assembleExploration(input: AssembleInput): AssembleResult {
 }
 
 function summarize(
-  plan: ExplorationPlan, reusedSpecs: string[], fresh: ExplorationRecord, pages: ObservedPage[], reasons: Record<string, string>, baseUrl: string,
+  plan: ExplorationPlan, reusedSpecs: string[], coveredSpecs: string[], fresh: ExplorationRecord, pages: ObservedPage[], reasons: Record<string, string>, baseUrl: string,
 ): ReuseSummary {
   const keyOf = (p: ObservedPage) => pageKey(p.url, baseUrl) ?? p.url;
   return {
     reusedSpecs,
+    ...(coveredSpecs.length > 0 ? { coveredSpecs } : {}),
     freshSpecs: plan.specs.map((s) => s.testId).filter((id) => !reusedSpecs.includes(id)),
-    reusedPages: pages.filter((p) => p.provenance?.source === 'reused').map(keyOf),
+    reusedPages: pages.filter((p) => p.provenance?.source === 'reused' || p.provenance?.source === 'saved').map(keyOf),
     freshPages: fresh.pages.map(keyOf),
     reasons,
   };
