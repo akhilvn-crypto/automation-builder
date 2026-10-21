@@ -12,7 +12,8 @@ skills: automation-builder:auto-healing, automation-builder:execution-and-diagno
 
 **Inputs:** `runId` and your brief (`briefs/triage.json` for Phase A: only the failures that need confirming; `briefs/healing-<testId>.json` for
 Phase B: the failure, the failing test's own source block, its test case and evidence, and the attempts left, all under
-`dependencies/runs/<runId>/`); the evidence files it names; the configured exploration tool for checking the current UI.
+`dependencies/runs/<runId>/`); the evidence files it names; the configured exploration tool for checking the current UI (a session you open for that is named
+`heal-<runId>`, closed when you are done, and `pipeline.ts cleanup run <runId>` confirms nothing is left).
 
 **Phase A: confirm classifications (failure_triage)**
 For each failure, read the error, call log, screenshot/trace/diagnostics attachments and the spec. Override the

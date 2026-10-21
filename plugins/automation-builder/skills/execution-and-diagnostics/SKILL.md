@@ -12,6 +12,11 @@ user-invocable: false
 - Spawns the project-local Playwright CLI (in `automation/`) with `PIPELINE_RUN_ID`/`PIPELINE_LABEL`, so output goes to
   the framework folders: `automation/reports/<runId>/<label>/` (raw `results.json`, `html/`, `junit.xml`,
   `allure-results/`, `runner.log`) and `automation/test-results/<runId>/<label>/` (screenshots, videos, traces).
+- The runner runs under a supervisor (`engine/tools/supervise.ts`): a timeout stops the whole process tree (browsers, workers, a web server
+  the config starts), not just the runner, and anything the runner leaves running when it ends is stopped. What it started is listed in
+  `dependencies/runs/<runId>/processes.json`, so `cleanup run <runId>` can still stop it if the supervisor itself was killed. A timeout is a
+  `runnerError` ("timed out after …"); `runner.log` ends with a `[supervise]` line saying what was stopped. Only processes found below the
+  runner are touched, never other browsers or servers on the machine.
 - Normalized results stay with the run state in `dependencies/runs/<runId>/`: `execution-results.json` (label
   `initial`), `regression-results.json` (`regression`), `reruns/<label>.json` (anything else, e.g. `heal-TC-2-1`).
   Evidence and report paths in them are relative to `automation/` (e.g. `test-results/<runId>/initial/…/trace.zip`).

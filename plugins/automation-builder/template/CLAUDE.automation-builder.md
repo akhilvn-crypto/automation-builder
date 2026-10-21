@@ -32,6 +32,9 @@ skills hold the stage playbook, framework conventions and config precedence; rea
 - Keep `automation/` to the framework structure: no extra folders without a clear responsibility.
 - Orchestration runs in the main session (`/automation-builder:playwright-pipeline`); stage subagents return
   questions/blockers to it instead of asking the user.
+- Leave nothing running: name browser sessions `explore-<runId>` / `heal-<runId>` and close them; the CLI stops the rest (`cleanup run <runId>`,
+  automatic at stage end, resume and finalization). Only processes recorded for the run or sessions named with its run id are stopped;
+  never `close-all`/`kill-all`, never a process chosen by name. Report `stillRunning` if the cleanup could not stop something.
 - Reuse earlier work only through the CLI's cache decisions (`cache status <runId>` says why something was rebuilt); execution results are
   never reused. Use agents only where `agents plan <runId> <stage>` says judgment is needed. Trust saved login state only after the pipeline
   validated it; `automation/auth/` and `.env` stay git-ignored. Workers follow `exec plan`; judge any speed-up with `run compare`.

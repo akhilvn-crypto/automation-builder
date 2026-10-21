@@ -1,16 +1,16 @@
 // Runs Playwright Test for a run and normalizes the JSON reporter output into execution results
 // keyed by source test ID. The executor never edits test code.
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AutomationConfig } from '../config/schema.ts';
 import { readJson, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { redactAll } from '../utils/redact.ts';
-import { ARTIFACTS, assertExecutionLabel, reportsDirFor } from './artifact-manager.ts';
+import { ARTIFACTS, assertExecutionLabel, reportsDirFor, runDir } from './artifact-manager.ts';
 import type { AuthRunInfo } from './auth-state.ts';
 import { secretValuesFor } from './env-file.ts';
 import type { ExecutionPlan } from './execution-plan.ts';
+import { runSupervised } from './supervised-run.ts';
 
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const OUTCOMES = ['passed', 'failed', 'flaky', 'skipped'] as const;
@@ -77,12 +77,18 @@ export interface RunOptions {
 }
 
 export interface Spawner {
-  (cmd: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): { status: number | null; stdout: string; stderr: string; error?: Error };
+  (
+    cmd: string, args: string[],
+    // ledgerDir/role: where the processes the runner starts are recorded, and what they are for (see process-ledger.ts)
+    opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; ledgerDir?: string; role?: string },
+  ): { status: number | null; stdout: string; stderr: string; error?: Error };
 }
 
+// The runner starts browsers, workers and possibly a web server. A plain spawnSync timeout stops only the runner itself and leaves
+// those running, so the runner runs under the supervisor: a timeout stops the whole tree, and what the runner leaves behind is stopped.
 const defaultSpawner: Spawner = (cmd, args, opts) => {
-  const r = spawnSync(cmd, args, { cwd: opts.cwd, env: opts.env, encoding: 'utf8', timeout: opts.timeoutMs, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error };
+  const r = runSupervised(cmd, args, { cwd: opts.cwd, env: opts.env, timeoutMs: opts.timeoutMs, ledgerDir: opts.ledgerDir, role: opts.role });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, error: r.error };
 };
 
 export function playwrightCliPath(rootDir: string): string {
@@ -119,6 +125,7 @@ export function runPlaywright(rootDir: string, config: AutomationConfig, o: RunO
     cwd: rootDir,
     env: { ...env, ...o.extraEnv, PIPELINE_RUN_ID: o.runId, PIPELINE_LABEL: o.label, FORCE_COLOR: '0' },
     timeoutMs: o.timeoutMs ?? 60 * 60_000,
+    ledgerDir: runDir(rootDir, o.runId), role: `playwright:${o.label}`,
   });
   writeFileSync(runnerLogAbs, redactAll(`$ playwright ${args.join(' ')}\n\n${r.stdout}\n${r.stderr}`, secrets));
 

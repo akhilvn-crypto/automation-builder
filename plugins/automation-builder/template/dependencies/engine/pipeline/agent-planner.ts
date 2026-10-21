@@ -169,6 +169,8 @@ export function planAgentStage(i: PlannerInput): { decision: AgentDecision; brie
         name: 'exploration',
         content: {
           stage: i.stage, baseUrl: plan.baseUrl, specs: c.items, omitted: c.omitted, pagesToRevalidate: plan.pagesToRevalidate,
+          // Saved pages the `explore` test cases probably visit (listed per spec in `knownPages`): confirm with one snapshot, then name as saved:<key>.
+          knownPages: (plan.knownPages ?? []).filter((k) => c.items.some((s) => s.knownPages?.includes(k.key))),
           testCases: c.items.map((p) => i.specs?.specs.find((s) => s.id === p.testId)).filter((s): s is TestSpec => !!s).map(specBrief),
         },
       }]);

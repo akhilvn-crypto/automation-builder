@@ -263,6 +263,16 @@ ask an agent only where judgment is needed, validate saved login state before tr
 `run compare <baseline> <run>` checks that no test went missing or got worse before it believes a speed-up. The mechanics, trade-offs and
 limits are in `dependencies/docs/pipeline-efficiency.md` after `init`, and in `plugins/automation-builder/template/dependencies/docs/`.
 
+## Nothing is left running
+
+A run starts browsers (the explorer's `playwright-cli` session, the test runner's workers) and can start a web server. The pipeline stops them
+itself: the runner and the report tools run under a supervisor that stops the whole process tree on a timeout and anything left behind when the
+command ends, and `cleanup run <run-id>` closes the run's browser session (`explore-<run-id>`) and stops what remains. It runs automatically when
+exploration ends, when any stage fails, blocks or is cancelled, on `resume`, and in `run finalize`, whose `cleanup` block reports what was
+stopped and anything that could not be (`stillRunning`). Only processes recorded for the run, or sessions named with its run id, are touched;
+your own browsers and servers never are. `cleanup run <run-id> --dry-run` previews it, and `cleanup all [--dry-run]` clears leftovers of earlier
+crashed runs. Details and limits: `dependencies/docs/pipeline-efficiency.md`, section 7.
+
 ## Custom evidence report (`evidence-pdf`)
 
 For QA sign-off you often need proof of *what was executed*, not just a pass/fail count. Choose **audit** report mode during setup and

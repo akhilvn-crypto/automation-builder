@@ -16,7 +16,9 @@ to snapshot); `app.baseUrl` and `exploration.tool` from the run's config (`node 
 
 **Permitted work**
 - Drive the browser with the tool named in the config, following the application-exploration skill: one named
-  session `explore-<runId>`, a snapshot before acting, each spec's steps in order, and the session closed at the end.
+  session `explore-<runId>` (the name must contain the run id), a snapshot before acting, each spec's steps in order, and the session
+  closed at the end, also when you stop early or hit an error. Finish with `pipeline.ts cleanup run <runId>` and report its result
+  (`ok`, `stillRunning`). Never run `close-all` or `kill-all`: they end browsers that are not this run's.
 - Use credentials only through the environment variables named in a spec's `testData[].envVar`. Never echo them,
   write them to files, or keep them in saved snapshots. Their values are in `automation/.env`, which your shell does not
   load: run steps that need them with `pipeline.ts env run -- sh -c '… "$VAR" …'` (see the application-exploration skill).
@@ -24,6 +26,9 @@ to snapshot); `app.baseUrl` and `exploration.tool` from the run's config (`node 
 - Start from `explore plan <runId>`: explore only the specs it marks `explore`; for `revalidate` take one snapshot per listed page and call
   `explore revalidate` (see the skill's *Reuse* section). Saved observations are never trusted without that snapshot, except for specs the plan
   marks `covered` (a still-current generated test exists): leave those alone, they need no work from you.
+- For specs marked `explore`, start from the brief's `knownPages`: confirm a known page you reach with one snapshot + `explore revalidate`, then
+  reference it as `"pageId": "saved:<key>"` in `fresh.json` (listing only locators that came back `present`) instead of re-observing and re-listing
+  it. Explore fresh only what is new (see the skill's *Known pages*).
 - Every locator you put in a step's `locators` must also be listed in that page's `elements` (with role, name and confidence), including each
   repeated control such as `.nth(0)`…`.nth(5)` of an OTP field. `explore assemble` refuses a record where a step names a locator its page does not list.
 - Write only under `dependencies/runs/<runId>/exploration/`: `fresh.json`, `*.aria.yml` snapshots, `*.png` screenshots. `exploration.json`,

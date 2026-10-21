@@ -10,7 +10,6 @@
 // already-installed @playwright/test + Chromium). Chromium cannot embed media, so each video is placed afterwards by pdf-embed.ts
 // (an appended PDF update that swaps the video's link for an embedded-file attachment) and then read back to verify it.
 
-import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -23,6 +22,7 @@ import { embedFiles, listEmbeddedFiles, type EmbedItem } from './pdf-embed.ts';
 import type { FinalTest, ReporterStatus } from './reporting.ts';
 import type { RunManifest, TestCounts } from './run-manager.ts';
 import { STEP_LOG_ATTACHMENT, parseStepLog } from './step-evidence.ts';
+import { runSupervised } from './supervised-run.ts';
 import type { TestSpec, TestSpecDocument } from './test-spec.ts';
 
 export const EVIDENCE_REPORT_DIR = 'evidence-report';
@@ -427,8 +427,9 @@ export function renderToolPath(): string {
 }
 
 export const defaultPdfRenderer: PdfRenderer = (rootDir, htmlFile, pdfFile, footer) => {
-  const r = spawnSync(process.execPath, [renderToolPath(), '--root', rootDir, '--html', htmlFile, '--pdf', pdfFile, '--footer', footer], {
-    cwd: rootDir, encoding: 'utf8', windowsHide: true, timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024,
+  // Supervised: the tool drives a headless browser, which must not outlive a timed-out or killed render.
+  const r = runSupervised(process.execPath, [renderToolPath(), '--root', rootDir, '--html', htmlFile, '--pdf', pdfFile, '--footer', footer], {
+    cwd: rootDir, timeoutMs: 10 * 60_000, maxBuffer: 16 * 1024 * 1024, role: 'evidence-pdf',
   });
   const text = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
   let reason: string | undefined;

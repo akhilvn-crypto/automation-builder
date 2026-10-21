@@ -47,8 +47,16 @@ export interface ReuseSummary {
   freshSpecs: string[];
   reusedPages: string[]; // page keys
   freshPages: string[];
+  seededPages?: string[]; // page keys a freshly explored test case took from the store (revalidated) instead of re-observing
   reasons: Record<string, string>; // testId -> why it was explored fresh / what it was reused from
 }
+
+// In fresh.json only: a step on a page the store already knows may name it as `saved:<page key>` (e.g. `saved:/login`) instead of
+// listing the page and its elements again. `explore assemble` accepts it only for a page whose locators were revalidated present
+// in this run, and replaces it with the revalidated page.
+export const SAVED_PAGE_PREFIX = 'saved:';
+export const savedPageKey = (pageId: string | null): string | null =>
+  pageId !== null && pageId.startsWith(SAVED_PAGE_PREFIX) ? pageId.slice(SAVED_PAGE_PREFIX.length) : null;
 
 export interface SpecExploration {
   testId: string;
@@ -84,7 +92,7 @@ export function checkLocatorExpression(expr: string): string | null {
   return null;
 }
 
-export function validateExplorationRecord(v: unknown, ctx: { runDir: string; specs: TestSpecDocument | null }): string[] {
+export function validateExplorationRecord(v: unknown, ctx: { runDir: string; specs: TestSpecDocument | null; allowSaved?: boolean }): string[] {
   if (typeof v !== 'object' || v === null) return ['exploration record must be an object'];
   const r = v as Partial<ExplorationRecord>;
   const issues: string[] = [];
@@ -120,7 +128,9 @@ export function validateExplorationRecord(v: unknown, ctx: { runDir: string; spe
   for (const s of r.specs!) {
     if (!(SPEC_EXPLORATION_STATUSES as readonly unknown[]).includes(s.status)) issues.push(`${s.testId}: invalid status ${JSON.stringify(s.status)}`);
     for (const st of s.steps ?? []) {
-      if (st.pageId !== null && !pageIds.has(st.pageId)) issues.push(`${s.testId} step ${st.index}: unknown pageId "${st.pageId}"`);
+      if (ctx.allowSaved && savedPageKey(st.pageId) !== null) {
+        if (savedPageKey(st.pageId) === '') issues.push(`${s.testId} step ${st.index}: "${st.pageId}" names no page`);
+      } else if (st.pageId !== null && !pageIds.has(st.pageId)) issues.push(`${s.testId} step ${st.index}: unknown pageId "${st.pageId}"`);
       for (const loc of st.locators ?? []) {
         const err = checkLocatorExpression(loc);
         if (err) issues.push(`${s.testId} step ${st.index}: ${err}`);

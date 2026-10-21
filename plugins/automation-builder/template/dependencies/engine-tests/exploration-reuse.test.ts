@@ -557,3 +557,105 @@ test('a covered test case stays valid when a fresh exploration of another case c
   assert.ok(rec.pages[0]!.elements.some((e) => e.candidateLocator === EMAIL), 'TC-1 locator carried over');
   assert.deepEqual(validateExplorationRecord(rec, { runDir: runDir(root, second), specs: null }), []);
 });
+
+// ---------- known pages: a new test case starts from what the store knows ----------
+
+// What the explorer writes for a new test case that only uses the saved login page: no pages, steps pointing at `saved:/login`.
+function writeSeeded(root: string, runId: string, specIds: string[], opts: { locators?: string[]; page?: string } = {}): void {
+  const record = {
+    schemaVersion: 1, tool: 'playwright-cli', toolVersion: '1', session: `explore-${runId}`, baseUrl: BASE,
+    startedAt: '2026-10-21T00:00:00Z', endedAt: '2026-10-21T00:05:00Z', pages: [],
+    specs: specIds.map((testId) => ({
+      testId, status: 'explored', uncertainties: [], notes: null,
+      steps: [{ index: 1, observed: 'login form shown', pageId: `saved:${opts.page ?? '/login'}`, locators: opts.locators ?? [EMAIL, SIGN_IN] }],
+    })),
+    avoidedActions: [],
+  };
+  writeDep(root, `runs/${runId}/exploration/fresh.json`, JSON.stringify(record));
+}
+
+function seededStore(t: Parameters<typeof tmpRoot>[0]) {
+  const root = tmpRoot(t);
+  const known = [mkSpec('TC-1', ['open login']), mkSpec('TC-2', ['open login', 'sign in'])];
+  const first = newRun(root, known);
+  writeFresh(root, first, ['TC-1', 'TC-2']);
+  assert.equal(call(root, 'assemble', first).code, 0);
+  return { root, known, added: mkSpec('TC-3', ['open login', 'reset password']) };
+}
+
+test('a new test case in a known module gets the saved pages as a hint, not as evidence', (t) => {
+  const { root, known, added } = seededStore(t);
+  const plan = call(root, 'plan', newRun(root, [...known, added])).value;
+  const tc3 = plan.specs.find((s: any) => s.testId === 'TC-3');
+  assert.equal(tc3.action, 'explore');
+  assert.deepEqual(tc3.knownPages, ['/login']);
+  assert.deepEqual(plan.knownPages, ['/login'], 'the session reply names the pages; the locator digest goes to the explorer brief');
+  assert.equal(plan.specs.find((s: any) => s.testId === 'TC-1').knownPages, undefined, 'only test cases that must be explored get hints');
+});
+
+test('a new test case reuses a known page once a snapshot from this run confirms its locators', (t) => {
+  const { root, known, added } = seededStore(t);
+  const second = newRun(root, [...known, added]);
+  call(root, 'plan', second);
+  call(root, 'revalidate', second, { page: '/login', file: writeSnapshot(root, second, 'login.aria.yml', LOGIN_SNAPSHOT) });
+  writeSeeded(root, second, ['TC-3']);
+  const res = call(root, 'assemble', second);
+  assert.equal(res.code, 0, JSON.stringify(res.value));
+  assert.deepEqual(res.value.reuse.seededPages, ['/login']);
+
+  const rec = readRecord(root, second);
+  assert.match(rec.reuse!.reasons['TC-3']!, /known pages reused after revalidation: \/login/);
+  assert.deepEqual(rec.reuse!.freshSpecs, ['TC-3']);
+  assert.deepEqual(rec.reuse!.freshPages, [], 'nothing was re-observed');
+  const page = rec.pages.find((p) => p.id === rec.specs.find((s) => s.testId === 'TC-3')!.steps[0]!.pageId)!;
+  assert.equal(page.provenance?.source, 'reused');
+  assert.deepEqual(page.elements.map((e) => e.candidateLocator).sort(), [EMAIL, SIGN_IN].sort());
+  assert.deepEqual(validateExplorationRecord(rec, { runDir: runDir(root, second), specs: null }), []);
+
+  // The new case's evidence is saved: the next run revalidates it like any other instead of exploring it again.
+  const third = newRun(root, [...known, added]);
+  assert.equal(call(root, 'plan', third).value.specs.find((s: any) => s.testId === 'TC-3').action, 'revalidate');
+});
+
+test('a saved page is refused for a new test case until it is revalidated, and for locators the snapshot does not show', (t) => {
+  const { root, known, added } = seededStore(t);
+  const second = newRun(root, [...known, added]);
+  writeSeeded(root, second, ['TC-3']);
+  const early = call(root, 'assemble', second);
+  assert.equal(early.code, 2);
+  assert.ok(early.value.issues.some((i: string) => /TC-3 step 1: saved page \/login has no snapshot from this run/.test(i)), JSON.stringify(early.value));
+
+  // The Email field is gone in the new snapshot, so the page cannot stand in for it.
+  call(root, 'revalidate', second, { page: '/login', file: writeSnapshot(root, second, 'login.aria.yml', '- button "Sign in"\n') });
+  writeSeeded(root, second, ['TC-3']);
+  const late = call(root, 'assemble', second);
+  assert.equal(late.code, 2);
+  assert.ok(late.value.issues.some((i: string) => /locator getByLabel\('Email'\) is not a verified saved element|is missing/.test(i)), JSON.stringify(late.value));
+});
+
+test('a saved page that is not in the store, or an unlisted locator on it, is refused with a way forward', (t) => {
+  const { root, known, added } = seededStore(t);
+  const second = newRun(root, [...known, added]);
+  writeSeeded(root, second, ['TC-3'], { page: '/checkout' });
+  const unknown = call(root, 'assemble', second);
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.value.issues.join('\n'), /saved page \/checkout is not in the store; list the page/);
+
+  call(root, 'revalidate', second, { page: '/login', file: writeSnapshot(root, second, 'login.aria.yml', LOGIN_SNAPSHOT) });
+  writeSeeded(root, second, ['TC-3'], { locators: ["getByLabel('Password')"] });
+  const unlisted = call(root, 'assemble', second);
+  assert.equal(unlisted.code, 2);
+  assert.match(unlisted.value.issues.join('\n'), /Password.*is not a verified saved element; observe it/);
+});
+
+test('saved: page references are only accepted in fresh.json, never in a finished exploration record', (t) => {
+  const { root, known } = seededStore(t);
+  const second = newRun(root, known);
+  const bad = {
+    schemaVersion: 1, tool: 'playwright-cli', toolVersion: null, session: null, baseUrl: BASE, startedAt: 'a', endedAt: 'b', pages: [],
+    specs: [{ testId: 'TC-1', status: 'explored', uncertainties: [], notes: null, steps: [{ index: 1, observed: 'x', pageId: 'saved:/login', locators: [] }] }],
+    avoidedActions: [],
+  };
+  assert.match(validateExplorationRecord(bad, { runDir: runDir(root, second), specs: null }).join(), /unknown pageId "saved:\/login"/);
+  assert.deepEqual(validateExplorationRecord(bad, { runDir: runDir(root, second), specs: null, allowSaved: true }), []);
+});

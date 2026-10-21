@@ -47,6 +47,7 @@ export const ARTIFACTS = {
   agentUsage: 'agents.json', // which stages needed an agent, which ran deterministically, recorded invocations
   briefsDir: 'briefs', // bounded structured inputs handed to stage agents
   authState: 'auth-state.json', // how stored authentication state was handled for this run (no secrets)
+  processes: 'processes.json', // processes the run started (test runner, browsers, report tools) and what was stopped afterwards
 } as const;
 
 // Execution labels name one Playwright invocation inside a run: "initial", "heal-TC-001-1", "regression".

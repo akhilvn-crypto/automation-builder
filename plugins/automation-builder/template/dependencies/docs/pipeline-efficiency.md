@@ -19,6 +19,11 @@ CLI: `node dependencies/engine/cli/pipeline.ts` (`pl` below). Run state is in `d
   (cache hit on evidence, rules, imports and the reviewed source): nothing is explored or revalidated, because the run's own execution is the
   check and a locator that fails to resolve there makes the evidence stale. `explore plan --revalidate` (or `--no-cache`) turns this off for a run.
   Evidence is saved only if every locator a step names is listed in its page's elements, so a half-recorded step can no longer force a re-exploration.
+  **Known pages:** a test case that must be explored (new or changed) is no longer explored from nothing. The plan lists the saved pages it
+  probably visits (`knownPages`: its own earlier pages, its module's pages, pages most cases share) and the explorer's brief carries their verified
+  locators. The explorer confirms each page it reaches with one snapshot (`explore revalidate`) and points its steps at `saved:<page key>` instead of
+  re-observing and re-listing the page; `explore assemble` accepts that only for a page revalidated in this run with every named locator `present`
+  (otherwise it refuses with the reason). `reuse.seededPages` and the per-spec reason show what was taken from the store.
 
 ## 2. Cross-run artifact reuse
 
@@ -123,8 +128,35 @@ reporter produce its files, how long, how many files and bytes) apart from `coun
 generated, builds only selected reporters, and records which result files the reports came from. The final-state screenshot masks password fields and
 `reporting.maskSelectors`; visible page data is not masked, and the embedded videos are not masked at all.
 
+## 7. Nothing left running
+
+A test run starts browsers, workers and sometimes a web server; exploration starts a `playwright-cli` browser session (a detached daemon that
+lives until someone closes it). Left alone, these pile up. The pipeline stops them, and only them:
+
+- **Supervised commands.** The Playwright runner, the Allure generator and the PDF renderer run under `engine/tools/supervise.ts`. A timeout stops
+  the whole process tree (a plain timeout stops only the direct child), and anything the command leaves behind is stopped when it ends. While it
+  runs, what it started is recorded with its start time in `runs/<runId>/processes.json`, so a later cleanup can still find it if the supervisor
+  itself was killed (closed terminal, Ctrl+C, crash). A pid alone is not trusted: pids are reused, so a recorded process counts only while its
+  start time matches.
+- **Browser sessions.** `cleanup run <runId>` asks `playwright-cli -s=<name> close` for each session whose name contains the run id, then stops
+  whatever is still running of it and removes the browser's temporary profile folder. Sessions are named `explore-<runId>` / `heal-<runId>`.
+- **When.** Automatically: when the exploration stage ends, when any stage fails, blocks or is cancelled, on `run resume`, and in `run finalize`
+  (whose `cleanup` block is the final check). On demand: `cleanup run <runId> [--dry-run]`, and `cleanup all [--dry-run]` for the leftovers of
+  earlier runs.
+- **What it will not touch.** The user's own browsers, dev servers and editors; a `playwright-cli` session with another name; the demo app you
+  started yourself; this process and its ancestors. Nothing is stopped by name alone.
+- **Honest result.** After stopping, the processes are looked up again. `stillRunning` lists what could not be stopped (for example access
+  denied) and `ok` is false; if the process list itself cannot be read the result says so instead of reporting success.
+
 ## Known limits
 
+- Cleanup relies on the OS process list (PowerShell `Get-CimInstance` on Windows, `ps` elsewhere); on a machine where that cannot run, the
+  supervisor still stops the command's own tree on a timeout, but leftovers cannot be found and the cleanup reports `unavailable`. The Windows
+  path was exercised against real processes and a real `playwright-cli` session; the macOS/Linux path (`ps`, process groups) is covered by
+  parsing tests only.
+- Commands run through `env run` (the explorer's `fill`/`click` steps) are not supervised: a browser opened that way is found by its session
+  name, not by lineage. Security software may flag tools that list and stop processes; if `engine/utils/process-tree.ts` is quarantined,
+  allow-list the `dependencies/engine` folder.
 - A fixture change touches every test (all tests import `test`); a page object or helper change touches only the tests whose block uses it
   (matched by the imported names). Static relative imports and re-exports are followed; dynamic `import()` and package imports are not.
 - The generator and reviewer rules live in the plugin, so their "version" is the plugin version recorded in `state/scaffold.json`: any plugin update

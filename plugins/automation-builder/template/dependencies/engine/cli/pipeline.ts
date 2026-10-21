@@ -57,6 +57,11 @@
 //   agents show <runId>                          decisions, invocations and tokens (only when reported)
 //   auth check                                   is saved login state safe to reuse? (age, cookies, origin, optional probe; no secrets printed)
 //   auth clear                                   remove the saved session so the next run logs in again
+//   cleanup run <runId> [--dry-run]              stop what the run left running: its playwright-cli browser sessions (closed first, then
+//                                                stopped if they stay) and the processes the pipeline recorded in processes.json.
+//                                                Runs by itself when exploration ends, when a stage fails/blocks/cancels, on resume
+//                                                and at finalization. Nothing else on the machine is touched.
+//   cleanup all [--dry-run]                      the same for every run in dependencies/runs/ (leftovers of crashed or abandoned runs)
 //   exec plan <runId>                            workers/isolation the next execution would use, and the login-state decision
 //   exec run <runId> [--label L] [--test-file f]... [--test-id id]... [--project p]... [--retries n]
 //   triage run <runId> | classify <runId> <key> --category C --confidence C --rationale R
@@ -74,6 +79,7 @@ import { syncFromSavedConfig } from '../config/playwright-config.ts';
 import { REPORT_MODES, type ReportMode } from '../config/schema.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
+import { sweepAfterStage, sweepRun, type CleanupBrief } from '../pipeline/process-cleanup.ts';
 import { presetFor, reportPlan } from '../pipeline/reporting-mode.ts';
 import {
   HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt, type RunManifest,
@@ -103,6 +109,12 @@ function brief(m: RunManifest, stage?: StageName): Record<string, unknown> {
     ok: true, runId: m.runId, status: m.status, currentStage: m.currentStage,
     ...(stage ? { stage: { name: stage, status: m.stages[stage].status, message: m.stages[stage].message, artifacts: m.stages[stage].artifacts } } : {}),
   };
+}
+
+// A resumed run may have been interrupted with a browser session or a runner still going: stop those before continuing.
+function withCleanup<T extends { manifest: RunManifest }>(root: string, resumed: T, trigger: string): T & { cleanup?: CleanupBrief } {
+  const cleanup = sweepRun(root, resumed.manifest.runId, trigger);
+  return cleanup ? { ...resumed, cleanup } : resumed;
 }
 
 function readJsonArg(file: string | undefined): unknown {
@@ -169,6 +181,7 @@ export function main(argv: string[]): number {
       'output-tokens': { type: 'string' },
       'step-screenshots': { type: 'boolean' },
       'evidence-pdf': { type: 'boolean' },
+      'dry-run': { type: 'boolean' },
     },
   });
   if (values.pretty) pretty = true;
@@ -243,10 +256,10 @@ export function main(argv: string[]): number {
             const command = values.command as Command | undefined;
             if (command !== undefined && !COMMANDS.includes(command)) throw new UsageError(`--command must be one of: ${COMMANDS.join(', ')}`);
             const r = resumeLatest(root, command);
-            return out(r, r.ok ? 0 : 2);
+            return out(r.ok ? withCleanup(root, r, 'resume') : r, r.ok ? 0 : 2);
           }
           const r = prepareResume(root, rest[0]);
-          return out(r, r.ok ? 0 : 2);
+          return out(r.ok ? withCleanup(root, r, 'resume') : r, r.ok ? 0 : 2);
         }
         case 'resumable':
           return out(listResumable(root, values.command as Command | undefined));
@@ -260,7 +273,10 @@ export function main(argv: string[]): number {
             if (eq <= 0) throw new UsageError(`--artifact must be name=relPath (got "${a}")`);
             artifacts[a.slice(0, eq)] = a.slice(eq + 1);
           }
-          return out(brief(updateStage(root, need(runId, 'runId'), stage, status, { message: values.message, artifacts }), stage));
+          const updated = updateStage(root, need(runId, 'runId'), stage, status, { message: values.message, artifacts });
+          // The state change is already saved; a cleanup that finds nothing prints nothing.
+          const cleanup = sweepAfterStage(root, updated.runId, stage, status);
+          return out({ ...brief(updated, stage), ...(cleanup ? { cleanup } : {}) });
         }
         case 'set-config': {
           const state = loadConfig(root);
@@ -304,13 +320,13 @@ export function main(argv: string[]): number {
     }
 
     case 'input': case 'specs': case 'env': case 'explore': case 'generate': case 'review':
-    case 'exec': case 'triage': case 'heal': case 'report': case 'agents': case 'cache': case 'auth': {
+    case 'exec': case 'triage': case 'heal': case 'report': case 'agents': case 'cache': case 'auth': case 'cleanup': {
       const r = stageCommand(root, group, action, rest, values);
       return out(r.value, r.code);
     }
 
     default:
-      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report|agents|cache|auth> ...');
+      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report|agents|cache|auth|cleanup> ...');
   }
 }
 

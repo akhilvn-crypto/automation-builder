@@ -28,7 +28,9 @@ records those files relative to the run directory (`exploration/<page>.aria.yml`
 
 Check the installed version's syntax first: `playwright-cli --help` (or the same with the project-local path). Don't assume flags. Typical flow:
 
-1. Open a named, isolated session at the base URL, e.g. `playwright-cli -s=explore-<runId> open <baseUrl>`.
+1. Open a named, isolated session at the base URL, e.g. `playwright-cli -s=explore-<runId> open <baseUrl>`. The session name **must contain
+   the run id** (`explore-<runId>`; a healing re-check uses `heal-<runId>`): that is how `cleanup run` knows the browser belongs to this
+   run. A session with any other name is never closed for you, and it stays alive until someone closes it.
 2. `snapshot` → read the accessibility tree (roles, names, element refs like `e12`).
 3. For each ready spec, perform its steps in order using refs (`click e12`, `fill e5 "text"`), taking a snapshot after
    each state change. Never type a literal secret. Credential values live in `automation/.env` (filled in by
@@ -39,7 +41,11 @@ Check the installed version's syntax first: `playwright-cli --help` (or the same
    (adjust the path to the CLI to where you run it from). Never print or echo a value to check it. Do not `source` the file.
 4. Save evidence that matters into `dependencies/runs/<runId>/exploration/` (`<page>.aria.yml`, `<page>.png`).
    Don't save pages showing secrets or personal data.
-5. Close the session (`close` / `session-stop` per `--help`). Always close it, even after an error.
+5. Close the session (`close` / `session-stop` per `--help`). Always close it, even after an error. Then run
+   `node dependencies/engine/cli/pipeline.ts cleanup run <runId>`: it closes any session of this run that is still open and stops what is
+   left of its browser (`ok: true` and an empty `stillRunning` means nothing of the run is running). The pipeline also runs it by itself when
+   the exploration stage ends, fails or is blocked, on `resume`, and at finalization, so a session you forgot or an interrupted exploration
+   is not left behind. Never use `close-all` / `kill-all`: they also end browsers that are not this run's.
 
 **Refs are temporary.** Translate each control you rely on into a durable locator from what the snapshot shows:
 `- button "Sign in" [ref=e12]` → `getByRole('button', { name: 'Sign in' })`;
@@ -62,7 +68,7 @@ exploration; `--revalidate` (or `--no-cache`) turns `covered` off so saved evide
 
 | Plan says | Do |
 |---|---|
-| `explore` | explore it as described above (new/changed test case, unknown/stale/ambiguous locator, no store, corrupt store) |
+| `explore` | explore it as described above (new/changed test case, unknown/stale/ambiguous locator, no store, corrupt store), starting from its `knownPages` (below) |
 | `revalidate` | for each page in `pagesToRevalidate`: reach it (same login/navigation the spec needs), take **one** accessibility snapshot into `runs/<runId>/exploration/<name>.aria.yml`, then `explore revalidate <runId> --page <url-or-path> --file exploration/<name>.aria.yml`. (In Git Bash pass the full URL: a bare `/login` is rewritten to a Windows path.) |
 | `covered` | nothing to do: the test case is unchanged, its saved evidence is consistent and verified, and its generated test is still current (same evidence, rules and reviewed source). This run's execution is the check; a locator that fails to resolve there makes the evidence stale, so the next run explores it |
 | `reuse` | nothing to do |
@@ -70,6 +76,16 @@ exploration; `--revalidate` (or `--no-cache`) turns `covered` off so saved evide
 `explore revalidate` looks for each saved control's role + accessible name in your fresh snapshot: exactly one match = still valid; none
 or several = marked **stale with a reason** and the specs that rely on it become `explore`; controls without a role+name (test-id only)
 cannot be proven and are never reused. Explore the shared pages of a module once and let every spec in the group point at them.
+
+**Known pages (specs you must explore).** A new or changed test case rarely touches only new pages. Your brief lists `knownPages`: saved pages
+(key, url, verified locators) that the `explore` specs probably visit (their own earlier pages, their module's pages, shared ones like login),
+and each spec's `knownPages` names its keys. They are a hint, not evidence. For a known page your steps really reach: take one snapshot of it,
+run `explore revalidate <runId> --page <key> --file <snapshot>`, and read which locators came back `present`. Then, in `fresh.json`, point the
+step at it with `"pageId": "saved:<key>"` (e.g. `saved:/login`) and list only `present` locators in its `locators`. Do **not** list that page or
+re-describe its elements under `pages`: assemble carries the revalidated page over, with this run's snapshot. Observe fresh only what is genuinely new
+(a page not in `knownPages`, a control the digest lacks, a missing/ambiguous locator) and list that the usual way. `assemble` refuses a `saved:`
+page that is not in the store, was not revalidated in this run, or whose locator is not `present`. Don't spend steps re-observing a page whose
+saved locators already cover what the step needs.
 Never copy a saved locator into your own record by hand, and never reuse CLI element refs (`e12`) across sessions.
 
 ## Safety

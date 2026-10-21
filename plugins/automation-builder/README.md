@@ -77,6 +77,11 @@ dependencies/                                not framework
   browser viewers may not show attachments), with the on-disk path printed as the fallback.
   `--update` refreshes an unmodified older `fixtures/test.*` (0.6.x, 0.8.x and 0.9.0 copies) so existing projects can adopt it; the evidence PDF belongs to
   `reporting.mode: audit` with `stepScreenshots` (the key's original name), and password fields are masked in the screenshot.
+- **Nothing left running:** the test runner and the report tools run under `engine/tools/supervise.ts` (a timeout stops the whole process tree;
+  leftovers are stopped when the command ends), and `pipeline.ts cleanup run <run-id>` closes the run's `playwright-cli` session
+  (`explore-<run-id>`) and stops what is left of its browser. It runs by itself when exploration ends, when a stage fails/blocks/cancels, on
+  `run resume` and in `run finalize`. Only processes recorded in `runs/<run-id>/processes.json` or sessions named with the run id are stopped
+  (`engine/pipeline/process-cleanup.ts`, `engine/utils/process-tree.ts`); a process that cannot be stopped is reported, not hidden.
 - The template is organized as `template/dependencies` (engine, docs, demo, engine tests) and
   `template/framework/{common,typescript,javascript}`; the language-specific twins must stay functionally identical.
 

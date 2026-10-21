@@ -22,6 +22,7 @@ import { resolveExecutionPlan } from '../pipeline/execution-plan.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { checkSpecsAgainstCanonical, validateCanonicalDocument, type CanonicalDocument } from '../pipeline/canonical.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
+import { cleanupAll, cleanupRun, sweepRun } from '../pipeline/process-cleanup.ts';
 import { missingEnvMessage, missingEnvVars, readEnvValues, referencedEnvVars, secretValuesFor, syncEnvFiles } from '../pipeline/env-file.ts';
 import { validateExplorationRecord, type ExplorationRecord } from '../pipeline/exploration.ts';
 import {
@@ -96,6 +97,7 @@ export interface Values {
   page?: string;
   locator?: string;
   reason?: string;
+  'dry-run'?: boolean;
 }
 
 export interface Result {
@@ -400,7 +402,8 @@ export function stageCommand(root: string, group: string, action: string | undef
       const r = run(root, rest[0]);
       const { plan, issues } = currentPlan(r, Boolean(v.fresh), Boolean(v.revalidate) || Boolean(v['no-cache']));
       if (!plan) return notReady({ ok: false, issues });
-      return ok({ ok: true, artifact: ARTIFACTS.explorationPlan, ...plan });
+      // The locator digests of known pages go to the explorer's brief, not into the session: here only which pages they are.
+      return ok({ ok: true, artifact: ARTIFACTS.explorationPlan, ...plan, knownPages: plan.knownPages.map((p) => p.key) });
     }
 
     case 'explore revalidate': {
@@ -656,6 +659,19 @@ export function stageCommand(root: string, group: string, action: string | undef
       return ok({ ok: true, removed: clearAuthState(root) });
     }
 
+    // Stops what a run left running (its browser sessions and the processes the pipeline recorded). `ok` is false when something could
+    // not be stopped or the process list could not be read: the report never claims a clean machine it did not check.
+    case 'cleanup run': {
+      // Only the run id is needed (not a loadable manifest): the runs that most need a cleanup may be the broken ones.
+      const report = cleanupRun(root, need(rest[0], 'runId'), { trigger: 'cleanup run', dryRun: v['dry-run'] === true });
+      return { value: report, code: report.ok ? 0 : 2 };
+    }
+
+    case 'cleanup all': {
+      const report = cleanupAll(root, { trigger: 'cleanup all', dryRun: v['dry-run'] === true });
+      return { value: report, code: report.ok ? 0 : 2 };
+    }
+
     case 'triage run': {
       const r = run(root, rest[0]);
       const src = artifactWithSource<ExecutionResults>(r, ARTIFACTS.executionResults);
@@ -776,7 +792,10 @@ export function stageCommand(root: string, group: string, action: string | undef
       } catch (err) {
         metrics = { error: (err as Error).message };
       }
-      return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null, metrics });
+      // Nothing of this run may stay running: its browser sessions and anything the runner left behind are stopped here, and the
+      // result says what was found. A failed cleanup never blocks finalization, but it is reported.
+      const cleanup = sweepRun(root, r.runId, 'run finalize') ?? { trigger: 'run finalize', stopped: 0, sessions: [], stillRunning: [] };
+      return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null, metrics, cleanup });
     }
 
     case 'run metrics': {
