@@ -43,14 +43,14 @@ listed. Agents return a summary. Verify their claims with the CLI validators bef
   its run id and its brief (`briefs[]`, JSON under `dependencies/runs/<runId>/briefs/`). No logs, no earlier conversation.
 - After each agent call: `pl agents record <runId> <stage> --agent <name> [--input-tokens n --output-tokens n]` (tokens only when
   you know them; they are never estimated). `pl agents show <runId>` summarizes.
-**Test data the run created.** Tests register what they create with the `cleanup` fixture and remove it themselves; the pipeline then sweeps what
-is left, by itself, after `execution`, `healing` and `regression_validation` and whenever a stage fails, blocks or is cancelled, and again in
+**Test data the run created.** Tests register what they create with the `cleanup` fixture. With `cleanup.mode` `test` each test removes its own data
+when it finishes; with `sweep` nothing is removed until the pipeline sweeps once every test has finished, by itself, after `execution`, `healing` and `regression_validation` and whenever a stage fails, blocks or is cancelled, and again in
 `pl run finalize`. The reply carries a `data` block (`created`, `removed`, `leftovers`, `needsUi`, `lines`) only when the run created data.
 - `needsUi > 0`: run `pl cleanup data <runId>` and give its `uiTasks` (a bounded list) to the **data-cleaner** agent, which removes each one
   in the UI and reports it with `pl cleanup resolve`. Do this once, after the last stage that runs tests; it is the only time that agent runs.
 - `leftovers > 0`: **tell the user which records are still there and how they can be deleted** (the `lines`; the same list is in `summary.md`
   under "Test data"). Do not fail or block the run for them, and never describe the environment as clean.
-- Cleanup only happens when the config has `cleanup.mode` `in-test`, `in-test+sweep` or `sweep` and the environment is on `cleanup.allowedEnvironments`
+- Cleanup only happens when the config has `cleanup.mode` `test` or `sweep` and the environment is on `cleanup.allowedEnvironments`
   (never production); otherwise everything created is listed as left behind, with the reason. `pl cleanup data <runId> --dry-run` shows
   what a sweep would do; `pl cleanup status <runId>` the counts.
 Always deterministic, no planning needed: preflight, configuration, input_validation, execution, regression_validation,

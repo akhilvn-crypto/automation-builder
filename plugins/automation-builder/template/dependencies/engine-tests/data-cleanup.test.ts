@@ -29,7 +29,7 @@ function withCleanup(over: Partial<NonNullable<AutomationConfig['cleanup']>> = {
   const c = validConfig();
   return {
     ...c, app: { ...c.app, environment: env },
-    cleanup: { mode: 'in-test+sweep', allowedEnvironments: ['qa'], entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}' } } }, ...over },
+    cleanup: { mode: 'test', allowedEnvironments: ['qa'], entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}' } } }, ...over },
   };
 }
 
@@ -56,21 +56,34 @@ test('cleanup config: valid, optional, and never production', () => {
   };
   bad(withCleanup({ allowedEnvironments: ['qa', 'Production'] }), 'production');
   bad(withCleanup({ allowedEnvironments: [] }), 'at least one');
-  bad({ ...withCleanup(), cleanup: { mode: 'in-test' } }, 'allowedEnvironments');
+  bad({ ...withCleanup(), cleanup: { mode: 'test' } }, 'allowedEnvironments');
   bad({ ...withCleanup(), cleanup: { mode: 'sometimes', allowedEnvironments: ['qa'] } }, 'cleanup.mode');
+  bad({ ...withCleanup(), cleanup: { mode: 'both', allowedEnvironments: ['qa'] } }, 'cleanup.mode');
   bad(withCleanup({ entities: { order: {} } }), 'needs an "api" or a "ui"');
   bad(withCleanup({ entities: { order: { api: { method: 'DELETE', path: '/api/orders' } } } }), '{id}');
   bad(withCleanup({ entities: { order: { api: { method: 'DELETE', path: 'https://evil.example/{id}' } } } }), 'api.path');
   bad(withCleanup({ entities: { order: { api: { method: 'DELETE', path: '//evil.example/{id}' } } } }), 'api.path');
   bad(withCleanup({ entities: { order: { api: { method: 'DELETE', path: '/api/{id}', headersFromEnv: { Authorization: 'token value' } } } } }), 'NAMES');
   bad(withCleanup({ entities: { order: { ui: { hint: ' ' } } } }), 'hint');
-  assert.equal(validateConfig(withCleanup({ allowedEnvironments: [] , mode: 'off' })).ok, true, 'off needs no environment');
+  for (const mode of ['sweep', 'test'] as const) assert.equal(validateConfig(withCleanup({ mode })).ok, true, mode);
+});
+
+test('configs saved by 0.15-0.17 keep working: in-test and in-test+sweep become "test", off drops the cleanup block', () => {
+  for (const mode of ['in-test', 'in-test+sweep']) {
+    const r = validateConfig({ ...withCleanup(), cleanup: { ...withCleanup().cleanup, mode } });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.equal(r.ok && r.config.cleanup?.mode, 'test');
+    assert.deepEqual(r.ok && r.config.cleanup?.entities, withCleanup().cleanup!.entities, 'the rest of the block is kept');
+  }
+  const off = validateConfig({ ...withCleanup(), cleanup: { mode: 'off', allowedEnvironments: [] } });
+  assert.ok(off.ok, JSON.stringify(off));
+  assert.equal(off.ok && 'cleanup' in off.config, false);
+  assert.equal(validateConfig({ ...withCleanup(), cleanup: { mode: 'in-test', allowedEnvironments: [] } }).ok, false, 'a legacy mode still needs an environment');
 });
 
 test('the guard allows cleanup only when it is on, listed and not production', () => {
   assert.equal(cleanupGuard(null).allowed, false);
   assert.match(cleanupGuard(validConfig()).reason!, /not configured/);
-  assert.match(cleanupGuard(withCleanup({ mode: 'off' })).reason!, /turned off/);
   assert.match(cleanupGuard(withCleanup({}, 'staging')).reason!, /not in cleanup.allowedEnvironments/);
   assert.match(cleanupGuard(withCleanup({ allowedEnvironments: ['qa'] }, 'Production')).reason!, /production/);
   // a production name wins even if a hand-edited config lists it (the validator refuses such a file, the guard does not rely on that)
@@ -78,7 +91,7 @@ test('the guard allows cleanup only when it is on, listed and not production', (
   sneaky.cleanup!.allowedEnvironments = ['prod'];
   assert.equal(cleanupGuard(sneaky).allowed, false);
   assert.equal(cleanupGuard(withCleanup({}, 'QA')).allowed, true, 'environment names compare case-insensitively');
-  assert.equal(cleanupGuard(withCleanup({ mode: 'in-test' })).allowed, true);
+  for (const mode of ['sweep', 'test'] as const) assert.equal(cleanupGuard(withCleanup({ mode })).allowed, true, mode);
 });
 
 // ---- inside the test ----
@@ -138,9 +151,8 @@ test('a test that dies before teardown still leaves its records pending in the l
   assert.equal(summarizeData(left, withCleanup()).leftovers.length, 1);
 });
 
-test('nothing is deleted when cleanup is off, the environment is not allowed or it is production', async (t) => {
+test('nothing is deleted when cleanup is not configured, the environment is not allowed or it is production', async (t) => {
   for (const [config, why] of [
-    [withCleanup({ mode: 'off' }), /turned off/],
     [withCleanup({}, 'staging'), /not in cleanup.allowedEnvironments/],
     [validConfig(), /not configured/],
     [null, /missing or invalid/],
@@ -214,7 +226,7 @@ async function leftBehind(root: string, entries: { entity: string; identifier: s
 test('the sweep removes ledger records through the declared API, on the app origin, with headers from the environment', async (t) => {
   const root = tmpRoot(t);
   const dir = await leftBehind(root, [{ entity: 'order', identifier: 'ord-1' }, { entity: 'order', identifier: 'ord-2' }]);
-  const config = withCleanup({ entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}', headersFromEnv: { Authorization: 'SWEEP_TOKEN' }, verifyPath: '/api/orders/{id}' } } } });
+  const config = withCleanup({ mode: 'sweep', entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}', headersFromEnv: { Authorization: 'SWEEP_TOKEN' }, verifyPath: '/api/orders/{id}' } } } });
   const f = fake((c) => (c.method === 'DELETE' ? (c.url.endsWith('ord-2') ? 404 : 204) : 404));
   const report = sweepData(root, RUN, config, { trigger: 'test', fetch: f.fetch, env: { SWEEP_TOKEN: 'Bearer s3cret' } });
 
@@ -233,7 +245,7 @@ test('the sweep removes ledger records through the declared API, on the app orig
 test('an API failure, a missing variable, a record still present and the per-run cap are reported, not hidden', async (t) => {
   const root = tmpRoot(t);
   const dir = await leftBehind(root, [1, 2, 3, 4].map((n) => ({ entity: 'order', identifier: `ord-${n}` })));
-  const config = withCleanup({ maxDeletesPerRun: 3, entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}', headersFromEnv: { Authorization: 'SWEEP_TOKEN' }, verifyPath: '/api/orders/{id}' } } } });
+  const config = withCleanup({ mode: 'sweep', maxDeletesPerRun: 3, entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}', headersFromEnv: { Authorization: 'SWEEP_TOKEN' }, verifyPath: '/api/orders/{id}' } } } });
   const answers: Record<string, number> = { 'DELETE ord-1': 500, 'DELETE ord-2': 200, 'GET ord-2': 200, 'DELETE ord-3': 204, 'GET ord-3': 404 };
   const f = fake((c) => answers[`${c.method} ${c.url.split('/').pop()}`] ?? 404);
   const noToken = sweepData(root, RUN, config, { trigger: 'test', fetch: f.fetch, env: {}, dryRun: false });
@@ -252,7 +264,7 @@ test('an API failure, a missing variable, a record still present and the per-run
 test('without sweep permission nothing is called and the leftovers are listed with how to delete them', async (t) => {
   const root = tmpRoot(t);
   const dir = await leftBehind(root, [{ entity: 'order', identifier: 'ord-1' }, { entity: 'invoice', identifier: 'inv-1', hint: 'Invoices > row > Delete' }]);
-  for (const config of [withCleanup({ mode: 'in-test' }), withCleanup({}, 'staging'), withCleanup({}, 'production'), null]) {
+  for (const config of [withCleanup({ mode: 'test' }), withCleanup({ mode: 'sweep' }, 'staging'), withCleanup({ mode: 'sweep' }, 'production'), null]) {
     const f = fake(() => 204);
     const report = sweepData(root, RUN, config, { trigger: 'test', fetch: f.fetch });
     assert.equal(report.ran, false);
@@ -260,7 +272,7 @@ test('without sweep permission nothing is called and the leftovers are listed wi
     assert.equal(report.summary.leftovers, 2);
     assert.ok(report.guard.reason);
   }
-  const lines = sweepData(root, RUN, withCleanup({ mode: 'in-test' }), { trigger: 'test', fetch: fake(() => 204).fetch }).leftoverLines;
+  const lines = sweepData(root, RUN, withCleanup({ mode: 'test' }), { trigger: 'test', fetch: fake(() => 204).fetch }).leftoverLines;
   assert.ok(lines.some((l) => l.includes('order "ord-1"') && l.includes('can be deleted: DELETE /api/orders/<identifier>')));
   assert.ok(lines.some((l) => l.includes('invoice "inv-1"') && l.includes('Invoices > row > Delete')));
   assert.equal(readCreatedData(dir).every((r) => r.status === 'pending'), true, 'a blocked sweep changes nothing');
@@ -269,7 +281,7 @@ test('without sweep permission nothing is called and the leftovers are listed wi
 test('UI-only records are handed to the agent, stay on its list until it reports, and a dry run changes nothing', async (t) => {
   const root = tmpRoot(t);
   const dir = await leftBehind(root, [{ entity: 'contact', identifier: 'con-1' }, { entity: 'mystery', identifier: 'm-1' }]);
-  const config = withCleanup({ entities: { contact: { ui: { hint: 'Contacts > open > Delete' } } } });
+  const config = withCleanup({ mode: 'sweep', entities: { contact: { ui: { hint: 'Contacts > open > Delete' } } } });
   const f = fake(() => 204);
 
   const dry = sweepData(root, RUN, config, { trigger: 'test', dryRun: true, fetch: f.fetch });
@@ -302,7 +314,7 @@ test('records already removed are left alone, and the identifier cannot leave th
   s.register({ entity: 'order', identifier: 'done-1', undo: () => {} });
   await s.run();
   const f = fake(() => 204);
-  const report = sweepData(root, RUN, withCleanup(), { trigger: 'test', fetch: f.fetch });
+  const report = sweepData(root, RUN, withCleanup({ mode: 'sweep' }), { trigger: 'test', fetch: f.fetch });
   assert.equal(f.calls.length, 0);
   assert.equal(report.summary.removed, 1);
   assert.equal(briefOfSweep(report)!.leftovers, 0);
@@ -355,16 +367,19 @@ test('mode "sweep": tests only register; nothing is deleted until the sweep', as
   assert.equal(readCreatedData(dir)[0]!.removedBy, 'api');
 });
 
-test('mode "in-test" still has no sweep, and "in-test+sweep" still undoes in the test', async (t) => {
+test('mode "test": each test undoes its own data when it ends, and there is no sweep afterwards', async (t) => {
   const root = tmpRoot(t);
   const dir = runFolder(root);
   const f = fake(() => 204);
-  const a = session(dir, withCleanup({ mode: 'in-test' }));
+  const config = withCleanup({ mode: 'test' });
+  const a = session(dir, config);
   a.register({ entity: 'order', identifier: 'ord-a', undo: () => {} });
+  a.register({ entity: 'order', identifier: 'ord-b' }); // no undo: the declared API is not used in this mode
   await a.run();
-  assert.equal(sweepData(root, RUN, withCleanup({ mode: 'in-test' }), { trigger: 't', fetch: f.fetch }).ran, false);
-  assert.equal(f.calls.length, 0);
   assert.equal(readCreatedData(dir)[0]!.status, 'deleted');
+  assert.equal(sweepData(root, RUN, config, { trigger: 't', fetch: f.fetch }).ran, false);
+  assert.equal(f.calls.length, 0, 'no sweep: the record without an undo is listed, not deleted');
+  assert.equal(readCreatedData(dir)[1]!.status, 'no_cleanup_path');
 });
 
 // ---- plain Playwright (npm run test:adhoc / test:ui): the ad hoc ledger and the sweep after the run ----
@@ -455,7 +470,7 @@ test('the default request helper sends the method and header values to a real se
 
   const root = tmpRoot(t);
   const dir = await leftBehind(root, [{ entity: 'order', identifier: 'ord-real' }]);
-  const base = withCleanup({ entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}', headersFromEnv: { Authorization: 'SWEEP_TOKEN' }, verifyPath: '/api/orders/{id}' } } } });
+  const base = withCleanup({ mode: 'sweep', entities: { order: { api: { method: 'DELETE', path: '/api/orders/{id}', headersFromEnv: { Authorization: 'SWEEP_TOKEN' }, verifyPath: '/api/orders/{id}' } } } });
   const config = { ...base, app: { ...base.app, baseUrl: `http://127.0.0.1:${port}` } };
   // The sweep's request helper is a synchronous child process, so the sweep itself runs in another process and this one serves HTTP.
   const moduleUrl = pathToFileURL(path.resolve(path.dirname(CLI), '..', 'pipeline', 'data-cleanup.ts')).href;
@@ -490,7 +505,7 @@ function cli(root: string, ...args: string[]): { code: number | null; json: any 
 test('cleanup record / status / resolve / data work from the command line, and leftovers never fail the command', (t) => {
   const root = tmpRoot(t);
   runFolder(root);
-  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'in-test', entities: { contact: { ui: { hint: 'Contacts > Delete' } } } })), { ok: true });
+  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'test', entities: { contact: { ui: { hint: 'Contacts > Delete' } } } })), { ok: true });
 
   const rec = cli(root, 'cleanup', 'record', RUN, '--entity', 'contact', '--identifier', 'con-9', '--hint', 'Contacts > open > Delete');
   assert.equal(rec.code, 0, JSON.stringify(rec.json));
@@ -518,7 +533,7 @@ test('run stage and run finalize print a data block with what is left, and a fai
   const created = cli(root, 'run', 'create', '--command', 'playwright-pipeline');
   assert.equal(created.code, 0, JSON.stringify(created.json));
   const runId = created.json.runId as string;
-  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'in-test' })), { ok: true });
+  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'test' })), { ok: true });
 
   assert.equal(cli(root, 'run', 'stage', runId, 'preflight', 'running').json.data, undefined, 'no data created: nothing printed');
   recordExternally(runDir(root, runId), { entity: 'contact', identifier: 'con-1', hint: 'Contacts > Delete' });

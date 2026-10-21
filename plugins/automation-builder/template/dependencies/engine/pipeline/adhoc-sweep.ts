@@ -1,5 +1,5 @@
 // The sweep after a plain Playwright invocation (npm run test:adhoc / test:ui), which has no run: removes the test data the tests
-// registered in the ad hoc ledger (cleanup mode "sweep" or "in-test+sweep"), once every test has finished. Whatever is still there from
+// registered in the ad hoc ledger (cleanup mode "sweep"), once every test has finished. Whatever is still there from
 // an earlier invocation that never got this far (a plain `npx playwright test`) is swept too. Never throws; prints what is left.
 
 import { loadConfig } from '../config/load-config.ts';

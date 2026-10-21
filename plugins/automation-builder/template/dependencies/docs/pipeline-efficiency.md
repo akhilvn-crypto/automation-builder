@@ -165,7 +165,7 @@ and says plainly what it could not remove.
   404/410), or the **UI** through the `data-cleaner` agent (`ui.hint`; it reports each result with `cleanup resolve`). Endpoints are never guessed
   or scraped from traffic. It runs by itself after `execution`, `healing` and `regression_validation`, when a stage fails/blocks/cancels, and in
   `run finalize`; repeated sweeps are safe (removed records are skipped).
-- **Guard.** Deleting needs `cleanup.mode` `in-test` (tests only), `in-test+sweep` or `sweep` (sweep only, after every test), an `app.environment` listed in `cleanup.allowedEnvironments`,
+- **Guard.** Deleting needs `cleanup.mode` `test` (each test removes its own data; no sweep) or `sweep` (nothing removed until one sweep after every test has finished), an `app.environment` listed in `cleanup.allowedEnvironments`,
   and an environment that is not production (`prod`, `production`, `prd`, `live`, refused even if listed). At most `cleanup.maxDeletesPerRun`
   (default 50) API deletions per sweep; the rest are listed. An identifier must be plain characters (`A-Za-z0-9._:@-`) and the resulting URL must
   stay on the app's origin.

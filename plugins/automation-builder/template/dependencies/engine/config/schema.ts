@@ -21,9 +21,10 @@ export const REPORT_MODES = ['standard', 'full', 'audit'] as const;
 export const ISOLATION_MODES = ['serial', 'shared-readonly', 'per-worker-accounts'] as const;
 export const AUTH_APPROACHES = ['none', 'ui-login', 'storage-state'] as const;
 export const EXPLORATION_TOOLS = ['playwright-cli', 'none'] as const;
-// What happens to data the tests created: nothing / each test removes it itself / that plus a sweep after the run / only a sweep after
-// every test has finished (tests just register what they create; see created-data.ts).
-export const CLEANUP_MODES = ['off', 'in-test', 'in-test+sweep', 'sweep'] as const;
+// When the data the tests created is removed (no `cleanup` block = it is not removed): "test" = each test removes it right after it
+// finishes; "sweep" = nothing is removed while tests run, one sweep removes it once every test has finished (tests just register what
+// they create; see created-data.ts).
+export const CLEANUP_MODES = ['sweep', 'test'] as const;
 export const CLEANUP_API_METHODS = ['DELETE', 'POST', 'PUT', 'PATCH'] as const;
 export const DEFAULT_MAX_DELETES_PER_RUN = 50;
 // Environments that data is never deleted in, whatever the config allows.
@@ -235,7 +236,21 @@ const TOP_KEYS = [
   'reporters', 'auth', 'exploration', 'execution', 'healing', 'retention', 'reporting', 'cleanup',
 ] as const;
 
-export function validateConfig(raw: unknown): ValidationResult {
+// Configs saved by 0.15-0.17 used four cleanup modes. They keep working: "in-test" and "in-test+sweep" removed data in each test, so they
+// become "test"; "off" meant no cleanup, so the block goes. Anything else is left for the validator to reject.
+function upgradeLegacyCleanup(raw: unknown): unknown {
+  if (!isObj(raw) || !isObj(raw.cleanup)) return raw;
+  const mode = raw.cleanup.mode;
+  if (mode === 'off') {
+    const { cleanup: _dropped, ...rest } = raw;
+    return rest;
+  }
+  if (mode === 'in-test' || mode === 'in-test+sweep') return { ...raw, cleanup: { ...raw.cleanup, mode: 'test' } };
+  return raw;
+}
+
+export function validateConfig(candidate: unknown): ValidationResult {
+  const raw = upgradeLegacyCleanup(candidate);
   const c = new Checker();
   if (!isObj(raw)) {
     return { ok: false, issues: [{ path: '', kind: 'invalid', message: 'config must be a JSON object' }] };
@@ -340,7 +355,7 @@ function checkCleanup(c: Checker, raw: Obj): void {
   else if (!Array.isArray(envs) || envs.some((e) => typeof e !== 'string' || e.trim() === '')) {
     c.invalid('cleanup.allowedEnvironments', 'cleanup.allowedEnvironments must be a list of environment names');
   } else {
-    if (cleanup.mode !== 'off' && envs.length === 0) c.invalid('cleanup.allowedEnvironments', 'cleanup.allowedEnvironments must list at least one non-production environment');
+    if (envs.length === 0) c.invalid('cleanup.allowedEnvironments', 'cleanup.allowedEnvironments must list at least one non-production environment');
     if (envs.some((e) => PRODUCTION_ENVIRONMENT.test((e as string).trim()))) c.invalid('cleanup.allowedEnvironments', 'test data is never deleted in a production environment');
   }
   if (cleanup.maxDeletesPerRun !== undefined) c.int(cleanup, 'maxDeletesPerRun', 'cleanup.maxDeletesPerRun', 1, 1_000);

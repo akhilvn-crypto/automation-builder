@@ -1,5 +1,5 @@
 // The sweep after a run: removes the test data that is still listed in the run's created-data/ ledger. It only ever acts on that
-// ledger (never a search, never a wildcard), only when cleanup.mode is "in-test+sweep" or "sweep" in an allowed non-production environment, and
+// ledger (never a search, never a wildcard), only when cleanup.mode is "sweep" in an allowed non-production environment, and
 // never more than cleanup.maxDeletesPerRun records. How a record is removed comes from config.cleanup.entities, which the user declared:
 //   api  -> one HTTP call to the app's own origin (endpoints are never guessed), optionally checked afterwards;
 //   ui   -> handed to the data-cleaner agent, which removes it through the app and reports back with `cleanup resolve`;
@@ -194,7 +194,7 @@ export function sweepLedger(dir: string, config: AutomationConfig | null, opts: 
   const actions: SweepAction[] = [];
   const uiTasks: UiTask[] = [];
   const patches = new Map<string, Partial<Pick<CreatedRecord, 'status' | 'removedBy' | 'error'>>>();
-  const sweeping = guard.allowed && (guard.mode === 'in-test+sweep' || guard.mode === 'sweep') && config !== null;
+  const sweeping = guard.allowed && guard.mode === 'sweep' && config !== null;
 
   if (sweeping) {
     const secrets = secretsOf(config, env);
@@ -239,7 +239,7 @@ export function sweepLedger(dir: string, config: AutomationConfig | null, opts: 
   const summary = summarizeData(after, config);
   const report: SweepReport = {
     trigger: opts.trigger, at: now.toISOString(), dryRun, ran: sweeping,
-    guard: { allowed: guard.allowed, mode: guard.mode, environment: guard.environment, reason: guard.reason ?? (guard.mode === 'in-test' ? 'cleanup.mode is "in-test": there is no sweep after the run' : null) },
+    guard: { allowed: guard.allowed, mode: guard.mode, environment: guard.environment, reason: guard.reason ?? (guard.mode === 'test' ? 'cleanup.mode is "test": each test removes its own data, there is no sweep after the run' : null) },
     actions, uiTasks: uiTasks.slice(0, MAX_UI_TASKS), uiTasksOmitted: Math.max(0, uiTasks.length - MAX_UI_TASKS),
     summary: { total: summary.total, removed: summary.removed, byStatus: summary.byStatus, leftovers: summary.leftovers.length },
     leftoverLines: leftoverLines(summary),

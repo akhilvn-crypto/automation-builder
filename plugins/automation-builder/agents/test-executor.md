@@ -20,8 +20,8 @@ orchestrator gives (`--test-file`, `--test-id`, `--project`, `--retries`).
   `automation/test-results/<runId>/<label>/`) and writes normalized results.
 - Read the normalized results, `automation/reports/<runId>/<label>/runner.log` and the attachment paths to summarize failures.
 
-After a run, tests that created data have removed it themselves (the `cleanup` fixture). `pipeline.ts cleanup data <runId>` sweeps what is left
-(the pipeline also runs it after the stage); report its `summary` (created / removed / leftovers) and the `leftoverLines`. Leftovers are information
+After a run, in `cleanup.mode` `test` the tests have removed their data themselves (the `cleanup` fixture); in `sweep` mode
+`pipeline.ts cleanup data <runId>` removes it once every test has finished (the pipeline also runs it after the stage); report its `summary` (created / removed / leftovers) and the `leftoverLines`. Leftovers are information
 for the user, not a failed execution.
 
 **Not permitted:** editing tests, config or fixtures; re-running until green; deleting evidence; deleting test data yourself (only the sweep and the

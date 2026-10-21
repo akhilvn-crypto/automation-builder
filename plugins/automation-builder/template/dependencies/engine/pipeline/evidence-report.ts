@@ -25,6 +25,7 @@ import type { RunManifest, TestCounts } from './run-manager.ts';
 import { STEP_LOG_ATTACHMENT, parseStepLog } from './step-evidence.ts';
 import { runSupervised } from './supervised-run.ts';
 import type { TestSpec, TestSpecDocument } from './test-spec.ts';
+import { FFMPEG_HOWTO, convertToMp4, findFfmpeg, looksLikeMp4 } from './video-transcode.ts';
 
 export const EVIDENCE_REPORT_DIR = 'evidence-report';
 export const EVIDENCE_HTML = 'evidence-report.html';
@@ -51,6 +52,14 @@ export interface VideoView {
   bytes: number;
   source: string; // path relative to automation/, shown in the PDF as the fallback location
   href: string; // link target in the HTML (relative to the report folder)
+  // Set when the recording was converted to H.264 MP4: that file (not the WebM) is stored in the PDF and plays inside the page.
+  playable: { file: string; fileName: string; mime: string; bytes: number } | null;
+}
+
+// What the conversion to playable videos achieved; `note` says why the rest stay attachments.
+export interface VideoPlayback {
+  playable: number;
+  note: string | null;
 }
 
 export interface AttemptView {
@@ -93,6 +102,7 @@ export interface EvidenceModel {
   tests: TestView[];
   totals: { tests: number; steps: number; screenshots: number; videos: number };
   gaps: string[]; // evidence that should exist but does not
+  playback: VideoPlayback; // filled in by buildEvidenceReport once the videos were converted
 }
 
 export interface EvidenceInputs {
@@ -167,6 +177,7 @@ function attemptView(i: EvidenceInputs, label: string, a: Attempt, ctx: AttemptC
     view.videos.push({
       token, fileName: fileName.replace(/[^A-Za-z0-9._-]/g, '_'), file, mime: att.contentType, bytes: statSync(file).size, source: att.path,
       href: `${path.relative(ctx.reportDir, file).split(path.sep).map(encodeURIComponent).join('/')}#${token}`,
+      playable: null,
     });
   });
   if (view.videos.length === 0) {
@@ -214,7 +225,7 @@ export function buildEvidenceModel(i: EvidenceInputs): EvidenceModel {
     environment: i.config.app.environment, baseUrl: i.config.app.baseUrl, browsers: i.config.browsers,
     counts: i.counts, tests,
     totals: { tests: tests.length, steps: counters.steps, screenshots: counters.screenshots, videos: counters.videos },
-    gaps,
+    gaps, playback: { playable: 0, note: null },
   };
 }
 
@@ -256,6 +267,9 @@ table.steps td.n { width: 12mm; white-space: nowrap; color: var(--muted); } tabl
 table.steps tr.failed td { background: #fdf1f0; }
 .video { break-inside: avoid; display: flex; gap: 4mm; align-items: center; border: 1px solid var(--line); border-left: 1.5mm solid var(--heal); border-radius: 1.5mm; margin: 2.5mm 0; padding: 2.5mm 3mm; background: var(--soft); }
 .video .what { flex: 1; } .video .small { color: var(--muted); font-size: 8.5pt; }
+.video.inline { flex-direction: column; align-items: flex-start; gap: 2.5mm; }
+.video.inline a.play { width: 96mm; height: 54mm; background: #172033; border-radius: 1.5mm; }
+.video.inline a.play::after { left: 41mm; top: 19mm; border-left: 14mm solid #fff; border-top: 8mm solid transparent; border-bottom: 8mm solid transparent; }
 a.play { display: block; flex: none; width: 10mm; height: 10mm; background: var(--heal); border-radius: 1.5mm; position: relative; text-decoration: none; }
 a.play::after { content: ""; position: absolute; left: 3.6mm; top: 2.4mm; border-left: 4mm solid #fff; border-top: 2.6mm solid transparent; border-bottom: 2.6mm solid transparent; }
 figure { margin: 2mm 0 0; } figure img { display: block; width: auto; height: auto; max-width: 100%; max-height: 90mm; border: 1px solid var(--line); }
@@ -304,6 +318,13 @@ function stepsTable(steps: StepView[]): string {
 
 // The link around the play icon is what pdf-embed.ts finds in the printed PDF and replaces by the embedded file.
 function videoBox(v: VideoView, label: string): string {
+  if (v.playable) {
+    return `<div class="video inline"><a class="play" href="${e(v.href)}" title="Click to play the execution video"></a>`
+      + `<div class="what"><b>Execution video</b> <span class="muted">· ${e(label)} · MP4 · ${e(bytesLabel(v.playable.bytes))}</span>`
+      + `<div>Click the player above to play the complete journey of this test, from its first action to its final outcome, inside this page (Adobe Acrobat / Reader). `
+      + `It is stored in this PDF as the attachment <span class="mono">${e(v.playable.fileName)}</span>.</div>`
+      + `<div class="small">Original recording on disk: <span class="mono">${e(v.source)}</span></div></div></div>`;
+  }
   return `<div class="video"><a class="play" href="${e(v.href)}" title="Execution video"></a>`
     + `<div class="what"><b>Execution video</b> <span class="muted">· ${e(label)} · ${e(v.mime)} · ${e(bytesLabel(v.bytes))}</span>`
     + `<div>The complete journey of this test, from its first action to its final outcome, is stored inside this PDF as the attachment <span class="mono">${e(v.fileName)}</span>.</div>`
@@ -361,6 +382,23 @@ function testSection(t: TestView, src: ImageSource): string {
     + `</section>`;
 }
 
+function playingTheVideos(m: EvidenceModel): string {
+  const total = m.totals.videos;
+  const playable = m.playback.playable;
+  const attachmentOnly = total - playable;
+  const items: string[] = [];
+  if (playable > 0) {
+    const who = total === 1 ? 'The video plays' : playable === total ? `All ${total} videos play` : `${playable} of ${total} videos play`;
+    items.push(`<li><b>${who} inside this PDF.</b> Click the dark player in a test's Execution evidence section. This works in <b>Adobe Acrobat / Reader</b> (desktop); allow the media if Acrobat asks. Browser viewers (Chrome, Edge, Firefox) cannot play video inside a PDF: use the Attachments panel there and open the MP4 with any video player.</li>`);
+  }
+  if (attachmentOnly > 0) {
+    items.push(`<li>${attachmentOnly === total ? 'Each video is' : `${attachmentOnly} video${attachmentOnly === 1 ? ' is' : 's are'}`} stored <b>inside this PDF as a WebM file attachment</b> (the play icon in the test's Execution evidence section, and the viewer's Attachments panel); it opens with another program, it does not play in the page. `
+      + `${m.playback.note ? e(m.playback.note) : ''}</li>`);
+  }
+  items.push('<li>If your viewer cannot open attachments, the same recordings are in the project\'s test-results folder at the path printed under each video.</li>');
+  return `<div class="box"><b>Playing the videos</b><ul>\n${items.join('\n')}\n</ul></div>`;
+}
+
 // The document in pieces (head + cover, one section per test, tail) so a large report can be written without ever
 // holding every embedded screenshot in one string.
 export function* evidenceHtmlParts(m: EvidenceModel, src: ImageSource = embedImage): Generator<string> {
@@ -386,11 +424,7 @@ export function* evidenceHtmlParts(m: EvidenceModel, src: ImageSource = embedIma
 </dl>
 <div class="counts">${chip('Total', c.total, '')}${chip('Passed', c.passed, 'passed')}${chip('Failed', c.failed, 'failed')}${chip('Flaky', c.flaky, 'flaky')}${chip('Healed', c.healed, 'healed')}${chip('Blocked', c.blocked, 'blocked')}${chip('Skipped', c.skipped, 'skipped')}</div>
 <p class="muted">Flaky tests passed only after a retry and are not counted as passed. Times are IST. Screenshots and videos show the page exactly as rendered, so data typed into visible fields appears in them (password fields are masked in the screenshots, not in the videos).</p>
-${m.totals.videos ? `<div class="box"><b>Playing the videos</b><ul>
-<li>Each video is stored <b>inside this PDF</b> as a file attachment (the play icon in a test's Execution evidence section, and the viewer's Attachments panel). No separate file or link is needed.</li>
-<li>Videos are WebM recordings made by Playwright. Open the icon in Adobe Acrobat / Reader (or Foxit, PDF-XChange) to extract and play them. Browser viewers (Chrome, Edge, Firefox) may not show attachments and none of them plays a video inside a page.</li>
-<li>If your viewer cannot open attachments, the same recordings are in the project's test-results folder at the path printed under each video.</li>
-</ul></div>` : ''}
+${m.totals.videos ? playingTheVideos(m) : ''}
 ${m.gaps.length ? `<div class="box gaps"><b>Evidence gaps (${m.gaps.length})</b><ul>${m.gaps.slice(0, 40).map((g) => `<li>${e(g)}</li>`).join('')}${m.gaps.length > 40 ? `<li>… and ${m.gaps.length - 40} more</li>` : ''}</ul></div>` : ''}
 <h3>Tests</h3>
 <table><thead><tr><th>ID</th><th>Test</th><th>Module</th><th>Result</th><th>Steps</th></tr></thead><tbody>${toc}</tbody></table>
@@ -448,16 +482,47 @@ export function evidenceReportDir(rootDir: string, runId: string): string {
 
 export interface VideoEmbedding {
   embedded: number;
-  placed: number; // videos whose play icon sits in the test's Execution evidence section
+  placed: number; // videos whose play icon or player sits in the test's Execution evidence section
+  players: number; // of those, the ones that play inside the page
   warnings: string[];
 }
 
-// Stores every video inside the PDF, then reads the PDF back and checks that each file is in it, byte for byte. Throws if not.
+// Converts each recording to H.264 MP4 (the format viewers play inside a page) into <outDir>/videos/ and sets `playable` on the
+// ones that worked. Never throws: whatever cannot be converted stays a WebM attachment, and `note` says why.
+export type VideoPreparer = (videos: VideoView[], outDir: string) => VideoPlayback;
+
+export const defaultVideoPreparer: VideoPreparer = (videos, outDir) => {
+  if (videos.length === 0) return { playable: 0, note: null };
+  const probe = findFfmpeg();
+  if (!probe.ok) {
+    return { playable: 0, note: `To play them inside the page the report needs an ffmpeg with libx264, which was not found (${probe.reason}); ${FFMPEG_HOWTO}.` };
+  }
+  let playable = 0;
+  const failures: string[] = [];
+  for (const v of videos) {
+    const target = path.join(outDir, 'videos', `${v.fileName.replace(/\.[^.]+$/, '')}.mp4`);
+    const r = convertToMp4(probe.command, v.file, target);
+    const head = r.ok ? readFileSync(r.file).subarray(0, 12) : Buffer.alloc(0);
+    if (r.ok && looksLikeMp4(head)) {
+      v.playable = { file: r.file, fileName: path.basename(r.file), mime: 'video/mp4', bytes: r.bytes };
+      playable++;
+    } else {
+      failures.push(r.reason ?? `${path.basename(r.file)} is not an MP4`);
+    }
+  }
+  return { playable, note: failures.length ? `Conversion to MP4 failed for ${failures.length} video(s): ${failures.slice(0, 2).join('; ')}.` : null };
+};
+
+// Stores every video inside the PDF (the MP4 where there is one, otherwise the original), then reads the PDF back and checks that
+// each file is in it, byte for byte, and that each in-page player points at its file. Throws if not.
 export function embedVideosInPdf(pdfFile: string, videos: VideoView[]): VideoEmbedding {
-  const items: EmbedItem[] = videos.map((v) => ({
-    token: v.token, fileName: v.fileName, mime: v.mime, data: readFileSync(v.file),
-    description: `Execution video (${v.fileName}, ${bytesLabel(v.bytes)})`,
-  }));
+  const items: EmbedItem[] = videos.map((v) => {
+    const p = v.playable;
+    return {
+      token: v.token, fileName: p ? p.fileName : v.fileName, mime: p ? p.mime : v.mime, data: readFileSync(p ? p.file : v.file), inline: p !== null,
+      description: `Execution video (${p ? p.fileName : v.fileName}, ${bytesLabel(p ? p.bytes : v.bytes)})`,
+    };
+  });
   const result = embedFiles(readFileSync(pdfFile), items);
   const back = listEmbeddedFiles(result.pdf);
   const stored = new Map(back.files.map((f) => [f.name, f]));
@@ -469,15 +534,23 @@ export function embedVideosInPdf(pdfFile: string, videos: VideoView[]): VideoEmb
       throw new Error(`the video for ${videos[n]!.fileName} is not stored in the PDF intact`);
     }
   }
+  const unplaced = new Set(result.unplaced);
+  const expected = items.filter((i) => i.inline && !unplaced.has(i.token)).map((i) => i.fileName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)).sort();
+  const actual = back.players.map((p) => p.name ?? '').sort();
+  if (expected.length !== actual.length || expected.some((name, k) => name !== actual[k])) {
+    throw new Error(`the in-page players do not point at the stored videos (expected ${expected.length}, found ${actual.length})`);
+  }
   writeFileSync(pdfFile, result.pdf);
   const warnings: string[] = [];
   if (result.unplaced.length) warnings.push(`${result.unplaced.length} video(s) are attached to the PDF but have no play icon on a page`);
   if (!result.attachmentList) warnings.push('the PDF already had a /Names entry, so the videos are not in the Attachments panel list (their page icons still work)');
-  return { embedded: result.embedded, placed: result.annotated, warnings };
+  return { embedded: result.embedded, placed: result.annotated, players: result.players, warnings };
 }
 
 // Writes the HTML, renders the PDF, embeds the videos and verifies the result. Never throws: a failure is reported as a status.
-export function buildEvidenceReport(i: EvidenceInputs, render: PdfRenderer = defaultPdfRenderer, src: ImageSource = embedImage): ReporterStatus {
+export function buildEvidenceReport(
+  i: EvidenceInputs, render: PdfRenderer = defaultPdfRenderer, src: ImageSource = embedImage, prepareVideos: VideoPreparer = defaultVideoPreparer,
+): ReporterStatus {
   const name = 'evidence-pdf' as const;
   const outDir = evidenceReportDir(i.rootDir, i.manifest.runId);
   const htmlFile = path.join(outDir, EVIDENCE_HTML);
@@ -486,6 +559,14 @@ export function buildEvidenceReport(i: EvidenceInputs, render: PdfRenderer = def
     mkdirSync(outDir, { recursive: true });
     rmSync(pdfFile, { force: true });
     const model = buildEvidenceModel(i);
+    // Before the HTML: a video that plays inside the page gets a larger player box than one that is only an attachment.
+    const videos = model.tests.flatMap((t) => t.attempts.flatMap((a) => a.videos));
+    try {
+      model.playback = prepareVideos(videos, outDir);
+    } catch (err) {
+      for (const v of videos) v.playable = null;
+      model.playback = { playable: 0, note: `Conversion to MP4 failed: ${err instanceof Error ? err.message : String(err)}.` };
+    }
     writeEvidenceHtml(htmlFile, model, src);
     const r = render(i.rootDir, htmlFile, pdfFile, `Run ${i.manifest.runId}`);
     if (!r.ok) {
@@ -499,12 +580,13 @@ export function buildEvidenceReport(i: EvidenceInputs, render: PdfRenderer = def
     let size = existsSync(pdfFile) ? statSync(pdfFile).size : 0;
     const header = size > 0 ? readFileSync(pdfFile).subarray(0, 5).toString('latin1') : '';
     if (header !== '%PDF-') return { name, status: 'failed', path: null, detail: 'the renderer finished but produced no valid PDF' };
-    const videos = model.tests.flatMap((t) => t.attempts.flatMap((a) => a.videos));
     const notes: string[] = [];
+    let players = 0;
     if (videos.length > 0) {
       try {
         const embedding = embedVideosInPdf(pdfFile, videos);
         notes.push(...embedding.warnings);
+        players = embedding.players;
         size = statSync(pdfFile).size;
       } catch (err) {
         // The printed report is valid but would silently lack the videos it promises, so this is a failure, not a quiet downgrade.
@@ -512,10 +594,12 @@ export function buildEvidenceReport(i: EvidenceInputs, render: PdfRenderer = def
       }
     }
     const gap = model.gaps.length ? `; ${model.gaps.length} evidence gap(s) listed on the cover page` : '';
+    if (videos.length > players && model.playback.note) notes.push(`${videos.length - players} video(s) are attachments only, not playable in the page: ${model.playback.note}`);
     const warn = notes.length ? `; ${notes.join('; ')}` : '';
+    const playing = videos.length ? ` (${players} play inside the PDF in Acrobat/Reader, ${videos.length - players} attachment only)` : '';
     return {
       name, status: 'generated', path: toPosixRelative(i.rootDir, pdfFile),
-      detail: `${model.totals.tests} tests, ${model.totals.steps} steps, ${model.totals.screenshots} screenshots, ${model.totals.videos} videos embedded, ${bytesLabel(size)}${gap}${warn}`,
+      detail: `${model.totals.tests} tests, ${model.totals.steps} steps, ${model.totals.screenshots} screenshots, ${model.totals.videos} videos embedded${playing}, ${bytesLabel(size)}${gap}${warn}`,
     };
   } catch (err) {
     return { name, status: 'failed', path: null, detail: `evidence report failed: ${err instanceof Error ? err.message : String(err)}` };

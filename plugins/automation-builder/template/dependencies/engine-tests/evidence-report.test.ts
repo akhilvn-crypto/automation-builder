@@ -3,13 +3,13 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { validateConfig } from '../engine/config/schema.ts';
 import type { Attempt, ExecutionResults, TestResult } from '../engine/pipeline/execution.ts';
 import {
-  buildEvidenceModel, buildEvidenceReport, evidenceReportDir, renderEvidenceHtml, type EvidenceInputs, type PdfRenderer,
+  buildEvidenceModel, buildEvidenceReport, evidenceReportDir, renderEvidenceHtml, type EvidenceInputs, type PdfRenderer, type VideoPreparer,
 } from '../engine/pipeline/evidence-report.ts';
 import { listEmbeddedFiles } from '../engine/pipeline/pdf-embed.ts';
 import { buildSummary, computeFinalTests, countOutcomes } from '../engine/pipeline/reporting.ts';
@@ -312,6 +312,86 @@ test('the videos are stored inside the PDF itself, byte for byte, at the place o
   ]);
   assert.ok(pdf.includes(videoBytes('tc1', 1)), 'the recording\'s bytes are inside the PDF, not a path to them');
   assert.ok(!pdf.toString('latin1').includes('file:///C:/project'), 'no local path of the machine that built the report is left in the PDF');
+});
+
+// A stand-in for the ffmpeg conversion: writes a small MP4-looking file per recording and marks it playable.
+const mp4Bytes = (n: number): Buffer => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(3000, n + 9)]);
+const convertingAll: VideoPreparer = (videos, outDir) => {
+  videos.forEach((v, n) => {
+    const file = path.join(outDir, 'videos', v.fileName.replace(/\.webm$/, '.mp4'));
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, mp4Bytes(n));
+    v.playable = { file, fileName: path.basename(file), mime: 'video/mp4', bytes: mp4Bytes(n).length };
+  });
+  return { playable: videos.length, note: null };
+};
+
+test('with MP4 conversions the videos play inside the PDF: a player per video that points at the stored MP4', (t) => {
+  const root = tmpRoot(t);
+  const r = results([
+    result('TC-1', 'passed', [attempt(root, 'tc1', { steps: [{ title: 'Open' }] })]),
+    result('TC-2', 'failed', [attempt(root, 'tc2', { status: 'failed', steps: [{ title: 'Open' }] })]),
+  ]);
+  const i = inputs(root, r, specs(spec('TC-1'), spec('TC-2')));
+  const status = buildEvidenceReport(i, printingPdf, undefined, convertingAll);
+  assert.equal(status.status, 'generated', status.detail ?? '');
+  assert.match(status.detail!, /2 videos embedded \(2 play inside the PDF in Acrobat\/Reader, 0 attachment only\)/);
+
+  const pdf = readFileSync(path.join(root, status.path!));
+  const back = listEmbeddedFiles(pdf);
+  assert.deepEqual(back.players.map((p) => p.name).sort(), ['TC-1-chromium-initial-attempt1.mp4', 'TC-2-chromium-initial-attempt1.mp4']);
+  assert.equal(back.annotations, 0, 'no attachment-only icon is left');
+  assert.deepEqual(back.files.map((f) => f.mime), ['video/mp4', 'video/mp4']);
+  assert.ok(!pdf.includes(videoBytes('tc1', 1)), 'the WebM is replaced by the MP4 in the PDF');
+
+  const html = readFileSync(path.join(evidenceReportDir(root, RUN_ID), 'evidence-report.html'), 'utf8');
+  assert.match(html, /<div class="video inline"><a class="play"/);
+  assert.match(html, /<b>All 2 videos play inside this PDF\.<\/b>/);
+  assert.match(html, /Adobe Acrobat \/ Reader/);
+  assert.ok(existsSync(path.join(evidenceReportDir(root, RUN_ID), 'videos', 'TC-1-chromium-initial-attempt1.mp4')), 'the MP4s stay next to the report');
+});
+
+test('a recording that cannot be converted stays a WebM attachment and the report says why', (t) => {
+  const root = tmpRoot(t);
+  const r = results([
+    result('TC-1', 'passed', [attempt(root, 'tc1', { steps: [{ title: 'Open' }] })]),
+    result('TC-2', 'passed', [attempt(root, 'tc2', { steps: [{ title: 'Open' }] })]),
+  ]);
+  const i = inputs(root, r, specs(spec('TC-1'), spec('TC-2')));
+  const onlyFirst: VideoPreparer = (videos, outDir) => {
+    convertingAll([videos[0]!], outDir);
+    return { playable: 1, note: 'Conversion to MP4 failed for 1 video(s): ffmpeg could not convert video.webm.' };
+  };
+  const status = buildEvidenceReport(i, printingPdf, undefined, onlyFirst);
+  assert.equal(status.status, 'generated', status.detail ?? '');
+  assert.match(status.detail!, /\(1 play inside the PDF in Acrobat\/Reader, 1 attachment only\)/);
+  assert.match(status.detail!, /1 video\(s\) are attachments only.*ffmpeg could not convert/);
+
+  const back = listEmbeddedFiles(readFileSync(path.join(root, status.path!)));
+  assert.equal(back.players.length, 1);
+  assert.equal(back.annotations, 1);
+  assert.deepEqual(back.files.map((f) => f.mime).sort(), ['video/mp4', 'video/webm']);
+  const html = readFileSync(path.join(evidenceReportDir(root, RUN_ID), 'evidence-report.html'), 'utf8');
+  assert.match(html, /1 of 2 videos play inside this PDF/);
+  assert.match(html, /WebM file attachment/);
+});
+
+test('without ffmpeg the videos stay attachments, the cover page says how to get playback, and nothing is installed', (t) => {
+  const root = tmpRoot(t);
+  const r = results([result('TC-1', 'passed', [attempt(root, 'tc1', { steps: [{ title: 'Open' }] })])]);
+  const i = inputs(root, r, specs(spec('TC-1')));
+  const none: VideoPreparer = () => ({ playable: 0, note: 'To play them inside the page the report needs an ffmpeg with libx264, which was not found (ffmpeg could not be run).' });
+  const status = buildEvidenceReport(i, printingPdf, undefined, none);
+  assert.equal(status.status, 'generated');
+  assert.match(status.detail!, /\(0 play inside the PDF in Acrobat\/Reader, 1 attachment only\).*needs an ffmpeg with libx264/);
+  const html = readFileSync(path.join(evidenceReportDir(root, RUN_ID), 'evidence-report.html'), 'utf8');
+  assert.match(html, /needs an ffmpeg with libx264/);
+  assert.doesNotMatch(html, /video inline/);
+
+  // a preparer that throws is also just a fallback
+  const boom = buildEvidenceReport(i, printingPdf, undefined, () => { throw new Error('disk full'); });
+  assert.equal(boom.status, 'generated');
+  assert.match(boom.detail!, /Conversion to MP4 failed: disk full/);
 });
 
 test('if the videos cannot be embedded the report fails loudly instead of quietly shipping a PDF without them', (t) => {

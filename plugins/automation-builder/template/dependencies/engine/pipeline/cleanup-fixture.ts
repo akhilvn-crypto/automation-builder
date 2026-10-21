@@ -15,15 +15,15 @@ export interface TestInfoLike {
 
 // Inside a pipeline run (PIPELINE_RUN_ID, set by the runner) registrations are written to that run's created-data/ folder and the
 // pipeline sweeps after the stage. Outside one (plain `npx playwright test`, npm run test:adhoc / test:ui) they go to the ad hoc ledger
-// when the mode has a sweep, and playwright's globalTeardown (global-teardown.ts) sweeps it once every test has finished; with mode
-// "in-test" nothing is written and each test's undo runs as before.
+// in mode "sweep", and `npm run test:adhoc` / `test:ui` sweep it once every test has finished; in mode "test" nothing is written and
+// each test's undo runs right after the test.
 export function startCleanup(rootDir: string, info: TestInfoLike, redact: (text: string) => string, env: NodeJS.ProcessEnv = process.env): CleanupSession {
   const state = loadConfig(rootDir);
   const config = state.status === 'valid' ? state.config : null;
   const guard = cleanupGuard(config);
   const runId = env.PIPELINE_RUN_ID;
   const dir = runId && RUN_ID_PATTERN.test(runId) ? runDir(rootDir, runId) : null;
-  const sweeps = guard.mode === 'in-test+sweep' || guard.mode === 'sweep';
+  const sweeps = guard.mode === 'sweep';
   const idMatch = /^\[([^\]]+)\]/.exec(info.title);
   return new CleanupSession({
     runDirectory: dir && existsSync(dir) ? dir : runId ? null : sweeps ? adhocLedgerDir(rootDir) : null,

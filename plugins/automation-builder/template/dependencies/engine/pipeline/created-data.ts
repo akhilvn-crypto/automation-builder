@@ -1,9 +1,9 @@
 // The test data a run created, and what became of it. Tests (through the `cleanup` fixture) and the explorer (through
 // `cleanup record`) register every record they create; the record is written to the run's created-data/ folder BEFORE anything
 // tries to delete it, so a test that times out or a worker that dies still leaves a trace. Deleting happens in two places:
-//   - in the test, right after it ends (CleanupSession.run, LIFO), when the test registered an undo (not in mode "sweep");
+//   - in the test, right after it ends (CleanupSession.run, LIFO), when the test registered an undo (mode "test" only);
 //   - in a sweep after the run (data-cleanup.ts), for whatever is still listed here, through a way the user declared. The sweep runs
-//     once every test has finished: after the stage in a pipeline run, in Playwright's globalTeardown for a plain `playwright test`.
+//     once every test has finished (mode "sweep" only): after the stage in a pipeline run, after `npm run test:adhoc` / `test:ui` for a plain run.
 // Only what is listed here is ever deleted, and only in an environment the user allowed (never production). No Playwright import.
 
 import { randomBytes } from 'node:crypto';
@@ -178,7 +178,6 @@ export function cleanupGuard(config: AutomationConfig | null): CleanupGuard {
   const environment = config.app.environment;
   const cleanup = config.cleanup;
   if (!cleanup) return { allowed: false, mode: 'unset', environment, reason: 'cleanup is not configured (config.cleanup is absent)' };
-  if (cleanup.mode === 'off') return { allowed: false, mode: 'off', environment, reason: 'cleanup is turned off (cleanup.mode "off")' };
   if (PRODUCTION_ENVIRONMENT.test(environment.trim())) {
     return { allowed: false, mode: cleanup.mode, environment, reason: `environment "${environment}" is a production environment: test data is never deleted there` };
   }

@@ -87,3 +87,27 @@ test('an existing /Names entry is left alone and reported; the page icons still 
   assert.equal(r.annotated, 1);
   assert.deepEqual(listEmbeddedFiles(r.pdf).files.map((f) => f.name), ['TC-1.webm']);
 });
+
+test('an inline item becomes a Screen annotation with a Rendition action that plays the stored MP4 inside the page', () => {
+  const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(3000, 7)]);
+  const r = embedFiles(pdfWithLinks([link(1), link(2)]), [
+    item(1, { fileName: 'TC-1.mp4', mime: 'video/mp4', data: mp4, inline: true }),
+    item(2), // stays an attachment next to it
+  ]);
+  assert.deepEqual([r.embedded, r.annotated, r.players, r.unplaced], [2, 2, 1, []]);
+
+  const back = listEmbeddedFiles(r.pdf);
+  assert.deepEqual(back.players, [{ name: 'TC-1.mp4' }], 'annotation -> action -> rendition -> media clip -> file specification');
+  assert.equal(back.annotations, 1, 'the other video is still a file-attachment icon');
+  assert.deepEqual(back.files.map((f) => [f.name, f.mime, f.sha256]).sort(), [['TC-1.mp4', 'video/mp4', sha(mp4)], ['TC-2.webm', 'video/webm', sha(item(2).data)]]);
+
+  const text = r.pdf.toString('latin1');
+  assert.match(text, /\/Subtype \/Screen/);
+  assert.match(text, /\/S \/Rendition \/OP 0 \/R \d+ 0 R \/AN \d+ 0 R/);
+  assert.match(text, /\/Type \/MediaClip \/S \/MCD \/N \(TC-1\.mp4\) \/CT \(video\/mp4\) \/D \d+ 0 R/);
+  assert.match(text, /\/W 3/, 'plays in the annotation\'s own rectangle');
+  assert.match(text, /\/P 3 0 R/, 'the annotation names its page');
+  assert.match(text, /\/Rect \[10 700 30 720\]/, 'the player takes the link\'s place');
+  assert.ok(!text.includes('C:/work'), 'the builder\'s local paths are gone');
+  assert.ok(r.pdf.includes(mp4), 'the MP4 bytes are inside the PDF');
+});

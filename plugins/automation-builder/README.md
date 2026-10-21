@@ -77,8 +77,11 @@ dependencies/                                not framework
   shared fixture log each `test.step` and take one final-state screenshot; `report build` then writes
   `automation/reports/<run-id>/evidence-report/evidence-report.pdf` (executed steps, one execution video **embedded in the PDF**, one
   final-state screenshot, expected results, per attempt) using the project's own Playwright + Chromium and a dependency-free PDF
-  update (`engine/pipeline/pdf-embed.ts`): no extra package. The videos are WebM file attachments (Acrobat/Reader, Foxit, PDF-XChange;
-  browser viewers may not show attachments), with the on-disk path printed as the fallback.
+  update (`engine/pipeline/pdf-embed.ts`): no extra package. **Video that plays inside the PDF** needs an `ffmpeg` with `libx264` already on the
+  machine (PATH or `FFMPEG_PATH`; never installed by the plugin): each recording is converted to H.264 MP4 (`engine/pipeline/video-transcode.ts`)
+  and stored behind a click-to-play player in the test's section (Adobe Acrobat / Reader; browser PDF viewers cannot play video in a PDF and
+  show the MP4 in the Attachments panel). Without ffmpeg the videos are WebM file attachments (Acrobat/Reader, Foxit, PDF-XChange open them
+  with another program) and the report says why, with the on-disk path printed as the fallback.
   `--update` refreshes an unmodified older `fixtures/test.*` (0.6.x, 0.8.x and 0.9.0 copies) so existing projects can adopt it; the evidence PDF belongs to
   `reporting.mode: audit` with `stepScreenshots` (the key's original name), and password fields are masked in the screenshot.
 - **Nothing left running:** the test runner and the report tools run under `engine/tools/supervise.ts` (a timeout stops the whole process tree;
@@ -90,7 +93,7 @@ dependencies/                                not framework
   undo })`); it is written to `runs/<run-id>/created-data/` first, undone after the test (also a failed or timed-out one), and `pipeline.ts cleanup data
   <run-id> [--dry-run]` sweeps what is left (automatically after execution/healing/regression and at finalization). A sweep removes a record through an
   API the user declared in `config.cleanup.entities` (endpoints are never guessed), or hands UI-only records to the `data-cleaner` agent; the rest is
-  listed in `summary.md` ("Test data") with how to delete it by hand. Only ledger records, only with `cleanup.mode` `in-test`/`in-test+sweep`/`sweep` (`sweep`: tests delete nothing; one sweep once every test has finished — for `npm test` after the
+  listed in `summary.md` ("Test data") with how to delete it by hand. Only ledger records, only with `cleanup.mode` `test` (each test removes its own data when it finishes) or `sweep` (tests delete nothing; one sweep once every test has finished — for `npm test` after the
   execution stage, for `npm run test:adhoc`/`test:ui` by `engine/cli/adhoc-run.ts`; a bare `npx playwright test` is not swept, its records wait for the next sweep), only in an
   allowed non-production environment, at most `cleanup.maxDeletesPerRun` (50) per sweep (`engine/pipeline/created-data.ts`, `data-cleanup.ts`).
   `init --update` refreshes an unmodified older `fixtures/test.*`; a customised one is left alone and the warning says how to add the fixture.

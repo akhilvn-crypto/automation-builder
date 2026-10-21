@@ -76,11 +76,19 @@ How it works:
   `automation/reports/<runId>/evidence-report/evidence-report.html` (one self-contained file, screenshots embedded, each video a
   play-icon link) and prints it to `evidence-report.pdf` with the project's own `@playwright/test` + Chromium
   (`engine/tools/render-pdf.ts`). Chromium cannot embed media, so `engine/pipeline/pdf-embed.ts` then appends a PDF update that
-  turns each link into a file-attachment annotation holding the recording (and lists it in the Attachments panel); the result is read
-  back and each video is compared byte for byte. No extra package is needed.
-- The videos are WebM *file attachments*, not in-page players: Acrobat/Reader, Foxit and PDF-XChange open them; browser viewers may not show
-  attachments. In-page playback would need H.264 MP4 and a transcoder (new dependency, not added). Fallback: the same recordings under
-  `automation/test-results/<runId>/`, whose paths are printed in the PDF. Say this when handing the PDF over.
+  turns each link into an annotation holding the recording (and lists it in the Attachments panel); the result is read
+  back and each video is compared byte for byte, and each in-page player is followed to the file it plays. No extra package is needed.
+- **Playing inside the PDF.** Playwright records WebM, which no PDF viewer plays in a page. When an `ffmpeg` with `libx264` is already
+  available (`FFMPEG_PATH`, else `ffmpeg` on the PATH; `engine/pipeline/video-transcode.ts`; Playwright's own ffmpeg cannot write H.264),
+  `report build` converts each recording to H.264 MP4 (`reports/<runId>/evidence-report/videos/`), stores the MP4 in the PDF and puts a
+  **player** (Screen annotation + Rendition action, a dark 16:9 box) in the test's Execution evidence section: click it and the video plays
+  inside the page in **Adobe Acrobat / Reader**. Browser viewers (Chrome, Edge, Firefox) never play video inside a PDF: they show the
+  Attachments panel, where the MP4 opens in any player. Reporter detail says `N play inside the PDF in Acrobat/Reader, M attachment only`.
+- **Without ffmpeg** (or for a recording that fails to convert) the video stays a WebM *file attachment* (Acrobat/Reader, Foxit and PDF-XChange
+  open it with another program) and the cover page and reporter detail say why. **Never install ffmpeg on your own**: when the user wants
+  playback inside the PDF, tell them it needs an ffmpeg build with libx264 on the PATH (or `FFMPEG_PATH`), and install it only with their
+  explicit yes for that dependency (record it with `deps record`); then run `report build` again. Fallback for any viewer: the recordings under
+  `automation/test-results/<runId>/`, whose paths are printed in the PDF. Not verified in a real Acrobat here: say so when handing it over.
 - Status in `reporters`: `generated` (detail says tests/steps/screenshots/videos embedded/size, and the number of evidence gaps),
   `missing_dependency` (`@playwright/test` or Chromium not installed: ask approval for that dependency, record it, run
   `report build` again) or `failed` (detail has the reason; also when the videos could not be embedded). A gap does not fail the report, but **tell the user about it**.

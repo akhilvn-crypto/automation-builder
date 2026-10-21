@@ -4,8 +4,11 @@
 // (<a href="...#evidence-video-N">) and Chromium turns it into a /Link annotation with that address. This module then appends a
 // PDF *incremental update* (ISO 32000-1 §7.5.6) that
 //   1. stores each video as an /EmbeddedFile stream (the bytes are inside the PDF, not referenced by path or URL),
-//   2. replaces the matching /Link annotation, in place and at the same position, by a /FileAttachment annotation with a play
-//      icon (so the page itself carries the file),
+//   2. replaces the matching /Link annotation, in place and at the same position, by
+//        - a /FileAttachment annotation with a play icon (the viewer opens the file with another program), or, for an item marked
+//          `inline` (H.264 MP4), by a /Screen annotation with a Rendition action (ISO 32000-1 §13.2): the click plays the clip
+//          inside that rectangle of the page, in viewers that implement multimedia (Adobe Acrobat / Reader; browser PDF viewers
+//          never play embedded video),
 //   3. lists the files in the catalog's /Names /EmbeddedFiles tree (so viewers show them in their Attachments panel).
 // Pages and the original objects are never rewritten, only appended to, so the printed report is untouched.
 //
@@ -23,12 +26,14 @@ export interface EmbedItem {
   description: string;
   mime: string; // e.g. "video/webm"
   data: Buffer;
+  inline?: boolean; // play inside the page (needs a format viewers play natively: H.264 MP4) instead of opening it as an attachment
 }
 
 export interface EmbedResult {
   pdf: Buffer;
   embedded: number; // files stored in the PDF
-  annotated: number; // page annotations turned into attachment icons
+  annotated: number; // page annotations turned into attachment icons or players
+  players: number; // of those, the ones that play the clip inside the page (Screen annotation with a Rendition action)
   unplaced: string[]; // tokens whose link was not found in the PDF (the file is attached, but has no icon on a page)
   attachmentList: boolean; // false when the catalog already had /Names and the Attachments-panel list was left alone
 }
@@ -220,9 +225,31 @@ const literal = (s: string): string => `(${s.replace(/[\\()]/g, '\\$&')})`;
 const ICON_SIZE = 24;
 // A blue square with a white play triangle; stretched by the viewer to the annotation's rectangle.
 const ICON = `q 0.12 0.37 0.66 rg 0 0 ${ICON_SIZE} ${ICON_SIZE} re f 1 1 1 rg 8 6 m 8 18 l 19 12 l f Q`;
+// What a player shows before it is clicked: a dark 16:9 panel with a white play triangle (the report reserves a 16:9 box for it).
+const POSTER_W = 160;
+const POSTER_H = 90;
+const POSTER = `q 0.09 0.13 0.2 rg 0 0 ${POSTER_W} ${POSTER_H} re f 1 1 1 rg 66 29 m 66 61 l 100 45 l f Q`;
+
+// Page object number of every annotation listed in a page's /Annots (the Screen annotation names its page).
+function annotationPages(pdf: Buffer, xref: Xref): Map<number, number> {
+  const pages = new Map<number, number>();
+  for (const [num, e] of xref.entries) {
+    const text = smallObject(pdf, e, num);
+    if (!text || !/\/Type\s*\/Page\b/.test(text)) continue;
+    let annots: string | undefined;
+    try { annots = parseDict(text).get('Annots'); } catch { continue; }
+    const through = refNumber(annots);
+    if (through !== null) {
+      const target = xref.entries.get(through);
+      annots = target ? smallObject(pdf, target, through) ?? undefined : undefined;
+    }
+    for (const m of annots?.matchAll(/(\d+)\s+\d+\s+R/g) ?? []) pages.set(Number(m[1]), num);
+  }
+  return pages;
+}
 
 export function embedFiles(pdf: Buffer, items: EmbedItem[]): EmbedResult {
-  if (items.length === 0) return { pdf, embedded: 0, annotated: 0, unplaced: [], attachmentList: true };
+  if (items.length === 0) return { pdf, embedded: 0, annotated: 0, players: 0, unplaced: [], attachmentList: true };
   const names = items.map((i) => safeName(i.fileName));
   if (new Set(names).size !== names.length) throw new PdfEmbedError('attachment file names must be unique');
   if (new Set(items.map((i) => i.token)).size !== items.length) throw new PdfEmbedError('attachment tokens must be unique');
@@ -254,7 +281,11 @@ export function embedFiles(pdf: Buffer, items: EmbedItem[]): EmbedResult {
   let next = xref.size;
   const iconNum = next++;
   object(iconNum, 0, `<</Type /XObject /Subtype /Form /BBox [0 0 ${ICON_SIZE} ${ICON_SIZE}] /Resources <<>> /Length ${ICON.length}>>\nstream\n${ICON}\nendstream`);
-  const specs: { token: string; name: string; item: EmbedItem; spec: number }[] = [];
+  const posterNum = items.some((i) => i.inline) ? next++ : null;
+  if (posterNum !== null) {
+    object(posterNum, 0, `<</Type /XObject /Subtype /Form /BBox [0 0 ${POSTER_W} ${POSTER_H}] /Resources <<>> /Length ${POSTER.length}>>\nstream\n${POSTER}\nendstream`);
+  }
+  const specs: { token: string; name: string; item: EmbedItem; spec: number; rendition: number | null }[] = [];
   items.forEach((item, n) => {
     const stream = next++;
     const spec = next++;
@@ -267,14 +298,26 @@ export function embedFiles(pdf: Buffer, items: EmbedItem[]): EmbedResult {
       Buffer.from('\nendstream', 'latin1'),
     ]));
     object(spec, 0, `<</Type /Filespec /F ${literal(names[n]!)} /UF ${hexText(names[n]!)} /Desc ${hexText(item.description)} /EF <</F ${stream} 0 R /UF ${stream} 0 R>>>>`);
-    specs.push({ token: item.token, name: names[n]!, item, spec });
+    // A clip that points at the stored file and a rendition that plays it inside the annotation (window type 3 = "the screen
+    // annotation"); the permission lets the viewer hand the bytes to its media player through a temporary file.
+    let rendition: number | null = null;
+    if (item.inline) {
+      const clip = next++;
+      rendition = next++;
+      const cleanMime = item.mime.replace(/[^A-Za-z0-9.+\-/]/g, '');
+      object(clip, 0, `<</Type /MediaClip /S /MCD /N ${literal(names[n]!)} /CT ${literal(cleanMime)} /D ${spec} 0 R /P <</TF (TEMPACCESS)>>>>`);
+      object(rendition, 0, `<</Type /Rendition /S /MR /N ${literal(names[n]!)} /C ${clip} 0 R /P <</Type /MediaPlayParams /BE <</C true /A true /F 0>>>> /SP <</Type /MediaScreenParams /BE <</W 3>>>>>>`);
+    }
+    specs.push({ token: item.token, name: names[n]!, item, spec, rendition });
   });
+  const pageOf = items.some((i) => i.inline) ? annotationPages(pdf, xref) : new Map<number, number>();
 
   // Swap each marked Link annotation for a FileAttachment annotation at the same place (same object number). The superseded Link
   // objects stay in the file as unreachable bytes; their addresses (the builder's local paths) are blanked in place, same length.
   const placed = new Set<string>();
   const scrub: { from: number; to: number }[] = [];
   let annotated = 0;
+  let players = 0;
   for (const [num, e] of xref.entries) {
     const text = smallObject(pdf, e, num);
     if (!text || !/\/Subtype\s*\/Link\b/.test(text) || !text.includes('#evidence-')) continue;
@@ -285,7 +328,14 @@ export function embedFiles(pdf: Buffer, items: EmbedItem[]): EmbedResult {
     const hit = specs.find((s) => uri.endsWith(`#${s.token}`));
     const rect = dict.get('Rect');
     if (!hit || !rect) continue;
-    object(num, e.gen, `<</Type /Annot /Subtype /FileAttachment /F 4 /Rect ${rect} /Name /PushPin /C [0.12 0.37 0.66] /Contents ${hexText(hit.item.description)} /FS ${hit.spec} 0 R /AP <</N ${iconNum} 0 R>>>>`);
+    if (hit.rendition !== null && posterNum !== null) {
+      const page = pageOf.get(num);
+      object(num, e.gen, `<</Type /Annot /Subtype /Screen /F 4 /Rect ${rect}${page === undefined ? '' : ` /P ${page} 0 R`} /Contents ${hexText(hit.item.description)} `
+        + `/AP <</N ${posterNum} 0 R>> /A <</Type /Action /S /Rendition /OP 0 /R ${hit.rendition} 0 R /AN ${num} 0 R>>>>`);
+      players++;
+    } else {
+      object(num, e.gen, `<</Type /Annot /Subtype /FileAttachment /F 4 /Rect ${rect} /Name /PushPin /C [0.12 0.37 0.66] /Contents ${hexText(hit.item.description)} /FS ${hit.spec} 0 R /AP <</N ${iconNum} 0 R>>>>`);
+    }
     placed.add(hit.token);
     annotated++;
     const at = pdf.indexOf(uriRaw!, e.offset, 'latin1');
@@ -322,7 +372,7 @@ export function embedFiles(pdf: Buffer, items: EmbedItem[]): EmbedResult {
   const out = Buffer.concat([pdf, ...chunks]);
   for (const r of scrub) out.fill(0x78, r.from, r.to); // "x"
   return {
-    pdf: out, embedded: items.length, annotated,
+    pdf: out, embedded: items.length, annotated, players,
     unplaced: items.filter((i) => !placed.has(i.token)).map((i) => i.token), attachmentList,
   };
 }
@@ -331,7 +381,9 @@ export function embedFiles(pdf: Buffer, items: EmbedItem[]): EmbedResult {
 
 // Reads the files stored in a PDF the way a viewer finds them: through the catalog's /Names /EmbeddedFiles tree and through
 // FileAttachment annotations. Returns each file's size and SHA-256 over the bytes actually inside the PDF.
-export function listEmbeddedFiles(pdf: Buffer): { files: EmbeddedFileInfo[]; annotations: number } {
+// `players` lists the Screen annotations that play a stored clip inside the page, each with the name of the file it plays (followed
+// from the annotation's Rendition action through the rendition and media clip to the file specification).
+export function listEmbeddedFiles(pdf: Buffer): { files: EmbeddedFileInfo[]; annotations: number; players: { name: string | null }[] } {
   const xref = readXref(pdf);
   const get = (num: number | null): string | null => {
     const e = num === null ? undefined : xref.entries.get(num);
@@ -362,9 +414,20 @@ export function listEmbeddedFiles(pdf: Buffer): { files: EmbeddedFileInfo[]; ann
   }
 
   let annotations = 0;
+  const players: { name: string | null }[] = [];
   for (const [num, e] of xref.entries) {
     const text = smallObject(pdf, e, num);
-    if (!text || !/\/Subtype\s*\/FileAttachment\b/.test(text)) continue;
+    if (!text) continue;
+    if (/\/Subtype\s*\/Screen\b/.test(text) && text.includes('/Rendition')) {
+      const action = asDict(parseDict(text).get('A'));
+      const clip = asDict(asDict(action?.get('R'))?.get('C'));
+      const specNum = refNumber(clip?.get('D'));
+      const file = asDict(clip?.get('D'));
+      players.push({ name: file?.get('F') ? decodeLiteral(file.get('F')!) : null });
+      if (specNum !== null && !specs.has(specNum)) specs.set(specNum, '');
+      continue;
+    }
+    if (!/\/Subtype\s*\/FileAttachment\b/.test(text)) continue;
     annotations++;
     const fs = refNumber(parseDict(text).get('FS'));
     if (fs !== null && !specs.has(fs)) specs.set(fs, '');
@@ -391,5 +454,5 @@ export function listEmbeddedFiles(pdf: Buffer): { files: EmbeddedFileInfo[]; ann
     const name = spec.get('F') ? decodeLiteral(spec.get('F')!) : treeName;
     files.push({ name, size: data.length, sha256: createHash('sha256').update(data).digest('hex'), mime: dict.get('Subtype')?.replace(/^\//, '').replace('#2F', '/') ?? null });
   }
-  return { files, annotations };
+  return { files, annotations, players };
 }
