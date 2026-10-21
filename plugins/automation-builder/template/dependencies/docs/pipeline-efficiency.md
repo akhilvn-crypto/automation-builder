@@ -111,13 +111,13 @@ secrets and credential-shaped text.
 |---|---|---|
 | `standard` | html + json; no allure/evidence-pdf; no record-everything video/screenshot/trace | development runs |
 | `full` | html + json + allure; any evidence settings | team testing and CI |
-| `audit` | full; plus opt-in `reporting.stepScreenshots` and the `evidence-pdf` reporter (which needs step screenshots) | sign-off |
+| `audit` | full; plus opt-in `reporting.stepScreenshots` and the `evidence-pdf` reporter (which needs step evidence and `evidence.video: "on"`: one embedded video per test) | sign-off |
 
 `config mode-preset <mode> [--step-screenshots] [--evidence-pdf]` prints a valid proposal; `config report-plan` lists the software the chosen
 reporters need and what is missing. Nothing is installed without a separate approval. `report build` keeps `reportGeneration` (did each selected
 reporter produce its files, how long, how many files and bytes) apart from `counts`, verifies the files exist before saying a report was
-generated, builds only selected reporters, and records which result files the reports came from. Step screenshots mask password fields and
-`reporting.maskSelectors`; visible page data is not masked.
+generated, builds only selected reporters, and records which result files the reports came from. The final-state screenshot masks password fields and
+`reporting.maskSelectors`; visible page data is not masked, and the embedded videos are not masked at all.
 
 ## Known limits
 

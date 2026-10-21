@@ -61,9 +61,10 @@ Rules for asking (use AskUserQuestion; group independent choices into one call, 
 | `execution.workers` | Leave unset (a conservative default of 2) unless the user wants a number. More workers only after `run compare` shows no test got worse | unset |
 
 Briefly mention storage cost: `on` for video/trace on every test is large; failure-only keeps evidence focused.
-`evidence-pdf` is independent of `evidence.screenshot`: its per-step screenshots are always taken (password fields and
+`evidence-pdf` is independent of `evidence.screenshot`: its one final-state screenshot per test is always taken (password fields and
 `reporting.maskSelectors` are masked, visible page data is not), so the screenshot mode only controls Playwright's own failure
-screenshot. If the user picks `evidence-pdf` without `chromium` in `browsers`, preflight adds a `browser:chromium` requirement
+screenshot. It embeds one execution video per test, so it **requires `evidence.video: "on"`** (the config is rejected otherwise;
+`config mode-preset audit --evidence-pdf` sets it). Say so when proposing it: every test is recorded, and the videos are not masked. If the user picks `evidence-pdf` without `chromium` in `browsers`, preflight adds a `browser:chromium` requirement
 (purpose "Render the evidence PDF"), approved like any other dependency. Standard mode rejects record-everything evidence
 (`on` for video/screenshot/trace); full and audit allow it. `config report-plan` lists the software the chosen reporters need and
 which of it is missing; it never installs anything.

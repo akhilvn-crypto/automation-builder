@@ -59,7 +59,8 @@ export function renderPlaywrightConfig(config: AutomationConfig, opts: RenderOpt
     else if (r === 'allure' && opts.allure) {
       reporters.push(`['allure-playwright', { resultsDir: \`${REPORTS_DIR}/\${scope}/allure-results\`, detail: true, suiteTitle: true }]`);
     }
-    // 'evidence-pdf' has no Playwright reporter: the fixture records step screenshots and report_generation builds the PDF.
+    // 'evidence-pdf' has no Playwright reporter: Playwright records the per-test video (evidence.video "on"), the fixture records
+    // the step log and a final-state screenshot, and report_generation builds the PDF with the videos embedded.
   }
 
   // The fallback worker count when nothing sets PW_WORKERS: the plan without per-worker accounts (they are read from .env at run time).

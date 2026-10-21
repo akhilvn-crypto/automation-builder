@@ -287,7 +287,9 @@ test('report generation failure is visible and blocks a clean finish', (t) => {
 });
 
 test('the evidence-pdf reporter writes the evidence page and reports missing rendering tools instead of claiming a PDF', (t) => {
-  const root = setupProject(t, ['html', 'json', 'allure', 'evidence-pdf'], { reporting: { mode: 'audit', stepScreenshots: true } });
+  const root = setupProject(t, ['html', 'json', 'allure', 'evidence-pdf'], {
+    reporting: { mode: 'audit', stepScreenshots: true }, evidence: { video: 'on', screenshot: 'only-on-failure', trace: 'retain-on-failure' },
+  });
   const runId = startRun(root);
   exploreGenerateReview(root, runId);
   scenario(root, 'initial', [pass('TC-1', 'a'), pass('TC-2', 'b'), pass('TC-3', 'c'), pass('TC-4', 'd')]);

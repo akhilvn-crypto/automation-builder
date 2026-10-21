@@ -69,11 +69,14 @@ dependencies/                                not framework
 - **Migration:** a project scaffolded by 0.2.x (everything inside `automation/`) is detected by `init` and migrated:
   pipeline data moves to `dependencies/`, `utils/` becomes `helpers/`, `tests/setup/` becomes `auth/`, imports are rewritten, and
   the plugin-managed engine copies are replaced. `--dry-run` shows the plan first.
-- **Evidence PDF:** choosing the `evidence-pdf` reporter makes the shared fixture screenshot every `test.step`; `report build`
-  then writes `automation/reports/<run-id>/evidence-report/evidence-report.pdf` (every executed step next to its screenshot,
-  per attempt, with expected results and failures) using the project's own Playwright + Chromium: no extra package.
-  `--update` refreshes an unmodified older `fixtures/test.*` (0.6.x and 0.8.x copies) so existing projects can adopt it; the evidence PDF belongs to
-  `reporting.mode: audit` with `stepScreenshots`, and password fields are masked in the screenshots.
+- **Evidence PDF:** choosing the `evidence-pdf` reporter makes Playwright record one video per test (`evidence.video` must be `on`) and the
+  shared fixture log each `test.step` and take one final-state screenshot; `report build` then writes
+  `automation/reports/<run-id>/evidence-report/evidence-report.pdf` (executed steps, one execution video **embedded in the PDF**, one
+  final-state screenshot, expected results, per attempt) using the project's own Playwright + Chromium and a dependency-free PDF
+  update (`engine/pipeline/pdf-embed.ts`): no extra package. The videos are WebM file attachments (Acrobat/Reader, Foxit, PDF-XChange;
+  browser viewers may not show attachments), with the on-disk path printed as the fallback.
+  `--update` refreshes an unmodified older `fixtures/test.*` (0.6.x, 0.8.x and 0.9.0 copies) so existing projects can adopt it; the evidence PDF belongs to
+  `reporting.mode: audit` with `stepScreenshots` (the key's original name), and password fields are masked in the screenshot.
 - The template is organized as `template/dependencies` (engine, docs, demo, engine tests) and
   `template/framework/{common,typescript,javascript}`; the language-specific twins must stay functionally identical.
 

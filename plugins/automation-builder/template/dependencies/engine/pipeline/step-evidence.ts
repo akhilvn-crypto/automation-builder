@@ -1,9 +1,11 @@
-// Step evidence: the contract between the shared test fixture (which records every executed test.step with a
-// screenshot while a test runs) and the evidence-pdf report (which lays them out afterwards).
+// Step evidence: the contract between the shared test fixture (which records every executed test.step while a test runs and
+// takes one final-state screenshot) and the evidence-pdf report (which lays them out afterwards, next to the test's video).
 //
-// Per test attempt the fixture attaches one JPEG per step (attachment name "step-NN: <title>", "final: final state") and the
-// log itself under STEP_LOG_ATTACHMENT. Playwright copies path attachments into the attempt's attachments/ folder, so the
-// log refers to each screenshot by its attachment NAME, and the report finds the file through the attempt's attachment list.
+// Per test attempt the fixture attaches one JPEG (attachment name "final") and the log itself under STEP_LOG_ATTACHMENT.
+// Playwright copies path attachments into the attempt's attachments/ folder, so the log refers to the screenshot by its
+// attachment NAME, and the report finds the file through the attempt's attachment list. The journey video is Playwright's own
+// "video" attachment (evidence.video "on"), not part of this log. Logs written by older fixtures also carry a screenshot per
+// step; those fields are ignored.
 // Pure; no Playwright import (the fixtures import this file, so keep it dependency-free).
 
 export const STEP_LOG_SCHEMA_VERSION = 1;
@@ -21,8 +23,6 @@ export interface StepEvidenceEntry {
   startedAt: string; // ISO
   durationMs: number;
   error: string | null; // first lines of the failure, secrets masked
-  screenshot: string | null; // name of the screenshot attachment, null when the page could not be captured
-  screenshotNote: string | null; // why there is no screenshot
 }
 
 export interface StepEvidenceLog {
@@ -50,8 +50,6 @@ export function parseStepLog(v: unknown): StepEvidenceLog | null {
       startedAt: str(s.startedAt) ?? '',
       durationMs: typeof s.durationMs === 'number' ? s.durationMs : 0,
       error: str(s.error),
-      screenshot: str(s.screenshot),
-      screenshotNote: str(s.screenshotNote),
     });
   }
   return {

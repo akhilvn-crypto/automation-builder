@@ -31,24 +31,34 @@ Missing software is proposed, never installed: ask for each item separately (pip
 opt-in because they slow runs and add many files.
 
 ## The custom evidence report (`evidence-pdf`)
-Chosen like any reporter. It is the one to offer when the user needs proof of what ran: **a PDF where each executed step is
-shown next to the screenshot taken when that step ended**, per test and per attempt (retries and the regression run are
-separate sections), followed by the test case's preconditions, steps and expected results, the error of any failed step,
-and the final (or failure) state of the page. Cover page: run, environment, counts, contents, and a list of **evidence gaps**.
+Chosen like any reporter. It is the one to offer when the user needs proof of what ran: **a PDF with, per test and per attempt
+(retries and the regression run are separate sections), the executed steps (result, duration, error), ONE video of the complete
+execution journey stored inside the PDF, and ONE screenshot of the final (or failure) state**, followed by the test case's
+preconditions, steps and expected results. Cover page: run, environment, counts, contents, how to play the videos, and a list of
+**evidence gaps**.
 
 How it works:
+- Playwright records one video per test: the reporter requires `evidence.video: "on"` (config validation rejects anything else).
 - While tests run, the shared fixture (`fixtures/test.<ext>`, auto fixture `stepEvidence`) wraps `test.step`: every step
-  records its outcome, duration and error (secrets masked) and a JPEG screenshot taken when the step ends, also when it fails.
-  A final-state screenshot is taken when the test ends. This only happens when `reporters` contains `evidence-pdf` (audit mode with `stepScreenshots`). Password inputs and `reporting.maskSelectors` are masked in every screenshot.
-  Tests that import `test` from `@playwright/test` directly, or that never call `test.step`, have no step evidence:
-  they appear in the report with a gap note instead of silently missing.
-- `report build` reads those logs from the execution results, writes `automation/reports/<runId>/evidence-report/evidence-report.html`
-  (one self-contained file, screenshots embedded) and prints it to `evidence-report.pdf` with the project's own
-  `@playwright/test` + Chromium (`engine/tools/render-pdf.ts`). No extra package is needed.
-- Status in `reporters`: `generated` (detail says tests/steps/screenshots/size, and the number of evidence gaps),
+  records its outcome, duration and error (secrets masked), and a final-state screenshot is taken when the test ends. This only
+  happens when `reporters` contains `evidence-pdf` (audit mode with `stepScreenshots`). Password inputs and `reporting.maskSelectors`
+  are masked in the screenshot (not in the video).
+  Tests that import `test` from `@playwright/test` directly, or that never call `test.step`, have no step log:
+  they appear in the report with a gap note instead of silently missing (Playwright's own screenshot stands in for the final state).
+- `report build` reads those logs and the `video` attachments from the execution results, writes
+  `automation/reports/<runId>/evidence-report/evidence-report.html` (one self-contained file, screenshots embedded, each video a
+  play-icon link) and prints it to `evidence-report.pdf` with the project's own `@playwright/test` + Chromium
+  (`engine/tools/render-pdf.ts`). Chromium cannot embed media, so `engine/pipeline/pdf-embed.ts` then appends a PDF update that
+  turns each link into a file-attachment annotation holding the recording (and lists it in the Attachments panel); the result is read
+  back and each video is compared byte for byte. No extra package is needed.
+- The videos are WebM *file attachments*, not in-page players: Acrobat/Reader, Foxit and PDF-XChange open them; browser viewers may not show
+  attachments. In-page playback would need H.264 MP4 and a transcoder (new dependency, not added). Fallback: the same recordings under
+  `automation/test-results/<runId>/`, whose paths are printed in the PDF. Say this when handing the PDF over.
+- Status in `reporters`: `generated` (detail says tests/steps/screenshots/videos embedded/size, and the number of evidence gaps),
   `missing_dependency` (`@playwright/test` or Chromium not installed: ask approval for that dependency, record it, run
-  `report build` again) or `failed` (detail has the reason). A gap does not fail the report, but **tell the user about it**.
-- Screenshots show the page exactly as rendered, so values typed into visible fields appear in them; password fields are masked by the browser.
+  `report build` again) or `failed` (detail has the reason; also when the videos could not be embedded). A gap does not fail the report, but **tell the user about it**.
+- Screenshots and videos show the page exactly as rendered, so values typed into visible fields appear in them; only password fields
+  are masked, and only in the screenshot.
 
 ## Build and verify
 `node dependencies/engine/cli/pipeline.ts report build <runId>`:

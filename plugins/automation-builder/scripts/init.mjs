@@ -96,28 +96,33 @@ function copyEntry(srcRel, baseDir, destRel, overwrite) {
   }
 }
 
-// SHA-256 (line endings normalised to LF) of every fixtures/test.* this plugin shipped before the current one (0.9.0: masked step
-// screenshots, credential-shaped text redacted in diagnostics). A project whose copy still matches one of them was never edited,
-// so --update may replace it with the current one.
+// SHA-256 (line endings normalised to LF) of every fixtures/test.* this plugin shipped before the current one (the last entries are
+// 0.9.0: a screenshot per step, masked; credential-shaped text redacted in diagnostics). A project whose copy still matches one of
+// them was never edited, so --update may replace it with the current one.
 const SHIPPED_FIXTURES = {
   ts: ['aef3bb04840a93179755eeb453c5f78db33e5a2efadb592b48ec611424c1cbc0', '297e0fa4e75528b3e8d10798007f0be5adf86149b897760294fe9e4599c3f561',
     'de171ef8e565c78196c56b7d0239922ffb21d1461e1d0078768eca3747449fd1', 'a603275b0f744dd54d1c01f4de9c52022c2590f1c3632a018a352236b9255805',
-    '6d0b806b826a052d0eb3f08f7c78f287d8e503ca62945c881b91038903adaa67'],
+    '6d0b806b826a052d0eb3f08f7c78f287d8e503ca62945c881b91038903adaa67', 'd5d14f1f3cc8278f3bf4c66bdab33a174a559b8afe884f0c56accdd15c6609b2'],
   js: ['6cdd6a23697dd5f5b263ae070004ded839bbd02e113854c2d1fa0616833ae91d', 'c0c13b128c70c3454dad6d067ff7e2402d9f001fe51017f1b9fcf46ef8700953',
-    'b7c0c9e751dbee22f2246e4e7d490198d8d18869076a8d3aa618443756bfa0d1', '6c9cacdec46e9590d99c7389db957ac1767d4d31585d24efc75d8f9c9b6be8bd'],
+    'b7c0c9e751dbee22f2246e4e7d490198d8d18869076a8d3aa618443756bfa0d1', '6c9cacdec46e9590d99c7389db957ac1767d4d31585d24efc75d8f9c9b6be8bd',
+    'a27b871788d1e9d42cf7b0d5e4155426aaa5b3af7a6addb0eb1331178949b99c'],
 };
 
-// fixtures/test.* gained the stepEvidence fixture (0.7.0) and, in 0.9.0, masking of password fields and credential-shaped text.
-// --update brings an unmodified older copy up to date; a customised copy is never touched, but the user is told how to get it.
+// The current fixture says so in a comment. Its predecessors had none (0.9.0 had maskSelectors but still took a screenshot per step).
+const FIXTURE_REVISION_MARKER = 'evidence-fixture-revision: 2';
+
+// fixtures/test.* gained the stepEvidence fixture (0.7.0), masking of password fields and credential-shaped text (0.9.0), and then
+// one final-state screenshot instead of one per step. --update brings an unmodified older copy up to date; a customised copy is
+// never touched, but the user is told how to get it.
 function refreshShippedFixture(language, ext) {
   const dest = path.join(fw, 'fixtures', `test.${ext}`);
   if (!existsSync(dest) || values.force || !values.update) return;
   const text = readFileSync(dest, 'utf8').replace(/\r\n/g, '\n');
-  if (text.includes('maskSelectors')) return;
+  if (text.includes(FIXTURE_REVISION_MARKER)) return;
   if (SHIPPED_FIXTURES[ext].includes(createHash('sha256').update(text).digest('hex'))) {
     copyEntry(`framework/${language}/fixtures/test.${ext}`, fw, `fixtures/test.${ext}`, true);
   } else {
-    summary.warnings.push(`${rel(dest)} was customised, so it was not updated. It lacks the 0.9.0 changes (masked step screenshots for the evidence-pdf reporter, credential-shaped text redacted in diagnostics): copy them from ${path.join(TEMPLATE, 'framework', language, 'fixtures', `test.${ext}`)} into your file (or run init --force to replace the file).`);
+    summary.warnings.push(`${rel(dest)} was customised, so it was not updated. It lacks the latest changes (one final-state screenshot per test instead of one per step, for the evidence-pdf reporter; masking; credential-shaped text redacted in diagnostics): copy them from ${path.join(TEMPLATE, 'framework', language, 'fixtures', `test.${ext}`)} into your file (or run init --force to replace the file).`);
   }
 }
 

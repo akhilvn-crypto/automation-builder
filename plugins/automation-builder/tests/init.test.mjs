@@ -223,10 +223,10 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     const kept = init(root, '--update');
     assert.equal(readFileSync(fixture, 'utf8'), custom);
     assert.ok(!kept.json.overwritten.includes(`automation/fixtures/test.${ext}`));
-    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('0.9.0')), JSON.stringify(kept.json.warnings));
+    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('final-state screenshot')), JSON.stringify(kept.json.warnings));
 
     // A copy that already has the current fixture is left alone silently.
-    writeFileSync(fixture, `${custom}// maskSelectors\n`);
+    writeFileSync(fixture, `${custom}// evidence-fixture-revision: 2\n`);
     const quiet = init(root, '--update');
     assert.ok(!quiet.json.warnings.some((w) => w.includes('customised')));
   });
@@ -243,7 +243,25 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     const current = readFileSync(fixture, 'utf8');
     assert.match(current, /maskSelectors/);
     assert.match(current, /redactSensitive/);
-    assert.match(current, /input\[type="password"\]/, 'password fields are always masked in step screenshots');
+    assert.match(current, /input\[type="password"\]/, 'password fields are always masked in the screenshot');
+  });
+
+  test(`${language}: --update brings the unmodified 0.9.0 fixtures/test.${ext} (a screenshot per step) to one final-state screenshot`, (t) => {
+    const root = project(t);
+    assert.equal(init(root, '--language', language).code, 0);
+    const fixture = path.join(root, 'automation', 'fixtures', `test.${ext}`);
+    const shipped = readFileSync(path.join(DATA, `fixture-0.9.0.${ext}.txt`), 'utf8');
+    assert.match(shipped, /maskSelectors/);
+    assert.match(shipped, /step-\$\{String\(index\)/, 'the 0.9.0 fixture took a screenshot per step');
+    writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
+    assert.ok(init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    const current = readFileSync(fixture, 'utf8');
+    assert.match(current, /evidence-fixture-revision: 2/);
+    assert.doesNotMatch(current, /step-\$\{String\(index\)/, 'no screenshot per step any more');
+    assert.match(current, /capture\(r, 'final'\)/, 'the final-state screenshot is still taken');
+    assert.match(current, /input\[type="password"\]/);
+    // The current fixture is then left alone.
+    assert.ok(!init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
   });
 }
 

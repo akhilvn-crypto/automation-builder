@@ -10,8 +10,8 @@ export const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
 export const VIDEO_MODES = ['off', 'on', 'retain-on-failure'] as const;
 export const SCREENSHOT_MODES = ['off', 'on', 'only-on-failure'] as const;
 export const TRACE_MODES = ['off', 'on', 'on-first-retry', 'retain-on-failure'] as const;
-// 'evidence-pdf' is the pipeline's own report: a PDF listing every executed step with its screenshot. It is built after
-// the run by report_generation, not by a Playwright reporter.
+// 'evidence-pdf' is the pipeline's own report: a PDF with, per test, the executed steps, one embedded execution video and one
+// final-state screenshot. It is built after the run by report_generation, not by a Playwright reporter.
 export const REPORTERS = ['html', 'json', 'allure', 'junit', 'evidence-pdf'] as const;
 // How much reporting a run produces; see MODE_PROFILES in reporting-mode.ts.
 export const REPORT_MODES = ['standard', 'full', 'audit'] as const;
@@ -77,9 +77,10 @@ export interface AutomationConfig {
   // Absent = the reporters and evidence above are used as chosen, with no mode rules applied.
   reporting?: {
     mode: ReportMode;
-    // Audit only: capture a screenshot after every test.step. Opt-in because it is slow and produces many files.
+    // Audit only: record step evidence (the step log and a final-state screenshot per test) for the evidence PDF. Opt-in because it
+    // adds files to every test. The key keeps its original name so existing configs stay valid.
     stepScreenshots?: boolean;
-    // CSS selectors masked in step screenshots (password inputs are always masked).
+    // CSS selectors masked in the final-state screenshot (password inputs are always masked).
     maskSelectors?: string[];
   };
   healing: {
@@ -339,7 +340,9 @@ function checkReporting(c: Checker, raw: Obj, reporting: Obj): void {
   if (reporting.stepScreenshots === true && mode !== 'audit') c.invalid('reporting.stepScreenshots', 'step screenshots are an audit-mode option');
   if (has('evidence-pdf')) {
     if (mode !== 'audit') c.invalid('reporters', 'the evidence-pdf reporter needs reporting.mode "audit"');
-    if (reporting.stepScreenshots !== true) c.invalid('reporting.stepScreenshots', 'the evidence-pdf reporter needs reporting.stepScreenshots true (it lays out the step screenshots)');
+    if (reporting.stepScreenshots !== true) c.invalid('reporting.stepScreenshots', 'the evidence-pdf reporter needs reporting.stepScreenshots true (it records the step log and the final-state screenshot)');
+    const ev = isObj(raw.evidence) ? raw.evidence : {};
+    if (ev.video !== 'on') c.invalid('evidence.video', 'the evidence-pdf reporter embeds one execution video per test, so evidence.video must be "on" (a failure-only recording leaves passing tests without one)');
   }
 }
 

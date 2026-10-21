@@ -266,23 +266,32 @@ limits are in `dependencies/docs/pipeline-efficiency.md` after `init`, and in `p
 ## Custom evidence report (`evidence-pdf`)
 
 For QA sign-off you often need proof of *what was executed*, not just a pass/fail count. Choose **audit** report mode during setup and
-opt in to step screenshots and the **evidence-pdf** reporter (both off by default), and the run ends with
+opt in to step evidence and the **evidence-pdf** reporter (both off by default), and the run ends with
 `automation/reports/<run-id>/evidence-report/evidence-report.pdf`:
 
 - a cover page with the run, environment, counts, a clickable list of tests, and any **evidence gaps**;
-- per test: the module, preconditions, the steps of the test case, then **every executed step with its screenshot**
-  (taken the moment the step ended, also when it failed), its result and duration, the error of a failed step, and a
-  final-state screenshot after the last assertion (or at the failure);
-- retries and the regression re-run appear as their own attempts, so a flaky test shows the failing attempt too;
+- per test: the module, preconditions, the steps of the test case, a compact table of the **executed steps** (result,
+  duration, the error of a failed step), **one video of the complete execution journey embedded in the PDF**, and
+  **one screenshot of the final state** (after the last assertion, or at the failure);
+- retries and the regression re-run appear as their own attempts (each with its own video), so a flaky test shows the failing attempt too;
 - the test case's expected results, with the test's overall result.
 
-How it is made: the shared `fixtures/test.*` records each `test.step` and its screenshot while the tests run (only when
-this reporter is chosen); `report build` lays them out as one self-contained HTML file and prints it with the project's own
-Playwright + Chromium, so there is **no extra package**. Chromium must be installed (preflight asks to approve it if you
-only run Firefox/WebKit). Generated tests wrap each expected result in `test.step('Expected: …')`, so every check has its own
-screenshot. Cost: a JPEG per step for every test, passing ones included.
+How it is made: Playwright records one video per test (`evidence.video` must be `"on"`; the evidence-pdf reporter requires it). The
+shared `fixtures/test.*` records each `test.step` and the final-state screenshot (only when this reporter is chosen); `report build`
+lays them out as one self-contained HTML file and prints it with the project's own Playwright + Chromium, so there is **no extra
+package**. Chromium cannot embed media, so each video's play-icon link is then replaced, in an appended PDF update
+(`engine/pipeline/pdf-embed.ts`, no library), by a file-attachment annotation holding the recording, and the videos are listed in the
+PDF's Attachments panel. The PDF is read back and every video is checked byte for byte; if that fails the reporter fails rather than
+shipping a PDF without its videos. Chromium must be installed (preflight asks to approve it if you only run Firefox/WebKit).
+Cost: a video per test for every test (WebM, typically tens to a few hundred KB), passing ones included, and one screenshot per attempt.
 
-Password fields (and `reporting.maskSelectors`) are masked in the screenshots; other visible page data is not.
+**Viewer support and fallback.** The videos are *embedded files*, not in-page players: Playwright records WebM and PDF in-page
+playback (RichMedia/Screen annotations) needs H.264 MP4, which would need a transcoder such as ffmpeg (a new dependency, not added).
+Adobe Acrobat/Reader, Foxit and PDF-XChange open the attachment from the icon or Attachments panel; browser viewers may not show
+attachments at all. Fallback: the cover page explains this, and each video's section prints the path of the same recording under
+`automation/test-results/<run-id>/`.
+
+Password fields (and `reporting.maskSelectors`) are masked in the screenshots; other visible page data is not, and the videos are not masked at all.
 
 Existing project? Run `/automation-builder:init --update`: an unmodified `fixtures/test.*` is refreshed; a customised one
 is left alone and you get the exact snippet to copy.

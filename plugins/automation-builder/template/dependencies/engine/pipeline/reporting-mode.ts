@@ -3,7 +3,7 @@
 //
 //   standard  JSON + Playwright HTML; failure-focused screenshots/traces       default development runs
 //   full      standard + Allure + video retained for failures                  team testing and CI
-//   audit     full + opt-in step screenshots and the optional evidence PDF     formal sign-off
+//   audit     full + opt-in step evidence and the optional evidence PDF        formal sign-off
 //
 // Validation of a configuration against its mode lives in config/schema.ts; this file turns a mode into a plan the setup
 // flow and `report build` can show, and into a preset the user can approve and save.
@@ -33,7 +33,7 @@ export const MODE_PROFILES: Record<ReportMode, ModeProfile> = {
   audit: {
     mode: 'audit', intendedFor: 'formal sign-off or audit', reporters: ['json', 'html', 'allure'],
     evidence: { video: 'retain-on-failure', screenshot: 'on', trace: 'retain-on-failure' },
-    needs: ['allure-playwright', 'allure CLI'], volume: 'large: a screenshot per test, more with step screenshots and the PDF',
+    needs: ['allure-playwright', 'allure CLI'], volume: 'large: a screenshot per test, plus a video per test with the evidence PDF',
   },
 };
 
@@ -53,12 +53,14 @@ export function presetFor(mode: ReportMode, opts: { stepScreenshots?: boolean; e
   const evidencePdf = mode === 'audit' && Boolean(opts.evidencePdf);
   const stepScreenshots = mode === 'audit' && (Boolean(opts.stepScreenshots) || evidencePdf);
   const notes = [`${p.mode}: ${p.intendedFor}; ${p.volume}`];
-  if (mode === 'audit' && !stepScreenshots) notes.push('step screenshots and the evidence PDF are off: they slow runs down and add many files; enable them only for sign-off');
-  if (evidencePdf) notes.push('the evidence PDF is rendered with Chromium from the project\'s Playwright; screenshots show visible page data, password fields are masked');
+  if (mode === 'audit' && !stepScreenshots) notes.push('step evidence and the evidence PDF are off: they add files to every test; enable them only for sign-off');
+  if (evidencePdf) notes.push('the evidence PDF is rendered with Chromium from the project\'s Playwright; screenshots and videos show visible page data, password fields are masked in the screenshots only');
+  // The PDF embeds one video per test, so every test is recorded (not only the failures).
+  if (evidencePdf) notes.push('evidence.video is "on" so every test has a video to embed: runs are slower and larger than with failure-only video');
   return {
     mode,
     reporters: [...p.reporters, ...(evidencePdf ? (['evidence-pdf'] as const) : [])],
-    evidence: { ...p.evidence },
+    evidence: { ...p.evidence, ...(evidencePdf ? { video: 'on' as const } : {}) },
     reporting: { mode, ...(stepScreenshots ? { stepScreenshots: true } : {}) },
     needs: [...p.needs],
     optIn: { stepScreenshots, evidencePdf },

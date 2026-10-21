@@ -21,7 +21,7 @@ only with a clear responsibility. No other top-level folders in `automation/`.
 | Path | Owner | Notes |
 |---|---|---|
 | `playwright.config.<ext>` | framework (user-editable) | standard `defineConfig`, literal values written from `config/automation.config.json` by `config save`/`config render`; a hand-edited file is never overwritten without `--force`. Don't edit it from generated tests or healing |
-| `fixtures/test.<ext>` | framework | exports `test`, `expect`; auto `diagnostics` fixture attaches console/page/network errors on failure; auto `stepEvidence` fixture (only with the `evidence-pdf` reporter) screenshots every `test.step` and the final state, masking password fields |
+| `fixtures/test.<ext>` | framework | exports `test`, `expect`; auto `diagnostics` fixture attaches console/page/network errors on failure; auto `stepEvidence` fixture (only with the `evidence-pdf` reporter) logs every `test.step` and takes one final-state screenshot, masking password fields; the video comes from Playwright (`evidence.video` on) |
 | `helpers/test-data.<ext>` | framework | `requireEnv(name)`, `requireWorkerEnv(name, parallelIndex)`, `uniqueSuffix(prefix, workerIndex?)`, `redact()`; generic helpers only, page behaviour belongs in `pages/` |
 | `test-data/` | humans | non-sensitive data files only, never credentials |
 | `pages/BasePage.<ext>` | framework | base class (`path`, `open()`, `byTestId()`) |
@@ -89,9 +89,10 @@ Rules:
 - Import `test`/`expect` from `fixtures/test.<ext>`, never from `@playwright/test`.
 - One `test.step` per spec step, in the spec's wording; the spec's expected result as a comment above each assertion.
 - With the `evidence-pdf` reporter (check `run show <runId>`), wrap each expected result's assertions in
-  `await test.step('Expected: <expected result, spec wording>', async () => { … })` so the PDF shows that check with the
-  screenshot taken right after it. The assertion itself is unchanged; only the wrapper is added. Without that reporter keep
-  the comment-above-assertion form. Use `test.step` from the shared fixture, and never take screenshots by hand: the fixture does.
+  `await test.step('Expected: <expected result, spec wording>', async () => { … })` so the PDF lists that check, with its result,
+  among the executed steps. The assertion itself is unchanged; only the wrapper is added. Without that reporter keep
+  the comment-above-assertion form. Use `test.step` from the shared fixture, and never take screenshots or record video by hand:
+  the fixture takes the final-state screenshot and Playwright records the video.
 - Spec tags → Playwright `tag` (`@smoke`); priority may go in an annotation.
 - Locators in order: `getByRole` (with name) → `getByLabel` → `getByPlaceholder`/`getByText` → `getByTestId` → a scoped
   `locator()` as a last resort, with a comment saying why. Never XPath, structural CSS or CLI refs (`e12`).

@@ -1,21 +1,25 @@
-// The "evidence-pdf" report: one PDF that shows, for every test, each step that was executed next to the screenshot taken
-// when that step ended, plus the test case's expected results and the final state of the page.
+// The "evidence-pdf" report: one PDF that shows, for every test, the steps that were executed, ONE video of the complete
+// execution journey (embedded in the PDF itself), ONE screenshot of the final state, and the test case's expected results.
 //
-//   reports/<run-id>/evidence-report/evidence-report.html   the printable page (images referenced, not embedded)
-//   reports/<run-id>/evidence-report/evidence-report.pdf    the deliverable
+//   reports/<run-id>/evidence-report/evidence-report.html   the printable page (screenshots embedded, videos linked)
+//   reports/<run-id>/evidence-report/evidence-report.pdf    the deliverable, with the videos stored inside it
 //
-// The step data comes from the step log the shared fixture writes while the tests run (step-evidence.ts). Building the
-// model and the HTML is pure Node; only the final HTML -> PDF step needs a browser, and goes through an injectable
-// PdfRenderer (default: tools/render-pdf.ts, which uses the project's already-installed @playwright/test + Chromium).
+// The step data comes from the step log the shared fixture writes while the tests run (step-evidence.ts); the video is
+// Playwright's own per-test recording (evidence.video "on"). Building the model and the HTML is pure Node; only the HTML -> PDF
+// step needs a browser, and goes through an injectable PdfRenderer (default: tools/render-pdf.ts, which uses the project's
+// already-installed @playwright/test + Chromium). Chromium cannot embed media, so each video is placed afterwards by pdf-embed.ts
+// (an appended PDF update that swaps the video's link for an embedded-file attachment) and then read back to verify it.
 
 import { spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { AutomationConfig } from '../config/schema.ts';
 import { toPosixRelative } from '../utils/fs.ts';
 import { redact } from '../utils/redact.ts';
 import { REPORTS_DIR, assertRunId } from './artifact-manager.ts';
 import type { Attempt, ExecutionResults, TestResult } from './execution.ts';
+import { embedFiles, listEmbeddedFiles, type EmbedItem } from './pdf-embed.ts';
 import type { FinalTest, ReporterStatus } from './reporting.ts';
 import type { RunManifest, TestCounts } from './run-manager.ts';
 import { STEP_LOG_ATTACHMENT, parseStepLog } from './step-evidence.ts';
@@ -35,8 +39,17 @@ export interface StepView {
   startedAt: string;
   durationMs: number;
   error: string | null;
-  image: string | null; // absolute path of the screenshot file
-  note: string | null; // why there is no image
+}
+
+// One recorded execution journey, stored inside the PDF as an attachment.
+export interface VideoView {
+  token: string; // "evidence-video-N": the marker in the video's link, which pdf-embed.ts finds in the printed PDF
+  fileName: string; // the attachment's name inside the PDF
+  file: string; // absolute path of the recording
+  mime: string;
+  bytes: number;
+  source: string; // path relative to automation/, shown in the PDF as the fallback location
+  href: string; // link target in the HTML (relative to the report folder)
 }
 
 export interface AttemptView {
@@ -47,7 +60,7 @@ export interface AttemptView {
   hasStepLog: boolean;
   steps: StepView[];
   final: { status: string; image: string | null; note: string | null } | null;
-  otherImages: { name: string; image: string }[]; // screenshots Playwright itself attached (e.g. on failure)
+  videos: VideoView[]; // normally one: Playwright records one video per page
 }
 
 export interface TestView {
@@ -77,7 +90,7 @@ export interface EvidenceModel {
   browsers: string[];
   counts: TestCounts;
   tests: TestView[];
-  totals: { tests: number; steps: number; screenshots: number };
+  totals: { tests: number; steps: number; screenshots: number; videos: number };
   gaps: string[]; // evidence that should exist but does not
 }
 
@@ -104,46 +117,59 @@ function readAttemptLog(rootDir: string, attempt: Attempt) {
   }
 }
 
-function attemptView(i: EvidenceInputs, label: string, a: Attempt, counters: { steps: number; screenshots: number }, gaps: string[], testId: string): AttemptView {
+interface Counters { steps: number; screenshots: number; videos: number }
+interface AttemptContext { testId: string; project: string; kind: 'initial' | 'regression'; reportDir: string; gaps: string[]; counters: Counters }
+
+function attemptView(i: EvidenceInputs, label: string, a: Attempt, ctx: AttemptContext): AttemptView {
+  const { counters, gaps, testId } = ctx;
   const clean = (s: string) => redact(s, i.secrets);
   const stepLog = readAttemptLog(i.rootDir, a);
-  // The log names its screenshots by attachment name; the attempt's attachment list says where Playwright put the file.
-  const shown = new Set<string>();
+  // The log names the final screenshot by attachment name; the attempt's attachment list says where Playwright put the file.
   const imageFor = (name: string | null): string | null => {
     const att = name ? a.attachments.find((x) => x.name === name && x.contentType.startsWith('image/')) : undefined;
     if (!att) return null;
     const abs = path.join(i.rootDir, att.path);
-    if (!existsSync(abs)) return null;
-    shown.add(att.name);
-    return abs;
+    return existsSync(abs) ? abs : null;
   };
   const view: AttemptView = {
     label, status: a.status, durationMs: a.durationMs, errors: a.errors.map((e) => clean(e.message)),
-    hasStepLog: stepLog !== null, steps: [], final: null, otherImages: [],
+    hasStepLog: stepLog !== null, steps: [], final: null, videos: [],
   };
   if (stepLog) {
     for (const s of stepLog.steps) {
-      const image = imageFor(s.screenshot);
       counters.steps++;
-      if (image) counters.screenshots++;
-      else gaps.push(`${testId} (${label}) step ${s.index} "${s.title}": no screenshot${s.screenshotNote ? ` — ${s.screenshotNote}` : ''}`);
       view.steps.push({
         index: s.index, depth: s.depth, title: clean(s.title), status: s.status, startedAt: s.startedAt, durationMs: s.durationMs,
-        error: s.error ? clean(s.error) : null, image, note: image ? null : clean(s.screenshotNote ?? 'no screenshot was recorded'),
+        error: s.error ? clean(s.error) : null,
       });
     }
     const finalImage = imageFor(stepLog.final.screenshot);
     if (finalImage) counters.screenshots++;
+    else gaps.push(`${testId} (${label}): no final-state screenshot${stepLog.final.screenshotNote ? ` — ${stepLog.final.screenshotNote}` : ''}`);
     view.final = { status: stepLog.final.status, image: finalImage, note: finalImage ? null : clean(stepLog.final.screenshotNote ?? 'no screenshot was recorded') };
   } else {
     gaps.push(`${testId} (${label}): no step evidence was recorded (the test may not import fixtures/test, fixtures/test may predate the evidence-pdf reporter (run init --update), or the reporter was not configured when it ran)`);
+    // Without the fixture's screenshot, Playwright's own (evidence.screenshot) is the best available picture of the final state.
+    const own = a.attachments.find((x) => x.contentType.startsWith('image/') && existsSync(path.join(i.rootDir, x.path)));
+    if (own) {
+      counters.screenshots++;
+      view.final = { status: a.status, image: path.join(i.rootDir, own.path), note: null };
+    }
   }
-  // Screenshots Playwright attached on its own (evidence.screenshot mode), except the ones this report already shows.
-  for (const att of a.attachments) {
-    if (!att.contentType.startsWith('image/')) continue;
-    if (shown.has(att.name)) continue;
-    const abs = path.join(i.rootDir, att.path);
-    if (existsSync(abs)) view.otherImages.push({ name: clean(att.name), image: abs });
+  // The journey: Playwright's own recording of the test (one per page; a test that opens a popup has more than one).
+  const recordings = a.attachments.filter((x) => x.contentType.startsWith('video/') && existsSync(path.join(i.rootDir, x.path)));
+  recordings.forEach((att, n) => {
+    const file = path.join(i.rootDir, att.path);
+    const token = `evidence-video-${++counters.videos}`;
+    const ext = path.extname(file).toLowerCase() || '.webm';
+    const fileName = `${testId}-${ctx.project}-${ctx.kind}-attempt${a.retry + 1}${recordings.length > 1 ? `-video${n + 1}` : ''}${ext}`;
+    view.videos.push({
+      token, fileName: fileName.replace(/[^A-Za-z0-9._-]/g, '_'), file, mime: att.contentType, bytes: statSync(file).size, source: att.path,
+      href: `${path.relative(ctx.reportDir, file).split(path.sep).map(encodeURIComponent).join('/')}#${token}`,
+    });
+  });
+  if (view.videos.length === 0) {
+    gaps.push(`${testId} (${label}): no video was recorded (the report needs evidence.video "on", and a test that never opens a page has nothing to record)`);
   }
   return view;
 }
@@ -152,20 +178,22 @@ export function buildEvidenceModel(i: EvidenceInputs): EvidenceModel {
   const specById = new Map<string, TestSpec>((i.specs?.specs ?? []).map((s) => [s.id, s]));
   const initial = new Map<string, TestResult>((i.results?.tests ?? []).map((t) => [t.key, t]));
   const regression = new Map<string, TestResult>((i.regression?.tests ?? []).map((t) => [t.key, t]));
-  const counters = { steps: 0, screenshots: 0 };
+  const counters: Counters = { steps: 0, screenshots: 0, videos: 0 };
   const gaps: string[] = [];
+  const reportDir = evidenceReportDir(i.rootDir, i.manifest.runId);
 
   const tests = i.tests.map((ft, n): TestView => {
     const spec = specById.get(ft.testId) ?? null;
     const attempts: AttemptView[] = [];
     const initialResult = initial.get(ft.key);
     const several = (initialResult?.attempts.length ?? 0) > 1;
+    const ctx = (kind: AttemptContext['kind']): AttemptContext => ({ testId: ft.testId, project: ft.project, kind, reportDir, gaps, counters });
     for (const a of initialResult?.attempts ?? []) {
-      attempts.push(attemptView(i, `Initial run · attempt ${a.retry + 1}${several ? ` of ${initialResult!.attempts.length}` : ''}`, a, counters, gaps, ft.testId));
+      attempts.push(attemptView(i, `Initial run · attempt ${a.retry + 1}${several ? ` of ${initialResult!.attempts.length}` : ''}`, a, ctx('initial')));
     }
     const regressionResult = regression.get(ft.key);
     for (const a of regressionResult?.attempts ?? []) {
-      attempts.push(attemptView(i, `Regression run · attempt ${a.retry + 1}`, a, counters, gaps, ft.testId));
+      attempts.push(attemptView(i, `Regression run · attempt ${a.retry + 1}`, a, ctx('regression')));
     }
     const file = initialResult?.file ?? null;
     return {
@@ -184,7 +212,7 @@ export function buildEvidenceModel(i: EvidenceInputs): EvidenceModel {
     runId: i.manifest.runId, command: i.manifest.command, generatedAt: i.now.toISOString(),
     environment: i.config.app.environment, baseUrl: i.config.app.baseUrl, browsers: i.config.browsers,
     counts: i.counts, tests,
-    totals: { tests: tests.length, steps: counters.steps, screenshots: counters.screenshots },
+    totals: { tests: tests.length, steps: counters.steps, screenshots: counters.screenshots, videos: counters.videos },
     gaps,
   };
 }
@@ -222,7 +250,14 @@ a { color: inherit; }
 .step { break-inside: avoid; border: 1px solid var(--line); border-left: 1.5mm solid var(--c); border-radius: 1.5mm; margin: 2.5mm 0; padding: 2mm 3mm; }
 .step-head { display: flex; gap: 3mm; align-items: baseline; } .step-head .num { font-weight: 700; white-space: nowrap; } .step-head .title { flex: 1; }
 .step-head .dur { color: var(--muted); white-space: nowrap; font-size: 8.5pt; }
-figure { margin: 2mm 0 0; } figure img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100mm; border: 1px solid var(--line); }
+table.steps { margin: 2mm 0; font-size: 9pt; } table.steps td { padding: 1mm 2mm; } table.steps tr { break-inside: avoid; }
+table.steps td.n { width: 12mm; white-space: nowrap; color: var(--muted); } table.steps td.r { width: 22mm; white-space: nowrap; } table.steps td.d { width: 20mm; white-space: nowrap; color: var(--muted); text-align: right; }
+table.steps tr.failed td { background: #fdf1f0; }
+.video { break-inside: avoid; display: flex; gap: 4mm; align-items: center; border: 1px solid var(--line); border-left: 1.5mm solid var(--heal); border-radius: 1.5mm; margin: 2.5mm 0; padding: 2.5mm 3mm; background: var(--soft); }
+.video .what { flex: 1; } .video .small { color: var(--muted); font-size: 8.5pt; }
+a.play { display: block; flex: none; width: 10mm; height: 10mm; background: var(--heal); border-radius: 1.5mm; position: relative; text-decoration: none; }
+a.play::after { content: ""; position: absolute; left: 3.6mm; top: 2.4mm; border-left: 4mm solid #fff; border-top: 2.6mm solid transparent; border-bottom: 2.6mm solid transparent; }
+figure { margin: 2mm 0 0; } figure img { display: block; width: auto; height: auto; max-width: 100%; max-height: 90mm; border: 1px solid var(--line); }
 figcaption { color: var(--muted); font-size: 8pt; margin-top: 1mm; }
 .noimg { margin-top: 2mm; padding: 2mm; border: 1px dashed var(--line); color: var(--muted); font-size: 8.5pt; }
 pre.err { white-space: pre-wrap; word-break: break-word; background: #fdf1f0; border: 1px solid #f0c9c5; color: #7a1b15; padding: 2mm; margin: 2mm 0 0; font-size: 8pt; }
@@ -253,23 +288,34 @@ function figure(src: ImageSource, file: string | null, alt: string, caption: str
     : `<div class="noimg">No screenshot: ${e(noImage)}</div>`;
 }
 
-function stepCard(s: StepView, src: ImageSource): string {
-  const pad = Math.min(s.depth, 4) * 6;
-  const when = stamp(s.startedAt);
-  const shot = figure(src, s.image, `Screenshot after step ${s.index}`, `Screenshot taken when step ${s.index} ended${when ? ` · started ${when}` : ''}`, s.note ?? 'none recorded');
-  return `<div class="step ${s.status}" style="margin-left:${pad}mm">`
-    + `<div class="step-head"><span class="num">Step ${s.index}</span><span class="title">${e(s.title)}</span>`
-    + `<span class="badge ${s.status}">${s.status === 'passed' ? 'PASSED' : 'FAILED'}</span><span class="dur">${e(seconds(s.durationMs))}</span></div>`
-    + shot
-    + (s.error ? `<pre class="err">${e(s.error)}</pre>` : '')
-    + `</div>`;
+const bytesLabel = (n: number): string => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+// The executed steps as a compact table (no per-step images: the video shows the journey).
+function stepsTable(steps: StepView[]): string {
+  const rows = steps.map((s) => {
+    const pad = Math.min(s.depth, 4) * 5;
+    return `<tr class="${s.status}"><td class="n">Step ${s.index}</td><td style="padding-left:${2 + pad}mm">${e(s.title)}</td>`
+      + `<td class="r"><span class="badge ${s.status}">${s.status === 'passed' ? 'PASSED' : 'FAILED'}</span></td><td class="d">${e(seconds(s.durationMs))}</td></tr>`
+      + (s.error ? `<tr class="${s.status}"><td></td><td colspan="3"><pre class="err">${e(s.error)}</pre></td></tr>` : '');
+  }).join('');
+  return `<table class="steps"><thead><tr><th>#</th><th>Executed step</th><th>Result</th><th style="text-align:right">Time</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// The link around the play icon is what pdf-embed.ts finds in the printed PDF and replaces by the embedded file.
+function videoBox(v: VideoView, label: string): string {
+  return `<div class="video"><a class="play" href="${e(v.href)}" title="Execution video"></a>`
+    + `<div class="what"><b>Execution video</b> <span class="muted">· ${e(label)} · ${e(v.mime)} · ${e(bytesLabel(v.bytes))}</span>`
+    + `<div>The complete journey of this test, from its first action to its final outcome, is stored inside this PDF as the attachment <span class="mono">${e(v.fileName)}</span>.</div>`
+    + `<div class="small">Click (or double-click) the play icon, or open the viewer's Attachments panel, to play it. Same recording on disk: <span class="mono">${e(v.source)}</span></div></div></div>`;
 }
 
 function attemptSection(a: AttemptView, src: ImageSource): string {
   const ok = a.status === 'passed';
   const parts = [`<div class="attempt"><h3>${e(a.label)} — <span class="${ok ? 'passed' : 'failed'}" style="color:var(--c)">${e(a.status.toUpperCase())}</span> <span class="muted">· ${e(seconds(a.durationMs))}</span></h3>`];
-  if (!a.hasStepLog) parts.push('<div class="box gaps">No step evidence was recorded for this attempt, so there are no per-step screenshots.</div>');
-  for (const s of a.steps) parts.push(stepCard(s, src));
+  if (!a.hasStepLog) parts.push('<div class="box gaps">No step evidence was recorded for this attempt, so the executed steps are not listed.</div>');
+  else if (a.steps.length) parts.push(stepsTable(a.steps));
+  if (a.videos.length) a.videos.forEach((v, n) => parts.push(videoBox(v, a.videos.length > 1 ? `video ${n + 1} of ${a.videos.length}` : 'one video per test')));
+  else parts.push('<div class="noimg">No video was recorded for this attempt.</div>');
   if (a.final) {
     const failed = a.final.status !== 'passed';
     parts.push(`<div class="step ${failed ? 'failed' : 'passed'}"><div class="step-head"><span class="num">${failed ? 'Failure state' : 'Final state'}</span>`
@@ -277,10 +323,10 @@ function attemptSection(a: AttemptView, src: ImageSource): string {
       + figure(src, a.final.image, 'Final state', null, a.final.note ?? 'none recorded')
       + `</div>`);
   }
-  for (const o of a.otherImages) parts.push(`<div class="step"><div class="step-head"><span class="num">Attachment</span><span class="title">${e(o.name)}</span></div>${figure(src, o.image, o.name, null, 'could not be read')}</div>`);
   // The attempt's own error, unless a failed step above already shows it (the step error is the same message).
   const shownBySteps = a.steps.map((s) => s.error).filter((x): x is string => !!x);
-  const same = (x: string, y: string) => x.startsWith(y.slice(0, 120)) || y.startsWith(x.slice(0, 120));
+  const bare = (s: string) => s.replace(/^Error:\s*/, ''); // Playwright prefixes the attempt's error, not the step's
+  const same = (x: string, y: string) => bare(x).startsWith(bare(y).slice(0, 120)) || bare(y).startsWith(bare(x).slice(0, 120));
   const unshown = a.errors.filter((m) => !shownBySteps.some((s) => same(s, m)));
   if (!ok && unshown.length) parts.push(`<pre class="err">${unshown.map(e).join('\n\n')}</pre>`);
   parts.push('</div>');
@@ -329,16 +375,21 @@ export function* evidenceHtmlParts(m: EvidenceModel, src: ImageSource = embedIma
 <body>
 <section class="cover">
 <h1>Test evidence report</h1>
-<div class="muted">Every executed step with the screenshot taken when it ended.</div>
+<div class="muted">For every test: the executed steps, one video of the complete execution, and one screenshot of the final state.</div>
 <dl class="meta">
 <dt>Run</dt><dd class="mono">${e(m.runId)} · /${e(m.command)}</dd>
 <dt>Generated</dt><dd>${e(stamp(m.generatedAt))}</dd>
 <dt>Environment</dt><dd>${e(m.environment)} · ${e(m.baseUrl)}</dd>
 <dt>Browsers</dt><dd>${e(m.browsers.join(', '))}</dd>
-<dt>Contents</dt><dd>${m.totals.tests} test(s), ${m.totals.steps} step(s), ${m.totals.screenshots} screenshot(s)</dd>
+<dt>Contents</dt><dd>${m.totals.tests} test(s), ${m.totals.steps} step(s), ${m.totals.screenshots} screenshot(s), ${m.totals.videos} video(s) embedded</dd>
 </dl>
 <div class="counts">${chip('Total', c.total, '')}${chip('Passed', c.passed, 'passed')}${chip('Failed', c.failed, 'failed')}${chip('Flaky', c.flaky, 'flaky')}${chip('Healed', c.healed, 'healed')}${chip('Blocked', c.blocked, 'blocked')}${chip('Skipped', c.skipped, 'skipped')}</div>
-<p class="muted">Flaky tests passed only after a retry and are not counted as passed. Times are UTC. Screenshots show the page exactly as rendered, so data typed into visible fields appears in them.</p>
+<p class="muted">Flaky tests passed only after a retry and are not counted as passed. Times are UTC. Screenshots and videos show the page exactly as rendered, so data typed into visible fields appears in them (password fields are masked in the screenshots, not in the videos).</p>
+${m.totals.videos ? `<div class="box"><b>Playing the videos</b><ul>
+<li>Each video is stored <b>inside this PDF</b> as a file attachment (the play icon in a test's Execution evidence section, and the viewer's Attachments panel). No separate file or link is needed.</li>
+<li>Videos are WebM recordings made by Playwright. Open the icon in Adobe Acrobat / Reader (or Foxit, PDF-XChange) to extract and play them. Browser viewers (Chrome, Edge, Firefox) may not show attachments and none of them plays a video inside a page.</li>
+<li>If your viewer cannot open attachments, the same recordings are in the project's test-results folder at the path printed under each video.</li>
+</ul></div>` : ''}
 ${m.gaps.length ? `<div class="box gaps"><b>Evidence gaps (${m.gaps.length})</b><ul>${m.gaps.slice(0, 40).map((g) => `<li>${e(g)}</li>`).join('')}${m.gaps.length > 40 ? `<li>… and ${m.gaps.length - 40} more</li>` : ''}</ul></div>` : ''}
 <h3>Tests</h3>
 <table><thead><tr><th>ID</th><th>Test</th><th>Module</th><th>Result</th><th>Steps</th></tr></thead><tbody>${toc}</tbody></table>
@@ -393,7 +444,37 @@ export function evidenceReportDir(rootDir: string, runId: string): string {
   return path.join(rootDir, REPORTS_DIR, runId, EVIDENCE_REPORT_DIR);
 }
 
-// Writes the HTML, renders the PDF and verifies the result. Never throws: a failure is reported as a status.
+export interface VideoEmbedding {
+  embedded: number;
+  placed: number; // videos whose play icon sits in the test's Execution evidence section
+  warnings: string[];
+}
+
+// Stores every video inside the PDF, then reads the PDF back and checks that each file is in it, byte for byte. Throws if not.
+export function embedVideosInPdf(pdfFile: string, videos: VideoView[]): VideoEmbedding {
+  const items: EmbedItem[] = videos.map((v) => ({
+    token: v.token, fileName: v.fileName, mime: v.mime, data: readFileSync(v.file),
+    description: `Execution video (${v.fileName}, ${bytesLabel(v.bytes)})`,
+  }));
+  const result = embedFiles(readFileSync(pdfFile), items);
+  const back = listEmbeddedFiles(result.pdf);
+  const stored = new Map(back.files.map((f) => [f.name, f]));
+  for (const [n, item] of items.entries()) {
+    const name = item.fileName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+    const file = stored.get(name);
+    const sha = createHash('sha256').update(item.data).digest('hex');
+    if (!file || file.size !== item.data.length || file.sha256 !== sha) {
+      throw new Error(`the video for ${videos[n]!.fileName} is not stored in the PDF intact`);
+    }
+  }
+  writeFileSync(pdfFile, result.pdf);
+  const warnings: string[] = [];
+  if (result.unplaced.length) warnings.push(`${result.unplaced.length} video(s) are attached to the PDF but have no play icon on a page`);
+  if (!result.attachmentList) warnings.push('the PDF already had a /Names entry, so the videos are not in the Attachments panel list (their page icons still work)');
+  return { embedded: result.embedded, placed: result.annotated, warnings };
+}
+
+// Writes the HTML, renders the PDF, embeds the videos and verifies the result. Never throws: a failure is reported as a status.
 export function buildEvidenceReport(i: EvidenceInputs, render: PdfRenderer = defaultPdfRenderer, src: ImageSource = embedImage): ReporterStatus {
   const name = 'evidence-pdf' as const;
   const outDir = evidenceReportDir(i.rootDir, i.manifest.runId);
@@ -413,12 +494,27 @@ export function buildEvidenceReport(i: EvidenceInputs, render: PdfRenderer = def
             : `PDF rendering failed: ${r.output.split('\n').filter(Boolean).slice(-3).join(' | ') || 'no output'}`,
       };
     }
-    const size = existsSync(pdfFile) ? statSync(pdfFile).size : 0;
+    let size = existsSync(pdfFile) ? statSync(pdfFile).size : 0;
     const header = size > 0 ? readFileSync(pdfFile).subarray(0, 5).toString('latin1') : '';
     if (header !== '%PDF-') return { name, status: 'failed', path: null, detail: 'the renderer finished but produced no valid PDF' };
-    const mb = size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1024))} KB`;
+    const videos = model.tests.flatMap((t) => t.attempts.flatMap((a) => a.videos));
+    const notes: string[] = [];
+    if (videos.length > 0) {
+      try {
+        const embedding = embedVideosInPdf(pdfFile, videos);
+        notes.push(...embedding.warnings);
+        size = statSync(pdfFile).size;
+      } catch (err) {
+        // The printed report is valid but would silently lack the videos it promises, so this is a failure, not a quiet downgrade.
+        return { name, status: 'failed', path: null, detail: `the videos could not be embedded in the PDF: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
     const gap = model.gaps.length ? `; ${model.gaps.length} evidence gap(s) listed on the cover page` : '';
-    return { name, status: 'generated', path: toPosixRelative(i.rootDir, pdfFile), detail: `${model.totals.tests} tests, ${model.totals.steps} steps, ${model.totals.screenshots} screenshots, ${mb}${gap}` };
+    const warn = notes.length ? `; ${notes.join('; ')}` : '';
+    return {
+      name, status: 'generated', path: toPosixRelative(i.rootDir, pdfFile),
+      detail: `${model.totals.tests} tests, ${model.totals.steps} steps, ${model.totals.screenshots} screenshots, ${model.totals.videos} videos embedded, ${bytesLabel(size)}${gap}${warn}`,
+    };
   } catch (err) {
     return { name, status: 'failed', path: null, detail: `evidence report failed: ${err instanceof Error ? err.message : String(err)}` };
   }

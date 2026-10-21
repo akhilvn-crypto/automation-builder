@@ -37,9 +37,9 @@ Result key = `<testId>@<project>`.
 2. Screenshot at failure: did the page load, is there an error banner or a login redirect?
 3. Trace (`cd automation && npx playwright show-trace <zip>`, or read actions/snapshots) for timing and navigation issues.
 4. `diagnostics` attachment: console errors, page errors, failed requests, HTTP 5xx.
-5. With the `evidence-pdf` reporter configured, every `test.step` also leaves a screenshot attachment (`step-01`, `step-02`, …,
-   `final`) and a `step-evidence-log` JSON (per step: title, status, duration, error, screenshot) in each attempt's attachments.
-   The first failed step in that log, with its screenshot, is usually the quickest way to see where a test diverged.
+5. With the `evidence-pdf` reporter configured, each attempt also has a `final` screenshot attachment and a `step-evidence-log` JSON
+   (per step: title, status, duration, error) in its attachments, plus Playwright's `video` (evidence.video is `on`). The first failed
+   step in that log, the final screenshot and the video are usually the quickest way to see where a test diverged.
 
 ## Categories (`triage run`, then confirmed by the failure-healer)
 | Category | Typical evidence | Heal? |

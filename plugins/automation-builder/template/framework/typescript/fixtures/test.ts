@@ -7,9 +7,11 @@
 // (secret-redacted) only when the test does not end with its expected status.
 //
 // `stepEvidence` (auto, only in audit mode with reporting.stepScreenshots and the "evidence-pdf" reporter): wraps `test.step`
-// so that every step records its outcome and a screenshot taken the moment it ends (also when it fails), plus a final-state
-// screenshot when the test ends. report_generation lays them out as the evidence PDF. Without that reporter nothing is
-// captured, so normal runs pay nothing for it. Password inputs and reporting.maskSelectors are masked in every screenshot.
+// so that every step records its outcome, duration and error, and takes ONE final-state screenshot when the test ends. The
+// journey itself is Playwright's own per-test video (evidence.video "on"), which report_generation embeds in the evidence PDF
+// next to the screenshot. Without that reporter nothing is captured, so normal runs pay nothing for it. Password inputs and
+// reporting.maskSelectors are masked in the screenshot.
+// evidence-fixture-revision: 2 (init --update uses this marker to tell a current copy from an older one)
 //
 // Add project-wide fixtures here (e.g. an authenticated API client) with test.extend; keep them app-agnostic.
 
@@ -64,8 +66,8 @@ async function attachFile(testInfo: TestInfo, name: string, file: string, conten
   if (testInfo.attachments.at(-1)?.path !== file) rmSync(file, { force: true });
 }
 
-// Takes a screenshot and attaches it (so the HTML/Allure reports show it too). `name` is also what the step log refers to it by;
-// it stays short because Playwright puts it in the file path and Windows paths are limited to 260 characters.
+// Takes the final-state screenshot and attaches it (so the HTML/Allure reports show it too). `name` is also what the step log
+// refers to it by; it stays short because Playwright puts it in the file path and Windows paths are limited to 260 characters.
 async function capture(r: Recording, name: string): Promise<{ screenshot: string | null; note: string | null }> {
   if (r.page.isClosed()) return { screenshot: null, note: 'the page was already closed' };
   try {
@@ -94,10 +96,9 @@ async function recordStep<T>(title: string, body: () => Promise<T> | T): Promise
   } finally {
     const durationMs = Date.now() - startedAt.getTime();
     r.depth--;
-    const shot = await capture(r, `step-${String(index).padStart(2, '0')}`);
     r.entries.push({
       index, depth, title: clean(title), status: error === null ? 'passed' : 'failed', startedAt: startedAt.toISOString(),
-      durationMs, error, screenshot: shot.screenshot, screenshotNote: shot.note,
+      durationMs, error,
     });
   }
 }

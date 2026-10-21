@@ -83,6 +83,8 @@ test('every preset is itself a valid configuration for its mode', () => {
   assert.deepEqual(presetFor('audit').optIn, { stepScreenshots: false, evidencePdf: false });
   const pdf = presetFor('audit', { evidencePdf: true });
   assert.deepEqual([pdf.reporters.includes('evidence-pdf'), pdf.reporting.stepScreenshots], [true, true]);
+  assert.equal(pdf.evidence.video, 'on', 'the PDF embeds one video per test, so every test is recorded');
+  assert.equal(presetFor('audit').evidence.video, 'retain-on-failure', 'without the PDF, audit keeps failure-only video');
   assert.deepEqual(presetFor('standard', { evidencePdf: true }).optIn, { stepScreenshots: false, evidencePdf: false }, 'opt-ins exist only in audit');
   assert.ok(MODE_PROFILES.standard.needs.length === 0 && MODE_PROFILES.full.needs.length > 0);
 });
@@ -125,7 +127,10 @@ test('CLI: missing reporter software is proposed, never installed; declining it 
 
 test('preflight needs Chromium for the evidence PDF even when the tests run in another browser', (t) => {
   const root = tmpRoot(t);
-  const cfg = { ...validConfig(), browsers: ['firefox'], reporters: ['json', 'html', 'allure', 'evidence-pdf'], reporting: { mode: 'audit', stepScreenshots: true } };
+  const cfg = {
+    ...validConfig(), browsers: ['firefox'], reporters: ['json', 'html', 'allure', 'evidence-pdf'], reporting: { mode: 'audit', stepScreenshots: true },
+    evidence: { video: 'on', screenshot: 'only-on-failure', trace: 'retain-on-failure' },
+  };
   assert.deepEqual(saveConfig(root, cfg), { ok: true });
   const report = runPreflight(root, { run: () => ({ ok: false, stdout: '' }), env: {}, nodeVersion: '24.0.0' });
   assert.deepEqual(report.checks.filter((c) => c.id.startsWith('browser:')).map((c) => c.id).sort(), ['browser:chromium', 'browser:firefox']);
