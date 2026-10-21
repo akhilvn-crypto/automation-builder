@@ -12,6 +12,7 @@
 import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { toPosixRelative } from '../utils/fs.ts';
+import { formatIst } from '../utils/time.ts';
 import { REPORTS_DIR, assertRunId } from './artifact-manager.ts';
 import {
   buildEvidenceModel, embedImage, escapeHtml as e,
@@ -30,7 +31,7 @@ export function extentReportDir(rootDir: string, runId: string): string {
 }
 
 const seconds = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`);
-const stamp = (iso: string): string => (iso && !Number.isNaN(Date.parse(iso)) ? `${new Date(iso).toISOString().slice(0, 19).replace('T', ' ')} UTC` : '');
+const stamp = formatIst;
 const bytesLabel = (n: number): string => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 const OUTCOMES = ['passed', 'failed', 'flaky', 'healed', 'blocked', 'skipped'] as const;
@@ -266,7 +267,7 @@ ${m.tests.map((t) => testBlock(t, src, videoHref)).join('\n')}
 <dt>Run</dt><dd class="mono">${e(m.runId)} · /${e(m.command)}</dd><dt>Generated</dt><dd>${e(stamp(m.generatedAt))}</dd>
 <dt>Environment</dt><dd>${e(m.environment)}</dd><dt>Base URL</dt><dd>${e(m.baseUrl)}</dd><dt>Browsers</dt><dd>${e(m.browsers.join(', '))}</dd>
 <dt>Contents</dt><dd>${m.totals.tests} test(s), ${m.totals.steps} recorded step(s), ${m.totals.screenshots} screenshot(s)</dd></dl>
-<p class="note">Screenshots show the page exactly as rendered, so data typed into visible fields appears in them. Times are UTC.</p></div></section>
+<p class="note">Screenshots show the page exactly as rendered, so data typed into visible fields appears in them. Times are IST.</p></div></section>
 </main>
 <script>${SCRIPT}</script>
 </body></html>

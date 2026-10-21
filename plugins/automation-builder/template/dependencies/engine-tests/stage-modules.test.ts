@@ -187,6 +187,7 @@ test('no id here', async ({ page }) => {
 test('playwright args escape test IDs for --grep and pass retries', () => {
   assert.deepEqual(buildPlaywrightArgs({ files: ['tests/a.spec.ts'], testIds: ['TC-1', 'TC-2'], retries: 0, projects: ['chromium'] }),
     ['test', 'tests/a.spec.ts', '--grep', '\\[TC-1\\]|\\[TC-2\\]', '--project', 'chromium', '--retries', '0']);
+  assert.deepEqual(buildPlaywrightArgs({ headed: true }), ['test', '--headed']);
 });
 
 test('report normalization maps IDs, outcomes, evidence paths and redacts secrets', (t) => {

@@ -374,8 +374,10 @@ function renderReadme(language) {
 // Framework scripts only. The pipeline's own scripts live in dependencies/package.json.
 function frameworkScripts(language) {
   const scripts = {
-    test: 'playwright test',
-    'test:headed': 'playwright test --headed',
+    // Through the pipeline CLI so every run leaves a run folder, reports and evidence; test:adhoc is plain Playwright with no run.
+    test: 'node ../dependencies/engine/cli/quick-run.ts',
+    'test:adhoc': 'playwright test',
+    'test:headed': 'node ../dependencies/engine/cli/quick-run.ts --headed',
     'test:ui': 'playwright test --ui',
     report: 'playwright show-report reports/adhoc/html',
   };
@@ -410,6 +412,9 @@ function mergeGitignore(dir, wantedText) {
   writeText(dest, `${current.replace(/\s*$/, '\n')}\n# Automation Builder\n${add.join('\n')}\n`, 'merged');
 }
 
+// Script values earlier plugin versions wrote as defaults: an unedited one is upgraded on --update, a changed one is left alone.
+const SUPERSEDED_SCRIPTS = { test: 'playwright test', 'test:headed': 'playwright test --headed' };
+
 function mergePackageJson(dir, defaults, scripts) {
   const dest = path.join(dir, 'package.json');
   const label = rel(dest);
@@ -421,6 +426,7 @@ function mergePackageJson(dir, defaults, scripts) {
   let changed = false;
   for (const [k, v] of Object.entries(scripts)) {
     if (pkg.scripts[k] === undefined) { pkg.scripts[k] = v; changed = true; }
+    else if (pkg.scripts[k] !== v && (values.update || values.force) && dir === fw && pkg.scripts[k] === SUPERSEDED_SCRIPTS[k]) { pkg.scripts[k] = v; changed = true; }
     else if (pkg.scripts[k] !== v) summary.warnings.push(`${label} script "${k}" already exists and was left as is`);
   }
   if (pkg.type !== 'module') {

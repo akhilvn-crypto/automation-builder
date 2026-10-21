@@ -17,8 +17,8 @@ tests/                  every test (*.spec.{{EXT}}). Files the pipeline wrote st
 helpers/                reusable utilities shared by tests and pages (test-data.{{EXT}}: requireEnv, requireWorkerEnv, uniqueSuffix, redact)
 fixtures/               the shared `test` / `expect` (test.{{EXT}}) — import these, never @playwright/test directly
 config/                 automation.config.json: approved, non-secret choices (base URL, browsers, evidence, reporters)
-reports/<run-id>/       reporter output per pipeline run (html, json, allure, and extent-report/ with the Extent report, evidence-report/ with the evidence PDF); reports/adhoc/ for plain `npm test` (git-ignored)
-test-results/<run-id>/  screenshots, video, traces per pipeline run; test-results/adhoc/ for plain `npm test` (git-ignored)
+reports/<run-id>/       reporter output per pipeline run (html, json, allure, and extent-report/ with the Extent report, evidence-report/ with the evidence PDF); reports/adhoc/ for `npm run test:adhoc` (plain Playwright, no run; git-ignored)
+test-results/<run-id>/  screenshots, video, traces per pipeline run; test-results/adhoc/ for `npm run test:adhoc` (git-ignored)
 playwright.config.{{EXT}}   standard Playwright config; the pipeline fills it from config/automation.config.json, edit it freely (PW_BASE_URL, PW_RETRIES, PW_WORKERS override at run time)
 package.json  .gitignore  .env.example  README.md
 ```
@@ -47,7 +47,9 @@ state/                  scaffold.json (chosen language), dependency-log.json (ap
 | Task | Command |
 |---|---|
 | Run the whole pipeline (from the project root) | `/automation-builder:playwright-pipeline` (asks where your test cases are and converts them into `dependencies/input/test-cases/`) |
-| Run the tests directly | `npm test` (Playwright, all projects) · `npm run test:headed` · `npm run test:ui` |
+| Run the tests and record a run (run folder in `dependencies/runs/<run-id>/`, results, failure triage, the chosen reports and evidence) | `npm test` · `npm test -- tests/login.spec.ts --project chromium --retries 0` |
+| Same, with the browser window visible (still records the run, reports and evidence) | `npm run test:headed` |
+| Run the tests directly, with no run recorded (debugging) | `npm run test:adhoc` · `npm run test:ui` (interactive UI mode) |
 | Open the last plain-run HTML report | `npm run report` |
 | Pipeline CLI (from `dependencies/`) | `npm run pipeline -- run list` |
 

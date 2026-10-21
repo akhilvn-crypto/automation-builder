@@ -70,6 +70,7 @@ export interface Values {
   'test-file'?: string[];
   project?: string[];
   retries?: string;
+  headed?: boolean;
   category?: string;
   confidence?: string;
   rationale?: string;
@@ -618,6 +619,7 @@ export function stageCommand(root: string, group: string, action: string | undef
         runId: r.runId, label,
         files: v['test-file'], testIds: v['test-id'], projects: v.project,
         retries: v.retries === undefined ? undefined : Number(v.retries),
+        headed: v.headed ? true : undefined,
       };
       // Saved login state is checked first; a rejected session is replaced and the tests run again (once). The worker count
       // is the plan's (it needs the per-worker accounts from .env, which the generated Playwright config reads only at run time).

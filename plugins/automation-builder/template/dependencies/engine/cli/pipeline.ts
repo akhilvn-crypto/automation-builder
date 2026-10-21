@@ -64,7 +64,7 @@
 //                                                and at finalization. Nothing else on the machine is touched.
 //   cleanup all [--dry-run]                      the same for every run in dependencies/runs/ (leftovers of crashed or abandoned runs)
 //   exec plan <runId>                            workers/isolation the next execution would use, and the login-state decision
-//   exec run <runId> [--label L] [--test-file f]... [--test-id id]... [--project p]... [--retries n]
+//   exec run <runId> [--label L] [--test-file f]... [--test-id id]... [--project p]... [--retries n] [--headed]
 //   triage run <runId> | classify <runId> <key> --category C --confidence C --rationale R
 //   heal begin|check|revert|record <runId> <testId> --test-file f [--attempt n] [--rationale R] [--evidence p]...
 //   heal finish <runId>                          report build <runId>
@@ -153,6 +153,7 @@ export function main(argv: string[]): number {
       'test-file': { type: 'string', multiple: true },
       project: { type: 'string', multiple: true },
       retries: { type: 'string' },
+      headed: { type: 'boolean' },
       category: { type: 'string' },
       confidence: { type: 'string' },
       rationale: { type: 'string' },

@@ -16,6 +16,7 @@ import path from 'node:path';
 import type { AutomationConfig } from '../config/schema.ts';
 import { toPosixRelative } from '../utils/fs.ts';
 import { redact } from '../utils/redact.ts';
+import { formatIst } from '../utils/time.ts';
 import { REPORTS_DIR, assertRunId } from './artifact-manager.ts';
 import type { Attempt, ExecutionResults, TestResult } from './execution.ts';
 import { embedFiles, listEmbeddedFiles, type EmbedItem } from './pdf-embed.ts';
@@ -225,7 +226,7 @@ export function escapeHtml(s: string): string {
 const e = escapeHtml;
 
 const seconds = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`);
-const stamp = (iso: string): string => (iso && !Number.isNaN(Date.parse(iso)) ? `${new Date(iso).toISOString().slice(0, 19).replace('T', ' ')} UTC` : '');
+const stamp = formatIst;
 
 const OUTCOME_LABEL: Record<string, string> = { passed: 'PASSED', failed: 'FAILED', flaky: 'FLAKY', healed: 'HEALED', blocked: 'BLOCKED', skipped: 'SKIPPED' };
 
@@ -384,7 +385,7 @@ export function* evidenceHtmlParts(m: EvidenceModel, src: ImageSource = embedIma
 <dt>Contents</dt><dd>${m.totals.tests} test(s), ${m.totals.steps} step(s), ${m.totals.screenshots} screenshot(s), ${m.totals.videos} video(s) embedded</dd>
 </dl>
 <div class="counts">${chip('Total', c.total, '')}${chip('Passed', c.passed, 'passed')}${chip('Failed', c.failed, 'failed')}${chip('Flaky', c.flaky, 'flaky')}${chip('Healed', c.healed, 'healed')}${chip('Blocked', c.blocked, 'blocked')}${chip('Skipped', c.skipped, 'skipped')}</div>
-<p class="muted">Flaky tests passed only after a retry and are not counted as passed. Times are UTC. Screenshots and videos show the page exactly as rendered, so data typed into visible fields appears in them (password fields are masked in the screenshots, not in the videos).</p>
+<p class="muted">Flaky tests passed only after a retry and are not counted as passed. Times are IST. Screenshots and videos show the page exactly as rendered, so data typed into visible fields appears in them (password fields are masked in the screenshots, not in the videos).</p>
 ${m.totals.videos ? `<div class="box"><b>Playing the videos</b><ul>
 <li>Each video is stored <b>inside this PDF</b> as a file attachment (the play icon in a test's Execution evidence section, and the viewer's Attachments panel). No separate file or link is needed.</li>
 <li>Videos are WebM recordings made by Playwright. Open the icon in Adobe Acrobat / Reader (or Foxit, PDF-XChange) to extract and play them. Browser viewers (Chrome, Edge, Firefox) may not show attachments and none of them plays a video inside a page.</li>

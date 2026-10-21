@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { runDir } from '../engine/pipeline/artifact-manager.ts';
+import { formatIst } from '../engine/utils/time.ts';
 import {
   HealingLimitError, createRun, generateRunId, listResumable, listRuns, loadManifest, manifestPath, prepareResume,
   recordHealingAttempt, resumeLatest, setRunConfig, setTestCounts, updateStage, validateTestCounts,
@@ -12,7 +13,18 @@ import { fakeClock, tmpRoot, validConfig, writeDep } from './helpers.ts';
 test('run ids are well-formed and unique', () => {
   const ids = new Set(Array.from({ length: 50 }, () => generateRunId(new Date('2026-10-19T08:30:12Z'))));
   assert.equal(ids.size, 50);
-  for (const id of ids) assert.match(id, /^20261019-083012-[0-9a-f]{6}$/);
+  for (const id of ids) assert.match(id, /^20261019-140012-[0-9a-f]{6}$/); // 08:30:12 UTC = 14:00:12 IST
+});
+
+test('run ids use IST, including across midnight', () => {
+  assert.match(generateRunId(new Date('2026-10-19T18:29:59Z')), /^20261019-235959-/);
+  assert.match(generateRunId(new Date('2026-10-19T18:30:00Z')), /^20261020-000000-/);
+});
+
+test('formatIst renders an ISO time as IST and tolerates bad input', () => {
+  assert.equal(formatIst('2026-10-20T12:30:00Z'), '2026-10-20 18:00:00 IST');
+  assert.equal(formatIst(''), '');
+  assert.equal(formatIst('not a date'), '');
 });
 
 test('createRun writes a valid manifest with hashed inputs and no config yet', (t) => {
@@ -51,16 +63,19 @@ test('stage updates persist; config attaches only during configuration stage', (
   assert.equal(m.endedAt, null, 'run still in progress');
 });
 
-test('completing configuration without a config makes the manifest invalid', (t) => {
+test('completing configuration without a config is refused and leaves the run usable', (t) => {
   const root = tmpRoot(t);
   const { runId } = createRun(root, { command: 'run-tests' });
   updateStage(root, runId, 'preflight', 'running');
   updateStage(root, runId, 'preflight', 'completed');
   updateStage(root, runId, 'configuration', 'running');
-  updateStage(root, runId, 'configuration', 'completed');
+  assert.throws(() => updateStage(root, runId, 'configuration', 'completed'), /no config is attached.*set-config/);
   const r = loadManifest(root, runId);
-  assert.equal(r.ok, false);
-  assert.ok(!r.ok && r.issues.some((i) => /config is null/.test(i)));
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.manifest.stages.configuration.status, 'running');
+  // The same run carries on once the config is attached.
+  setRunConfig(root, runId, validConfig());
+  assert.equal(updateStage(root, runId, 'configuration', 'completed').stages.configuration.status, 'completed');
 });
 
 test('artifacts must exist, be non-empty, and stay inside the run dir', (t) => {

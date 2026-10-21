@@ -66,6 +66,10 @@ for (const language of ['typescript', 'javascript']) {
     const fwScripts = JSON.parse(readFileSync(path.join(root, 'automation', 'package.json'), 'utf8')).scripts;
     const depScripts = JSON.parse(readFileSync(path.join(root, 'dependencies', 'package.json'), 'utf8')).scripts;
     assert.ok(fwScripts.test && !fwScripts.pipeline && !fwScripts['test:pipeline']);
+    // npm test records a run through the pipeline CLI; plain Playwright is test:adhoc.
+    assert.equal(fwScripts.test, 'node ../dependencies/engine/cli/quick-run.ts');
+    assert.equal(fwScripts['test:adhoc'], 'playwright test');
+    assert.equal(fwScripts['test:headed'], 'node ../dependencies/engine/cli/quick-run.ts --headed');
     assert.ok(depScripts.pipeline && depScripts.test && depScripts['demo:app']);
 
     // Generated output is ignored in the framework; run state is ignored in dependencies.
@@ -114,7 +118,7 @@ function legacyProject(t) {
   at('tests/setup/auth.setup.ts', "await context.storageState({ path: '.auth/storage-state.json' });\n");
   at('package.json', JSON.stringify({
     name: 'x', type: 'module',
-    scripts: { pipeline: 'node engine/cli/pipeline.ts', 'test:pipeline': 'node --test "tests/pipeline/**/*.test.ts"', validate: 'npm run typecheck:engine && npm run test:pipeline', test: 'playwright test' },
+    scripts: { pipeline: 'node engine/cli/pipeline.ts', 'test:pipeline': 'node --test "tests/pipeline/**/*.test.ts"', validate: 'npm run typecheck:engine && npm run test:pipeline', test: 'playwright test', 'test:headed': 'playwright test --headed' },
   }));
   return root;
 }
@@ -335,4 +339,25 @@ test('the framework ignores secrets and saved logins, and the pipeline ignores i
   for (const line of ['.env', 'auth/storage-state*.json', '**/storage-state*.json']) assert.ok(framework.split(/\r?\n/).includes(line), line);
   const dependencies = readFileSync(path.join(template, 'dependencies', 'gitignore'), 'utf8');
   for (const line of ['runs/', 'state/exploration-store/', 'state/artifact-cache/']) assert.ok(dependencies.split(/\r?\n/).includes(line), line);
+});
+
+test('--update moves an unedited "playwright test" npm test script to the recorded run, and leaves an edited one alone', (t) => {
+  const root = legacyProject(t);
+  init(root, '--with-pipeline-tests'); // migrates to automation/ + dependencies/; the old scripts are kept without --update
+  const pkgFile = path.join(root, 'automation', 'package.json');
+  const scripts = () => JSON.parse(readFileSync(pkgFile, 'utf8')).scripts;
+  assert.equal(scripts().test, 'playwright test');
+  assert.equal(scripts()['test:headed'], 'playwright test --headed');
+
+  init(root, '--update');
+  assert.equal(scripts().test, 'node ../dependencies/engine/cli/quick-run.ts');
+  assert.equal(scripts()['test:headed'], 'node ../dependencies/engine/cli/quick-run.ts --headed');
+  assert.equal(scripts()['test:adhoc'], 'playwright test');
+
+  const edited = JSON.parse(readFileSync(pkgFile, 'utf8'));
+  edited.scripts.test = 'playwright test --workers=1';
+  writeFileSync(pkgFile, JSON.stringify(edited, null, 2));
+  const { json } = init(root, '--update');
+  assert.equal(scripts().test, 'playwright test --workers=1');
+  assert.ok(json.warnings.some((w) => /script "test" already exists/.test(w)));
 });

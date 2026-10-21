@@ -72,6 +72,7 @@ export interface RunOptions {
   testIds?: string[]; // narrows to titles starting with "[ID]"
   projects?: string[];
   retries?: number; // override, e.g. 0 for healing reruns so a retry can't mask the result
+  headed?: boolean; // show the browser window; the run, reports and evidence are the same as headless
   timeoutMs?: number;
   extraEnv?: NodeJS.ProcessEnv; // added to the runner's environment (e.g. PIPELINE_AUTH_STATE, PW_WORKERS)
 }
@@ -99,11 +100,12 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function buildPlaywrightArgs(o: Pick<RunOptions, 'files' | 'testIds' | 'projects' | 'retries'>): string[] {
+export function buildPlaywrightArgs(o: Pick<RunOptions, 'files' | 'testIds' | 'projects' | 'retries' | 'headed'>): string[] {
   const args = ['test', ...(o.files ?? [])];
   if (o.testIds && o.testIds.length) args.push('--grep', o.testIds.map((id) => escapeRegex(`[${id}]`)).join('|'));
   for (const p of o.projects ?? []) args.push('--project', p);
   if (o.retries !== undefined) args.push('--retries', String(o.retries));
+  if (o.headed) args.push('--headed');
   return args;
 }
 

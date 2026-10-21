@@ -89,4 +89,5 @@ dependencies/                            not framework
 
 Optional: `--with-demo` adds the local demo app (`npm run demo:app` in `dependencies/`) and demo test cases under
 `dependencies/demo/`; `--with-pipeline-tests` adds the pipeline's own `node:test` suites in `dependencies/engine-tests/`
-(`npm test` in `dependencies/`).
+(`npm test` in `dependencies/`). In `automation/`, `npm test` runs the tests as a recorded `run-tests` run (run folder, reports, evidence);
+`npm run test:adhoc` is plain Playwright with no run.

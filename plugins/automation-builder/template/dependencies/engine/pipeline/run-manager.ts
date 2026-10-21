@@ -7,6 +7,7 @@ import { validateConfig, type AutomationConfig } from '../config/schema.ts';
 import { readJson, sha256File, toPosixRelative, writeJsonAtomic } from '../utils/fs.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { withFileLock } from '../utils/lock.ts';
+import { istIso } from '../utils/time.ts';
 import { ARTIFACTS, EVIDENCE_DIR, REPORTS_DIR, RUN_ID_PATTERN, checkArtifactPath, runDir, runsDir } from './artifact-manager.ts';
 import type { DependencyChange } from './dependency-log.ts';
 import { StageContractError, checkStageOutputs } from './stage-contracts.ts';
@@ -60,8 +61,9 @@ export interface RunManifest {
 type Clock = () => Date;
 const systemClock: Clock = () => new Date();
 
+// The date and time in the id are IST (14:00:12 for 2026-10-19T08:30:12Z), so the folder name reads as local time.
 export function generateRunId(now: Date = new Date()): string {
-  const iso = now.toISOString(); // 2026-10-19T08:30:12.345Z
+  const iso = istIso(now); // 2026-10-19T14:00:12
   const date = iso.slice(0, 10).replace(/-/g, '');
   const time = iso.slice(11, 19).replace(/:/g, '');
   return `${date}-${time}-${randomBytes(3).toString('hex')}`;
@@ -275,6 +277,10 @@ export function updateStage(
   }
 
   return mutateManifest(rootDir, runId, (m) => {
+    // Without this check the manifest would be saved in a state its own validator rejects, and every later command on the run fails.
+    if (stage === 'configuration' && to === 'completed' && m.config === null) {
+      throw new StageContractError('stage "configuration" cannot complete: no config is attached to the run; run "run set-config <runId>" while the stage is running');
+    }
     if (to === 'completed') {
       const issues = checkStageOutputs(stage, {
         rootDir, runDir: runDir(rootDir, runId), manifest: m, artifacts: { ...m.artifacts, ...newArtifacts },
@@ -342,8 +348,8 @@ export function prepareResume(rootDir: string, runId: string, clock: Clock = sys
   return { ok: true, manifest: m, recovered, next: nextStage(m.stages), checkpoint: describeCheckpoint(m) };
 }
 
-// Resumable runs (in_progress, blocked or failed), newest first. Run ids start with a UTC timestamp, so
-// id order is creation order. Unreadable manifests are skipped here; `run show <id>` reports them.
+// Resumable runs (in_progress, blocked or failed), newest first. Run ids start with an IST timestamp (a fixed offset),
+// so id order is creation order. Ids made before 0.14.0 are UTC, which is 5h30m earlier, so they still sort before newer ones. Unreadable manifests are skipped here; `run show <id>` reports them.
 export function listResumable(rootDir: string, command?: Command): Checkpoint[] {
   const found: Checkpoint[] = [];
   for (const id of listRuns(rootDir).reverse()) {
