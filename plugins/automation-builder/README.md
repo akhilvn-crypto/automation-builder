@@ -90,7 +90,8 @@ dependencies/                                not framework
   undo })`); it is written to `runs/<run-id>/created-data/` first, undone after the test (also a failed or timed-out one), and `pipeline.ts cleanup data
   <run-id> [--dry-run]` sweeps what is left (automatically after execution/healing/regression and at finalization). A sweep removes a record through an
   API the user declared in `config.cleanup.entities` (endpoints are never guessed), or hands UI-only records to the `data-cleaner` agent; the rest is
-  listed in `summary.md` ("Test data") with how to delete it by hand. Only ledger records, only with `cleanup.mode` `in-test`/`in-test+sweep`, only in an
+  listed in `summary.md` ("Test data") with how to delete it by hand. Only ledger records, only with `cleanup.mode` `in-test`/`in-test+sweep`/`sweep` (`sweep`: tests delete nothing; one sweep once every test has finished — for `npm test` after the
+  execution stage, for `npm run test:adhoc`/`test:ui` by `engine/cli/adhoc-run.ts`; a bare `npx playwright test` is not swept, its records wait for the next sweep), only in an
   allowed non-production environment, at most `cleanup.maxDeletesPerRun` (50) per sweep (`engine/pipeline/created-data.ts`, `data-cleanup.ts`).
   `init --update` refreshes an unmodified older `fixtures/test.*`; a customised one is left alone and the warning says how to add the fixture.
 - The template is organized as `template/dependencies` (engine, docs, demo, engine tests) and

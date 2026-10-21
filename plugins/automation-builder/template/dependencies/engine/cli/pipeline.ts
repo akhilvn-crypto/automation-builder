@@ -64,7 +64,7 @@
 //                                                and at finalization. Nothing else on the machine is touched.
 //   cleanup all [--dry-run]                      the same for every run in dependencies/runs/ (leftovers of crashed or abandoned runs)
 //   cleanup data <runId> [--dry-run]             remove the test data the run created and the tests did not already remove (only what is listed in
-//                                                created-data/, only with config.cleanup.mode "in-test+sweep", only in an allowed non-production
+//                                                created-data/, only with config.cleanup.mode "in-test+sweep" or "sweep", only in an allowed non-production
 //                                                environment). Runs by itself after execution/healing/regression and at finalization.
 //                                                What cannot be removed is listed with how it can be deleted by hand; it never fails the run.
 //   cleanup status <runId>                       counts and the list of data still there

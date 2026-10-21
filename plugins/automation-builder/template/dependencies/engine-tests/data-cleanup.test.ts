@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -15,12 +15,14 @@ import { startCleanup } from '../engine/pipeline/cleanup-fixture.ts';
 import {
   CleanupSession, cleanupGuard, leftoverLines, readCreatedData, recordExternally, summarizeData, updateRecords, validateNewRecord,
 } from '../engine/pipeline/created-data.ts';
-import { briefOfSweep, dataSweepTrigger, readSweepHistory, resolveUrl, sweepData, type Fetcher } from '../engine/pipeline/data-cleanup.ts';
+import { adhocLedgerDir, briefOfSweep, dataSweepTrigger, readSweepHistory, resolveUrl, sweepAdhoc, sweepData, type Fetcher } from '../engine/pipeline/data-cleanup.ts';
+import { sweepAfterAdhocRun } from '../engine/pipeline/adhoc-sweep.ts';
 import { renderSummaryMarkdown, type RunSummary } from '../engine/pipeline/reporting.ts';
 import { reviewSource } from '../engine/pipeline/static-review.ts';
 import { tmpRoot, validConfig } from './helpers.ts';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'engine', 'cli', 'pipeline.ts');
+const ADHOC_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'engine', 'cli', 'adhoc-run.ts');
 const RUN = '20261022-090000-abcdef';
 
 function withCleanup(over: Partial<NonNullable<AutomationConfig['cleanup']>> = {}, env = 'qa'): AutomationConfig {
@@ -326,6 +328,102 @@ test('the sweep runs after the stages that run tests and after any stage that st
   assert.equal(dataSweepTrigger('test_generation', 'failed'), 'test_generation failed');
   assert.equal(dataSweepTrigger('execution', 'running'), null);
   assert.equal(dataSweepTrigger('script_review', 'completed'), null);
+});
+
+// ---- mode "sweep": delete only once every test has finished ----
+
+test('mode "sweep": tests only register; nothing is deleted until the sweep', async (t) => {
+  const root = tmpRoot(t);
+  const dir = runFolder(root);
+  const config = withCleanup({ mode: 'sweep' });
+  assert.equal(validateConfig(config).ok, true);
+  assert.equal(cleanupGuard(config).allowed, true);
+
+  let undone = false;
+  const s = session(dir, config);
+  s.register({ entity: 'order', identifier: 'ord-keep', undo: () => { undone = true; } });
+  const outcome = await s.run();
+  assert.equal(undone, false, 'the test must not delete the record: a later test may still need it');
+  assert.deepEqual(outcome, [], 'a record waiting for the sweep is not reported as a problem');
+  assert.equal(readCreatedData(dir)[0]!.status, 'pending');
+
+  const f = fake((c) => (c.method === 'DELETE' ? 204 : 404));
+  const report = sweepData(root, RUN, config, { trigger: 'after all tests', fetch: f.fetch });
+  assert.equal(report.ran, true);
+  assert.deepEqual(f.calls.map((c) => `${c.method} ${new URL(c.url).pathname}`), ['DELETE /api/orders/ord-keep']);
+  assert.equal(readCreatedData(dir)[0]!.status, 'deleted');
+  assert.equal(readCreatedData(dir)[0]!.removedBy, 'api');
+});
+
+test('mode "in-test" still has no sweep, and "in-test+sweep" still undoes in the test', async (t) => {
+  const root = tmpRoot(t);
+  const dir = runFolder(root);
+  const f = fake(() => 204);
+  const a = session(dir, withCleanup({ mode: 'in-test' }));
+  a.register({ entity: 'order', identifier: 'ord-a', undo: () => {} });
+  await a.run();
+  assert.equal(sweepData(root, RUN, withCleanup({ mode: 'in-test' }), { trigger: 't', fetch: f.fetch }).ran, false);
+  assert.equal(f.calls.length, 0);
+  assert.equal(readCreatedData(dir)[0]!.status, 'deleted');
+});
+
+// ---- plain Playwright (npm run test:adhoc / test:ui): the ad hoc ledger and the sweep after the run ----
+
+test('plain Playwright: records go to the ad hoc ledger and are swept after the run, not by the test', async (t) => {
+  const root = tmpRoot(t);
+  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'sweep' })), { ok: true });
+  const ledger = adhocLedgerDir(root);
+  const info = { file: 'tests/orders.spec.ts', title: '[TC-9] Create order', retry: 0 };
+
+  let undone = false;
+  const s = startCleanup(root, info, (x) => x, {});
+  s.register({ entity: 'order', identifier: 'ord-adhoc', undo: () => { undone = true; } });
+  await s.run();
+  assert.equal(undone, false);
+  assert.equal(readCreatedData(ledger)[0]!.status, 'pending', 'registered before any test ends, kept for the teardown');
+  assert.equal(existsSync(path.join(root, '..', 'dependencies', 'runs')), false, 'no run folder is created for plain Playwright');
+
+  // after the run: the sweep removes it through the declared API (fake HTTP here)
+  const lines: string[] = [];
+  const f = fake((c) => (c.method === 'DELETE' ? 204 : 404));
+  sweepAfterAdhocRun(root, (l) => lines.push(l), { fetch: f.fetch });
+  assert.deepEqual(f.calls.map((c) => `${c.method} ${new URL(c.url).pathname}`), ['DELETE /api/orders/ord-adhoc']);
+  assert.equal(readCreatedData(ledger)[0]!.status, 'deleted');
+  assert.match(lines.join('\n'), /1 removed after the tests, 0 left/);
+
+  // an entity with no declared way to be removed is reported instead of guessed
+  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'sweep', entities: {} })), { ok: true });
+  const s2 = startCleanup(root, { ...info, title: '[TC-10] Other' }, (x) => x, {});
+  s2.register({ entity: 'order', identifier: 'ord-nopath', undo: () => {} });
+  await s2.run();
+  const lines2: string[] = [];
+  sweepAfterAdhocRun(root, (l) => lines2.push(l), { fetch: f.fetch });
+  assert.equal(f.calls.length, 1, 'no further request');
+  assert.match(lines2.join('\n'), /ord-nopath/);
+  assert.match(lines2.join('\n'), /1 left/);
+
+  // without a valid config nothing is attempted, and nothing throws
+  assert.equal(sweepAdhoc(root, null, { trigger: 'no config', fetch: f.fetch }).ran, false);
+  const quiet: string[] = [];
+  sweepAfterAdhocRun(path.join(root, 'nowhere'), (l) => quiet.push(l));
+  assert.deepEqual(quiet, []);
+});
+
+test('adhoc-run passes its arguments to playwright, then sweeps, and returns playwright\'s exit code', (t) => {
+  const root = tmpRoot(t);
+  assert.deepEqual(saveConfig(root, withCleanup({ mode: 'sweep', entities: {} })), { ok: true });
+  // the ledger already holds a record from an earlier plain run; a stand-in Playwright CLI just exits 3
+  const ledger = adhocLedgerDir(root);
+  const pre = startCleanup(root, { file: 'tests/a.spec.ts', title: '[TC-1] A', retry: 0 }, (x) => x, {});
+  pre.register({ entity: 'order', identifier: 'ord-before', undo: () => {} });
+  const cli = path.join(root, 'node_modules', '@playwright', 'test', 'cli.js');
+  mkdirSync(path.dirname(cli), { recursive: true });
+  writeFileSync(cli, 'process.stdout.write("ARGS " + process.argv.slice(2).join(" ") + "\\n"); process.exit(3);\n');
+  const r = spawnSync(process.execPath, [ADHOC_CLI, '--ui', '--root', root], { encoding: 'utf8' });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /ARGS test --ui/);
+  assert.match(r.stdout, /ord-before/, 'the leftover is reported after the tests');
+  assert.equal(readSweepHistory(ledger).length, 1);
 });
 
 test('summaries list what is left, bounded, with the way to delete it', () => {

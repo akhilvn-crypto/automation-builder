@@ -1,5 +1,5 @@
 // The sweep after a run: removes the test data that is still listed in the run's created-data/ ledger. It only ever acts on that
-// ledger (never a search, never a wildcard), only when cleanup.mode is "in-test+sweep" in an allowed non-production environment, and
+// ledger (never a search, never a wildcard), only when cleanup.mode is "in-test+sweep" or "sweep" in an allowed non-production environment, and
 // never more than cleanup.maxDeletesPerRun records. How a record is removed comes from config.cleanup.entities, which the user declared:
 //   api  -> one HTTP call to the app's own origin (endpoints are never guessed), optionally checked afterwards;
 //   ui   -> handed to the data-cleaner agent, which removes it through the app and reports back with `cleanup resolve`;
@@ -14,6 +14,7 @@ import { DEFAULT_MAX_DELETES_PER_RUN } from '../config/schema.ts';
 import { readJson, writeJsonAtomic } from '../utils/fs.ts';
 import { withFileLock } from '../utils/lock.ts';
 import { redactAll } from '../utils/redact.ts';
+import { stateDir } from '../utils/layout.ts';
 import { ARTIFACTS, runDir } from './artifact-manager.ts';
 import {
   cleanupGuard, leftoverLines, readCreatedData, summarizeData, updateRecords, SAFE_IDENTIFIER,
@@ -21,6 +22,7 @@ import {
 } from './created-data.ts';
 
 export const DATA_CLEANUP_SCHEMA_VERSION = 1;
+export const ADHOC_LEDGER_DIR = 'adhoc-data'; // inside dependencies/state/
 const KEEP_SWEEPS = 10;
 const MAX_UI_TASKS = 25;
 const HTTP_TIMEOUT_MS = 15_000;
@@ -170,7 +172,19 @@ function removeThroughApi(
 const OPEN: readonly RecordStatus[] = ['pending', 'failed', 'no_cleanup_path', 'blocked'];
 
 export function sweepData(rootDir: string, runId: string, config: AutomationConfig | null, opts: SweepOptions): SweepReport {
-  const dir = runDir(rootDir, runId);
+  return sweepLedger(runDir(rootDir, runId), config, opts);
+}
+
+// A plain `playwright test` (npm run test:adhoc / test:ui, npx playwright test) has no run, so its ledger lives here instead.
+export function adhocLedgerDir(rootDir: string): string {
+  return path.join(stateDir(rootDir), ADHOC_LEDGER_DIR);
+}
+
+export function sweepAdhoc(rootDir: string, config: AutomationConfig | null, opts: SweepOptions): SweepReport {
+  return sweepLedger(adhocLedgerDir(rootDir), config, opts);
+}
+
+export function sweepLedger(dir: string, config: AutomationConfig | null, opts: SweepOptions): SweepReport {
   const env = opts.env ?? process.env;
   const dryRun = opts.dryRun === true;
   const fetcher = opts.fetch ?? realFetch;
@@ -180,7 +194,7 @@ export function sweepData(rootDir: string, runId: string, config: AutomationConf
   const actions: SweepAction[] = [];
   const uiTasks: UiTask[] = [];
   const patches = new Map<string, Partial<Pick<CreatedRecord, 'status' | 'removedBy' | 'error'>>>();
-  const sweeping = guard.allowed && guard.mode === 'in-test+sweep' && config !== null;
+  const sweeping = guard.allowed && (guard.mode === 'in-test+sweep' || guard.mode === 'sweep') && config !== null;
 
   if (sweeping) {
     const secrets = secretsOf(config, env);

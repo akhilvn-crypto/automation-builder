@@ -50,7 +50,7 @@ is left, by itself, after `execution`, `healing` and `regression_validation` and
   in the UI and reports it with `pl cleanup resolve`. Do this once, after the last stage that runs tests; it is the only time that agent runs.
 - `leftovers > 0`: **tell the user which records are still there and how they can be deleted** (the `lines`; the same list is in `summary.md`
   under "Test data"). Do not fail or block the run for them, and never describe the environment as clean.
-- Cleanup only happens when the config has `cleanup.mode` `in-test` or `in-test+sweep` and the environment is on `cleanup.allowedEnvironments`
+- Cleanup only happens when the config has `cleanup.mode` `in-test`, `in-test+sweep` or `sweep` and the environment is on `cleanup.allowedEnvironments`
   (never production); otherwise everything created is listed as left behind, with the reason. `pl cleanup data <runId> --dry-run` shows
   what a sweep would do; `pl cleanup status <runId>` the counts.
 Always deterministic, no planning needed: preflight, configuration, input_validation, execution, regression_validation,

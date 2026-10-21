@@ -8,6 +8,9 @@ runs/
 state/exploration-store/
 state/artifact-cache/
 
+# Test data registered by plain `playwright test` runs (no pipeline run), swept after the tests
+state/adhoc-data/
+
 # Playwright CLI session artifacts
 .playwright-cli/
 

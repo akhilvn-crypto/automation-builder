@@ -1,8 +1,9 @@
 // The test data a run created, and what became of it. Tests (through the `cleanup` fixture) and the explorer (through
 // `cleanup record`) register every record they create; the record is written to the run's created-data/ folder BEFORE anything
 // tries to delete it, so a test that times out or a worker that dies still leaves a trace. Deleting happens in two places:
-//   - in the test, right after it ends (CleanupSession.run, LIFO), when the test registered an undo;
-//   - in a sweep after the run (data-cleanup.ts), for whatever is still listed here, through a way the user declared.
+//   - in the test, right after it ends (CleanupSession.run, LIFO), when the test registered an undo (not in mode "sweep");
+//   - in a sweep after the run (data-cleanup.ts), for whatever is still listed here, through a way the user declared. The sweep runs
+//     once every test has finished: after the stage in a pipeline run, in Playwright's globalTeardown for a plain `playwright test`.
 // Only what is listed here is ever deleted, and only in an environment the user allowed (never production). No Playwright import.
 
 import { randomBytes } from 'node:crypto';
@@ -270,10 +271,13 @@ export class CleanupSession {
     return this.items.map((i) => i.record);
   }
 
+  // Mode "sweep": nothing is deleted while tests are still running (a later test may need the record); the ledger keeps it pending and
+  // the sweep after the last test removes it through the declared API or UI.
   async run(): Promise<SessionOutcome[]> {
     const redact = this.opts.redact ?? ((t: string) => t);
     const timeout = this.opts.undoTimeoutMs ?? DEFAULT_UNDO_TIMEOUT_MS;
-    for (const item of [...this.items].reverse()) {
+    const deferred = this.opts.guard.mode === 'sweep';
+    for (const item of deferred ? [] : [...this.items].reverse()) {
       const r = item.record;
       if (r.status !== 'pending' || !item.undo) continue;
       try {
@@ -296,7 +300,9 @@ export class CleanupSession {
       r.updatedAt = this.now().toISOString();
     }
     this.save();
-    return this.items.map((i) => ({ id: i.record.id, entity: i.record.entity, identifier: i.record.identifier, status: i.record.status, error: i.record.error }));
+    // A record still pending is waiting for the sweep (mode "sweep"): not a problem the test should report.
+    return this.items.filter((i) => i.record.status !== 'pending')
+      .map((i) => ({ id: i.record.id, entity: i.record.entity, identifier: i.record.identifier, status: i.record.status, error: i.record.error }));
   }
 }
 

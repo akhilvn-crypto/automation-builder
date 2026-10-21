@@ -68,7 +68,9 @@ for (const language of ['typescript', 'javascript']) {
     assert.ok(fwScripts.test && !fwScripts.pipeline && !fwScripts['test:pipeline']);
     // npm test records a run through the pipeline CLI; plain Playwright is test:adhoc.
     assert.equal(fwScripts.test, 'node ../dependencies/engine/cli/quick-run.ts');
-    assert.equal(fwScripts['test:adhoc'], 'playwright test');
+    // plain Playwright goes through adhoc-run.ts so the test data it registered is removed once every test has finished.
+    assert.equal(fwScripts['test:adhoc'], 'node ../dependencies/engine/cli/adhoc-run.ts');
+    assert.equal(fwScripts['test:ui'], 'node ../dependencies/engine/cli/adhoc-run.ts --ui');
     assert.equal(fwScripts['test:headed'], 'node ../dependencies/engine/cli/quick-run.ts --headed');
     assert.ok(depScripts.pipeline && depScripts.test && depScripts['demo:app']);
 
@@ -374,7 +376,8 @@ test('--update moves an unedited "playwright test" npm test script to the record
   init(root, '--update');
   assert.equal(scripts().test, 'node ../dependencies/engine/cli/quick-run.ts');
   assert.equal(scripts()['test:headed'], 'node ../dependencies/engine/cli/quick-run.ts --headed');
-  assert.equal(scripts()['test:adhoc'], 'playwright test');
+  assert.equal(scripts()['test:adhoc'], 'node ../dependencies/engine/cli/adhoc-run.ts');
+  assert.equal(scripts()['test:ui'], 'node ../dependencies/engine/cli/adhoc-run.ts --ui');
 
   const edited = JSON.parse(readFileSync(pkgFile, 'utf8'));
   edited.scripts.test = 'playwright test --workers=1';

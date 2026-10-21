@@ -63,7 +63,8 @@ of `'`, `"` and a backtick) stays `possible_secret_literal`; tell the user to pu
 
 ## Cleanup — removing the data a run created
 
-Config: `cleanup.mode` is `off`, `in-test` (each test removes what it created) or `in-test+sweep` (plus a sweep after the run). It is a
+Config: `cleanup.mode` is `off`, `in-test` (each test removes what it created) `in-test+sweep` (plus a sweep after the run) or `sweep` (nothing is deleted while tests run; one sweep after **every** test has finished, through the
+declared API/UI path, so a later test can still use a record an earlier one created). It is a
 user choice made in setup, never defaulted. `cleanup.allowedEnvironments` names the environments where deleting is allowed; a production
 environment (`prod`, `production`, `prd`, `live`) is refused whatever the config says. Records are only ever removed from a **ledger** of what
 the run itself registered (`dependencies/runs/<runId>/created-data/`): never by search, wildcard or "everything that looks like test data".
@@ -92,7 +93,7 @@ test('[TC-010] Create an order', { annotation: { type: 'testId', description: 'T
 - A cleanup problem never fails the test: it is attached as `data-cleanup` and recorded in the ledger.
 
 **After the run** (`pipeline.ts cleanup data <runId> [--dry-run]`, run by the pipeline after execution, healing and regression, on a failed run,
-and at finalization): for every ledger record still not removed, in `in-test+sweep` mode, in an allowed environment, at most
+and at finalization): for every ledger record still not removed, in `in-test+sweep` or `sweep` mode, in an allowed environment, at most
 `cleanup.maxDeletesPerRun` (default 50):
 - `config.cleanup.entities.<entity>.api` — `{ method, path: "/api/orders/{id}", headersFromEnv?, verifyPath? }`: one HTTP call to the app's own
   origin, headers from env var **names**. **Endpoints are never guessed or scraped:** they are declared by the user (or confirmed by them

@@ -376,11 +376,13 @@ function renderReadme(language) {
 // Framework scripts only. The pipeline's own scripts live in dependencies/package.json.
 function frameworkScripts(language) {
   const scripts = {
-    // Through the pipeline CLI so every run leaves a run folder, reports and evidence; test:adhoc is plain Playwright with no run.
+    // Through the pipeline CLI so every run leaves a run folder, reports and evidence (and the test data it created is removed after
+    // the execution stage); test:adhoc / test:ui are plain Playwright with no run, run through adhoc-run.ts so the test data they
+    // registered is removed once every test has finished.
     test: 'node ../dependencies/engine/cli/quick-run.ts',
-    'test:adhoc': 'playwright test',
+    'test:adhoc': 'node ../dependencies/engine/cli/adhoc-run.ts',
     'test:headed': 'node ../dependencies/engine/cli/quick-run.ts --headed',
-    'test:ui': 'playwright test --ui',
+    'test:ui': 'node ../dependencies/engine/cli/adhoc-run.ts --ui',
     report: 'playwright show-report reports/adhoc/html',
   };
   if (language === 'typescript') scripts.typecheck = 'tsc --noEmit -p tsconfig.json';
@@ -415,7 +417,7 @@ function mergeGitignore(dir, wantedText) {
 }
 
 // Script values earlier plugin versions wrote as defaults: an unedited one is upgraded on --update, a changed one is left alone.
-const SUPERSEDED_SCRIPTS = { test: 'playwright test', 'test:headed': 'playwright test --headed' };
+const SUPERSEDED_SCRIPTS = { test: 'playwright test', 'test:headed': 'playwright test --headed', 'test:adhoc': 'playwright test', 'test:ui': 'playwright test --ui' };
 
 function mergePackageJson(dir, defaults, scripts) {
   const dest = path.join(dir, 'package.json');

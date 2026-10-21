@@ -21,8 +21,9 @@ export const REPORT_MODES = ['standard', 'full', 'audit'] as const;
 export const ISOLATION_MODES = ['serial', 'shared-readonly', 'per-worker-accounts'] as const;
 export const AUTH_APPROACHES = ['none', 'ui-login', 'storage-state'] as const;
 export const EXPLORATION_TOOLS = ['playwright-cli', 'none'] as const;
-// What happens to data the tests created: nothing / each test removes it itself / that plus a sweep after the run (see created-data.ts).
-export const CLEANUP_MODES = ['off', 'in-test', 'in-test+sweep'] as const;
+// What happens to data the tests created: nothing / each test removes it itself / that plus a sweep after the run / only a sweep after
+// every test has finished (tests just register what they create; see created-data.ts).
+export const CLEANUP_MODES = ['off', 'in-test', 'in-test+sweep', 'sweep'] as const;
 export const CLEANUP_API_METHODS = ['DELETE', 'POST', 'PUT', 'PATCH'] as const;
 export const DEFAULT_MAX_DELETES_PER_RUN = 50;
 // Environments that data is never deleted in, whatever the config allows.
