@@ -95,6 +95,67 @@ Tags: smoke, auth
 - The URL contains "/dashboard"
 ```
 
+### Test case template
+
+Copy this for a new case. Only the ID or title, the steps and the expected results are required; delete the rest if you don't need it.
+
+```markdown
+# Login                                  <- optional: the module (several `#` headings in one file = several modules)
+
+## TC-001: Valid user can sign in        <- ID is optional; without one a stable AUTO-xxxxxxxx ID is derived
+Priority: High                           <- optional
+Tags: smoke, auth                        <- optional, comma-separated
+Depends on: TC-000                       <- optional: test IDs that must run first (they then run in order, in one serial group)
+
+### Preconditions
+- An active test account exists
+
+### Test Data
+- email: env:TEST_USER_EMAIL             <- env var NAME; the value lives in automation/.env
+- password: env:TEST_USER_PASSWORD
+- plan: Premium                          <- plain literal
+- wrong_password: literal:wrong-pass-1   <- explicitly fake value, kept out of .env
+
+### Steps
+1. Open the login page
+2. Enter {email} in the Email field      <- {name} must be defined in Test Data
+3. Enter {password} in the Password field
+4. Click the "Sign in" button -> Expected: The dashboard is displayed   <- optional inline expectation for a step
+
+### Expected Results
+- The heading "Dashboard" is visible
+- The URL contains "/dashboard"
+```
+
+Using Excel or CSV instead? One row per case, with these columns. The names are matched flexibly, so keep your own.
+
+| Column | Required | Also recognised as | Notes |
+|---|---|---|---|
+| Test Case ID | ID or title | `TC ID`, `Test Case No`, `Ref` | Must be unique; duplicates are flagged |
+| Title | ID or title | `Scenario`, `Test Case Name`, `Summary` | |
+| Module | no | `Feature`, `Functionality`, `Area`, `Component` | The sheet name is used without it |
+| Preconditions | no | `Prerequisites`, `Precondition` | |
+| Steps | **yes** | `Test Steps`, `Procedure`, `Action` | One step per line, numbered or not |
+| Test Data | no | | `env:VAR`, `literal:value` or a plain value |
+| Expected Result | **yes** | any header starting `Expected` | One result per line |
+| Priority | no | | |
+| Tags | no | `Tag`, `Labels`, `Keywords` | Comma-separated |
+| Depends on | no | `Dependency`, `Dependencies`, `Prerequisite Test(s)`, `Blocked By` | Test IDs; separate several with comma, semicolon, "and" or new lines |
+
+```csv
+Test Case ID,Module,Title,Preconditions,Steps,Test Data,Expected Result,Priority,Tags,Depends on
+TC-001,Login,Valid user can sign in,An active test account exists,"1. Open the login page
+2. Enter {email} in the Email field
+3. Enter {password} in the Password field
+4. Click the ""Sign in"" button","email: env:TEST_USER_EMAIL
+password: env:TEST_USER_PASSWORD","The heading ""Dashboard"" is visible
+The URL contains ""/dashboard""",High,"smoke, auth",
+TC-002,Login,Signed-in user can sign out,,"1. Click ""Sign out""",,The login page is shown,Medium,auth,TC-001
+```
+
+A case that is missing steps or expected results, uses an undefined `{name}`, or depends on an unknown ID is not generated until you
+answer the question Claude asks about it. Any other layout is fine too: if it isn't recognised, Claude asks which column is which.
+
 **Modules.** Cases are grouped into modules (a Markdown `# heading`, an Excel sheet name, or a `Module` column) and
 generated as one file per module: `automation/tests/login.spec.ts`, `create-project.spec.ts`, and so on.
 
