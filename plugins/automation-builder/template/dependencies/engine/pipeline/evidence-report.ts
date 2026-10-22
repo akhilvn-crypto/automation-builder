@@ -23,6 +23,7 @@ import { embedFiles, listEmbeddedFiles, type EmbedItem } from './pdf-embed.ts';
 import type { FinalTest, ReporterStatus } from './reporting.ts';
 import type { RunManifest, TestCounts } from './run-manager.ts';
 import { STEP_LOG_ATTACHMENT, parseStepLog } from './step-evidence.ts';
+import { runOrderNote, sortedByTestId } from './test-order.ts';
 import { runSupervised } from './supervised-run.ts';
 import type { TestSpec, TestSpecDocument } from './test-spec.ts';
 import { FFMPEG_HOWTO, convertToMp4, findFfmpeg, looksLikeMp4 } from './video-transcode.ts';
@@ -75,6 +76,7 @@ export interface AttemptView {
 
 export interface TestView {
   anchor: string;
+  runOrder: number | null; // position in the execution order (tests are listed by ID, so this is shown as a note); null if it never ran
   testId: string;
   title: string;
   module: string | null;
@@ -99,7 +101,8 @@ export interface EvidenceModel {
   baseUrl: string;
   browsers: string[];
   counts: TestCounts;
-  tests: TestView[];
+  tests: TestView[]; // sorted by test ID, then browser project
+  executed: number; // how many of them ran (the denominator of the run-order notes)
   totals: { tests: number; steps: number; screenshots: number; videos: number };
   gaps: string[]; // evidence that should exist but does not
   playback: VideoPlayback; // filled in by buildEvidenceReport once the videos were converted
@@ -194,7 +197,8 @@ export function buildEvidenceModel(i: EvidenceInputs): EvidenceModel {
   const gaps: string[] = [];
   const reportDir = evidenceReportDir(i.rootDir, i.manifest.runId);
 
-  const tests = i.tests.map((ft, n): TestView => {
+  // Built in execution order (anchors and the evidence gaps follow it), then listed by test ID.
+  const built = i.tests.map((ft, n): TestView => {
     const spec = specById.get(ft.testId) ?? null;
     const attempts: AttemptView[] = [];
     const initialResult = initial.get(ft.key);
@@ -209,7 +213,7 @@ export function buildEvidenceModel(i: EvidenceInputs): EvidenceModel {
     }
     const file = initialResult?.file ?? null;
     return {
-      anchor: `t${n + 1}`,
+      anchor: `t${n + 1}`, runOrder: ft.runOrder ?? null,
       testId: ft.testId, title: ft.title.startsWith(`[${ft.testId}]`) ? ft.title.slice(ft.testId.length + 2).trim() : ft.title,
       module: spec?.module ?? null, project: ft.project, outcome: ft.outcome, category: ft.category, note: ft.note,
       file: file ? `${file}${initialResult!.line ? `:${initialResult!.line}` : ''}` : null,
@@ -219,11 +223,12 @@ export function buildEvidenceModel(i: EvidenceInputs): EvidenceModel {
       attempts,
     };
   });
+  const tests = sortedByTestId(built);
 
   return {
     runId: i.manifest.runId, command: i.manifest.command, generatedAt: i.now.toISOString(),
     environment: i.config.app.environment, baseUrl: i.config.app.baseUrl, browsers: i.config.browsers,
-    counts: i.counts, tests,
+    counts: i.counts, tests, executed: tests.filter((t) => t.runOrder != null).length,
     totals: { tests: tests.length, steps: counters.steps, screenshots: counters.screenshots, videos: counters.videos },
     gaps, playback: { playable: 0, note: null },
   };
@@ -247,7 +252,7 @@ const CSS = `
 * { box-sizing: border-box; }
 body { font: 9.5pt/1.4 "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); margin: 0; }
 h1 { font-size: 22pt; margin: 0 0 2mm; } h2 { font-size: 14pt; margin: 0 0 2mm; } h3 { font-size: 10.5pt; margin: 5mm 0 1.5mm; }
-.muted { color: var(--muted); } .mono { font-family: Consolas, "Courier New", monospace; }
+.muted { color: var(--muted); } .order { font-size: 8pt; white-space: nowrap; } .mono { font-family: Consolas, "Courier New", monospace; }
 .meta { display: grid; grid-template-columns: 34mm 1fr; gap: 1mm 4mm; margin: 4mm 0; } .meta dt { color: var(--muted); } .meta dd { margin: 0; }
 .counts { display: flex; flex-wrap: wrap; gap: 2mm; margin: 3mm 0 5mm; }
 .chip { border: 1px solid var(--line); border-radius: 2mm; padding: 1.5mm 3mm; min-width: 22mm; } .chip b { display: block; font-size: 14pt; }
@@ -355,7 +360,7 @@ function attemptSection(a: AttemptView, src: ImageSource): string {
   return parts.join('\n');
 }
 
-function testSection(t: TestView, src: ImageSource): string {
+function testSection(t: TestView, src: ImageSource, executed: number): string {
   const meta: [string, string][] = [];
   if (t.module) meta.push(['Module', t.module]);
   meta.push(['Browser project', t.project]);
@@ -363,6 +368,8 @@ function testSection(t: TestView, src: ImageSource): string {
   if (t.tags.length) meta.push(['Tags', t.tags.join(', ')]);
   if (t.file) meta.push(['Test file', t.file]);
   if (t.category) meta.push(['Failure category', t.category]);
+  const ran = runOrderNote(t.runOrder, executed);
+  if (ran) meta.push(['Execution order', ran]);
   const verdict = t.outcome === 'passed' ? 'The test passed, so each expected result below was asserted successfully.'
     : t.outcome === 'blocked' ? 'The test did not run, so none of these expected results was verified.'
       : `Overall result: ${OUTCOME_LABEL[t.outcome] ?? t.outcome}. See the attempts above for the step where it diverged.`;
@@ -406,7 +413,8 @@ export function* evidenceHtmlParts(m: EvidenceModel, src: ImageSource = embedIma
   const chip = (label: string, n: number, cls: string) => `<div class="chip ${cls}"><b style="color:var(--c, var(--ink))">${n}</b>${label}</div>`;
   const toc = m.tests.map((t) => {
     const last = t.attempts.at(-1);
-    return `<tr><td class="mono">${e(t.testId)}</td><td><a href="#${t.anchor}">${e(t.title)}</a></td><td>${e(t.module ?? '')}</td>`
+    const ran = runOrderNote(t.runOrder, m.executed);
+    return `<tr><td class="mono">${e(t.testId)}</td><td><a href="#${t.anchor}">${e(t.title)}</a>${ran ? ` <span class="muted order">${e(ran)}</span>` : ''}</td><td>${e(t.module ?? '')}</td>`
       + `<td><span class="badge ${t.outcome}">${e(OUTCOME_LABEL[t.outcome] ?? t.outcome)}</span></td><td>${last ? last.steps.length : 0}</td></tr>`;
   }).join('');
   yield `<!doctype html>
@@ -427,9 +435,10 @@ export function* evidenceHtmlParts(m: EvidenceModel, src: ImageSource = embedIma
 ${m.totals.videos ? playingTheVideos(m) : ''}
 ${m.gaps.length ? `<div class="box gaps"><b>Evidence gaps (${m.gaps.length})</b><ul>${m.gaps.slice(0, 40).map((g) => `<li>${e(g)}</li>`).join('')}${m.gaps.length > 40 ? `<li>… and ${m.gaps.length - 40} more</li>` : ''}</ul></div>` : ''}
 <h3>Tests</h3>
+<p class="muted">Listed by test ID. The small note beside each test says where it fell in the order the tests were executed, which can differ (for example sign-in tests run last).</p>
 <table><thead><tr><th>ID</th><th>Test</th><th>Module</th><th>Result</th><th>Steps</th></tr></thead><tbody>${toc}</tbody></table>
 </section>`;
-  for (const t of m.tests) yield testSection(t, src);
+  for (const t of m.tests) yield testSection(t, src, m.executed);
   yield '</body></html>';
 }
 

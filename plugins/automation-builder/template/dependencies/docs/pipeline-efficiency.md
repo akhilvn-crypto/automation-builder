@@ -197,8 +197,10 @@ and says plainly what it could not remove.
   allow-list the `dependencies/engine` folder.
 - A fixture change touches every test (all tests import `test`); a page object or helper change touches only the tests whose block uses it
   (matched by the imported names). Static relative imports and re-exports are followed; dynamic `import()` and package imports are not.
-- The generator and reviewer rules live in the plugin, so their "version" is the plugin version recorded in `state/scaffold.json`: any plugin update
-  regenerates and re-reviews every test once.
+- The generator and reviewer rules live in the plugin, so their "version" is a fingerprint of the rule files (the agent plus the framework and
+  test-data skills) that `init` records in `state/scaffold.json` (`rules.generator`, `rules.reviewer`). A plugin update that leaves those files
+  unchanged keeps every cached test and review, and so keeps `covered` exploration; one that changes them regenerates/re-reviews once. A project
+  scaffolded before the fingerprints existed falls back to the plugin version (every update invalidates) until its next `init --update`.
 - Test data cleanup removes only what the run registered. A test written without `cleanup.register` leaves its data unlisted (the review flags the
   common case, `uniqueSuffix()` without a registration, but cannot see every way to create a record). The API sweep sends the declared headers only; an
   app whose delete needs the browser session cookie needs a `ui` path. UI removal is done by an agent and is checked by a fresh snapshot, not proven.

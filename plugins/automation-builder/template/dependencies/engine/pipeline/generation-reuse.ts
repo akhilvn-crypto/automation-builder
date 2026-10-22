@@ -89,7 +89,7 @@ export function explorationEvidenceHash(record: ExplorationRecord | null, testId
 }
 
 export function ruleVersions(rootDir: string): { generatorRules: string; framework: string } {
-  return { generatorRules: rulesVersion(rootDir), framework: fingerprintFiles(rootDir, FRAMEWORK_FILES) };
+  return { generatorRules: rulesVersion(rootDir, 'generator'), framework: fingerprintFiles(rootDir, FRAMEWORK_FILES) };
 }
 
 // ---- what a test imports ----

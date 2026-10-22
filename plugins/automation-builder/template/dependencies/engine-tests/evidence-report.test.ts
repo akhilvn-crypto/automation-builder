@@ -423,3 +423,46 @@ test('report build lists evidence-pdf next to the Playwright reporters and write
   assert.deepEqual(summary.reporters.map((x) => `${x.name}:${x.status}`), ['json:generated', 'evidence-pdf:generated']);
   assert.match(readFileSync(path.join(runDir, 'summary.md'), 'utf8'), /- evidence-pdf: generated — reports\/.*evidence-report\.pdf \(1 tests, 1 steps, 1 screenshots, 1 videos embedded/);
 });
+
+// The run order is not the ID order (sign-in tests run last, dependent chains stay together), so the lists read by ID.
+function outOfOrderRun(root: string) {
+  const r = results([
+    result('TC-2', 'failed', [attempt(root, 'tc2', { status: 'failed', steps: [{ title: 'Open' }] })]),
+    result('TC-10', 'failed', [attempt(root, 'tc10', { status: 'failed', steps: [{ title: 'Open' }] })]),
+    result('TC-1', 'passed', [attempt(root, 'tc1', { steps: [{ title: 'Open' }] })]),
+  ]);
+  return { r, doc: specs(spec('TC-1'), spec('TC-2'), spec('TC-5'), spec('TC-10')) };
+}
+
+test('the evidence report lists tests by ID (natural order) and keeps each execution position as a note', (t) => {
+  const root = tmpRoot(t);
+  const { r, doc } = outOfOrderRun(root);
+  const m = buildEvidenceModel(inputs(root, r, doc));
+  assert.deepEqual(m.tests.map((x) => [x.testId, x.runOrder]), [['TC-1', 3], ['TC-2', 1], ['TC-5', null], ['TC-10', 2]], 'TC-10 after TC-5, not after TC-1; TC-5 never ran');
+  assert.equal(m.executed, 3);
+  const html = renderEvidenceHtml(m);
+  const order = ['TC-1', 'TC-2', 'TC-5', 'TC-10'].map((id) => html.indexOf(`<section class="test`) >= 0 ? html.indexOf(`<span class="mono">[${id}]</span>`) : -1);
+  assert.ok(order.every((n) => n > 0) && [...order].sort((a, b) => a - b).join() === order.join(), 'the per-test sections follow the ID order too');
+  assert.match(html, /<td class="mono">TC-2<\/td><td><a href="#t1">Title of TC-2<\/a> <span class="muted order">ran 1st of 3<\/span>/, 'anchors still follow the execution order');
+  assert.match(html, /<td class="mono">TC-1<\/td><td><a href="#t3">Title of TC-1<\/a> <span class="muted order">ran 3rd of 3<\/span>/);
+  assert.match(html, /<dt>Execution order<\/dt><dd>ran 2nd of 3<\/dd>/);
+  assert.doesNotMatch(html, /TC-5<\/td><td><a href="#t4">Title of TC-5<\/a> <span class="muted order">/, 'a test that never ran has no position');
+});
+
+test('summary.md lists the tests needing attention by ID with the execution position; summary.json stays in execution order', (t) => {
+  const root = tmpRoot(t);
+  const { r, doc } = outOfOrderRun(root);
+  writeFile(root, `reports/${RUN_ID}/initial/results.json`, '{}');
+  const runDir = path.join(root, '..', 'dependencies', 'runs', RUN_ID);
+  const summary = buildSummary({
+    rootDir: root, runDir, manifest, config: { ...validConfig(), reporters: ['json'] }, results: r, analysis: null, healing: null, regression: null, specs: doc, generation: null,
+  });
+  assert.deepEqual(summary.tests.map((x) => x.testId), ['TC-2', 'TC-10', 'TC-1', 'TC-5'], 'the machine-readable list is unchanged');
+  assert.deepEqual(summary.tests.map((x) => x.runOrder), [1, 2, 3, null]);
+  const md = readFileSync(path.join(runDir, 'summary.md'), 'utf8');
+  const rows = md.split('\n').filter((l) => /^\| \[TC-/.test(l));
+  assert.deepEqual(rows.map((l) => /\[(TC-\d+)\]/.exec(l)![1]), ['TC-2', 'TC-5', 'TC-10']);
+  assert.match(rows[0]!, /ran 1st of 3 \|$/);
+  assert.match(rows[2]!, /ran 2nd of 3 \|$/);
+  assert.doesNotMatch(rows[1]!, /ran \d/, 'TC-5 is blocked: it never ran');
+});

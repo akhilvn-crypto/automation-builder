@@ -50,7 +50,7 @@ interface ReviewCtx {
 }
 
 export function reviewVersions(rootDir: string): Record<string, string> {
-  return { staticReview: STATIC_REVIEW_VERSION, reviewerRules: rulesVersion(rootDir), framework: fingerprintFiles(rootDir, FRAMEWORK_FILES) };
+  return { staticReview: STATIC_REVIEW_VERSION, reviewerRules: rulesVersion(rootDir, 'reviewer'), framework: fingerprintFiles(rootDir, FRAMEWORK_FILES) };
 }
 
 function reviewInputs(c: ReviewCtx, testId: string, file: string): Record<string, string> | null {

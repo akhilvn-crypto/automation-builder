@@ -23,6 +23,7 @@ import type { HealingLog } from './healing.ts';
 import type { RunManifest, TestCounts } from './run-manager.ts';
 import { runSupervised } from './supervised-run.ts';
 import type { TestSpecDocument } from './test-spec.ts';
+import { compareTestIds, runOrderNote, sortedByTestId } from './test-order.ts';
 
 export const SUMMARY_SCHEMA_VERSION = 1;
 const MAX_LISTED_LEFTOVERS = 50;
@@ -37,6 +38,9 @@ export interface FinalTest {
   category: Category | null;
   note: string | null;
   evidence: string[];
+  // 1-based position in the execution results (the order the tests actually ran); null for a test that never ran.
+  // Optional so summaries written before it existed stay valid. The lists in the reports are shown by test ID instead.
+  runOrder?: number | null;
 }
 
 export interface ReporterStatus {
@@ -89,7 +93,7 @@ export function computeFinalTests(i: OutcomeInputs): FinalTest[] {
   const out: FinalTest[] = [];
   const seenIds = new Set<string>();
 
-  for (const t of i.results?.tests ?? []) {
+  for (const [position, t] of (i.results?.tests ?? []).entries()) {
     seenIds.add(t.testId);
     let outcome: FinalOutcome = t.outcome;
     let note: string | null = null;
@@ -107,6 +111,7 @@ export function computeFinalTests(i: OutcomeInputs): FinalTest[] {
       category: outcome === 'passed' ? null : category.get(t.key) ?? null,
       note,
       evidence: t.attempts.flatMap((a) => a.attachments.map((x) => x.path)),
+      runOrder: position + 1,
     });
   }
 
@@ -117,7 +122,7 @@ export function computeFinalTests(i: OutcomeInputs): FinalTest[] {
     const reason = s.status === 'needs_clarification'
       ? `needs clarification: ${s.ambiguities.map((a) => a.message).join('; ')}`
       : excluded.get(s.id) ?? (i.results ? 'generated test produced no result' : 'not executed');
-    out.push({ key: `${s.id}@-`, testId: s.id, title: s.title, project: '-', outcome: 'blocked', category: null, note: reason, evidence: [] });
+    out.push({ key: `${s.id}@-`, testId: s.id, title: s.title, project: '-', outcome: 'blocked', category: null, note: reason, evidence: [], runOrder: null });
   }
   return out;
 }
@@ -353,13 +358,18 @@ export function renderSummaryMarkdown(s: RunSummary): string {
   const cats = Object.entries(s.categories);
   if (cats.length) lines.push('## Failure categories', '', ...cats.map(([k, v]) => `- ${k}: ${v}`), '');
   lines.push('## Healing', '', `Attempts: ${s.healing.attempts} · healed: ${s.healing.healed} · still failing: ${s.healing.stillFailing} · rejected by guard: ${s.healing.rejectedByGuard}`, '');
-  const notPassed = s.tests.filter((t) => t.outcome !== 'passed');
+  // Listed by test ID; where each test fell in the execution order is a note, not the sort key.
+  const executed = s.tests.filter((t) => t.runOrder != null).length;
+  const notPassed = sortedByTestId(s.tests.filter((t) => t.outcome !== 'passed'));
   if (notPassed.length) {
     lines.push('## Tests needing attention', '', '| Test | Project | Outcome | Category | Note |', '|---|---|---|---|---|');
-    for (const t of notPassed) lines.push(`| ${(t.title.startsWith(`[${t.testId}]`) ? t.title : `[${t.testId}] ${t.title}`).replace(/\|/g, '\\|')} | ${t.project} | ${t.outcome} | ${t.category ?? ''} | ${(t.note ?? '').replace(/\|/g, '\\|')} |`);
+    for (const t of notPassed) {
+      const note = [t.note, runOrderNote(t.runOrder, executed)].filter(Boolean).join(' · ');
+      lines.push(`| ${(t.title.startsWith(`[${t.testId}]`) ? t.title : `[${t.testId}] ${t.title}`).replace(/\|/g, '\\|')} | ${t.project} | ${t.outcome} | ${t.category ?? ''} | ${note.replace(/\|/g, '\\|')} |`);
+    }
     lines.push('');
   }
-  if (s.unresolved.length) lines.push('## Unresolved', '', ...s.unresolved.map((u) => `- ${u.key}: ${u.reason}`), '');
+  if (s.unresolved.length) lines.push('## Unresolved', '', ...[...s.unresolved].sort((a, b) => compareTestIds(a.key, b.key)).map((u) => `- ${u.key}: ${u.reason}`), '');
   if (s.testData) {
     const d = s.testData;
     lines.push('## Test data', '', `Created ${d.created} record(s) · removed ${d.removed} · still there ${d.leftovers.length + d.truncated}`, '');

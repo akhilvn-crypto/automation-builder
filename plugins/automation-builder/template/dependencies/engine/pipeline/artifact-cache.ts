@@ -108,10 +108,14 @@ export const PARSER_VERSION = fingerprintSources(
 );
 export const STATIC_REVIEW_VERSION = fingerprintSources(new URL('./static-review.ts', import.meta.url), new URL('./session-layout.ts', import.meta.url));
 
-// The generator and reviewer rules (agents and skills) ship with the plugin, not with the project, so their version is the
-// plugin version recorded when the project was scaffolded or last updated: a plugin update invalidates what they produced.
-export function rulesVersion(rootDir: string): string {
-  return readScaffold(rootDir)?.pluginVersion ?? 'unknown';
+// The generator and reviewer rules (agents and skills) ship with the plugin, not with the project, so init records a
+// fingerprint of the rule files each role depends on when it scaffolds or updates the project. A plugin update that does not
+// change those files keeps what they produced; one that does invalidates it. Projects scaffolded before the fingerprints
+// existed fall back to the plugin version (every update invalidates) until their next `init --update`.
+export function rulesVersion(rootDir: string, role: 'generator' | 'reviewer'): string {
+  const s = readScaffold(rootDir);
+  if (!s) return 'unknown';
+  return s.rules ? s.rules[role] : `plugin:${s.pluginVersion}`;
 }
 
 // Compiler settings shared by every generated test. Everything else a test depends on is found from its own imports

@@ -77,6 +77,30 @@ function walk(abs) {
   return readdirSync(abs).flatMap((n) => walk(path.join(abs, n)));
 }
 
+// The generator and reviewer rules ship with the plugin (agent + the skills it loads), not with the project. The engine's
+// artifact cache keys generated tests and reviews on a fingerprint of exactly those files, so a plugin update that does not
+// touch them keeps every cached test and review (see rulesVersion in engine/pipeline/artifact-cache.ts).
+const SHARED_RULE_FILES = ['skills/playwright-framework/SKILL.md', 'skills/test-data-management/SKILL.md'];
+const RULE_FILES = {
+  generator: ['agents/playwright-generator.md', ...SHARED_RULE_FILES],
+  reviewer: ['agents/test-reviewer.md', ...SHARED_RULE_FILES],
+};
+
+function ruleFingerprints() {
+  const out = {};
+  for (const [role, files] of Object.entries(RULE_FILES)) {
+    const h = createHash('sha256');
+    for (const f of [...files].sort()) {
+      const abs = path.join(PLUGIN_ROOT, f);
+      if (!existsSync(abs)) throw new Error(`plugin is missing rule file ${f}`);
+      // Line endings and trailing whitespace must not change the fingerprint (Windows checkouts, editors).
+      h.update(`${f}\0`).update(readFileSync(abs, 'utf8').replace(/\r\n/g, '\n').split('\n').map((l) => l.trimEnd()).join('\n').trimEnd()).update('\0');
+    }
+    out[role] = h.digest('hex');
+  }
+  return out;
+}
+
 function writeText(dest, text, bucket) {
   if (!dry) { mkdirSync(path.dirname(dest), { recursive: true }); writeFileSync(dest, text); }
   summary[bucket].push(rel(dest));
@@ -539,7 +563,7 @@ try {
   mergePackageJson(dep, { name: `${base}-automation-dependencies`, description: 'Automation Builder pipeline: engine, docs, test-case input and run state' }, dependenciesScripts(language));
   mergeClaudeMd();
 
-  writeText(NEW_SCAFFOLD, JSON.stringify({ pluginVersion: PLUGIN_VERSION, language }, null, 2) + '\n', existsSync(NEW_SCAFFOLD) ? 'overwritten' : 'created');
+  writeText(NEW_SCAFFOLD, JSON.stringify({ pluginVersion: PLUGIN_VERSION, language, rules: ruleFingerprints() }, null, 2) + '\n', existsSync(NEW_SCAFFOLD) ? 'overwritten' : 'created');
 
   summary.next = [
     language === 'typescript'

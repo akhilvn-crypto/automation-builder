@@ -71,7 +71,14 @@ for (const language of ['typescript', 'javascript']) {
     const inDependencies = names(path.join(root, 'dependencies'));
     for (const d of ['engine', 'docs', 'input', 'state', 'demo', 'engine-tests']) assert.ok(inDependencies.includes(d), `dependencies/${d}/ exists`);
     assert.ok(!inDependencies.includes('node_modules'), 'dependencies/ has no node_modules');
-    assert.equal(JSON.parse(readFileSync(path.join(root, 'dependencies', 'state', 'scaffold.json'), 'utf8')).language, language);
+    const scaffold = JSON.parse(readFileSync(path.join(root, 'dependencies', 'state', 'scaffold.json'), 'utf8'));
+    assert.equal(scaffold.language, language);
+    assert.match(scaffold.rules.generator, /^[0-9a-f]{64}$/, 'generator rule fingerprint recorded');
+    assert.match(scaffold.rules.reviewer, /^[0-9a-f]{64}$/, 'reviewer rule fingerprint recorded');
+    assert.notEqual(scaffold.rules.generator, scaffold.rules.reviewer);
+    const updated = init(root, '--update');
+    assert.equal(updated.code, 0, JSON.stringify(updated.json));
+    assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'dependencies', 'state', 'scaffold.json'), 'utf8')).rules, scaffold.rules, 'fingerprints are stable across an update');
 
     // The framework's mandatory helpers/ folder replaces utils/, and nothing imports the old name.
     assert.ok(existsSync(path.join(root, 'automation', 'helpers', language === 'typescript' ? 'test-data.ts' : 'test-data.js')));

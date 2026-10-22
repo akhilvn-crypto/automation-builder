@@ -55,7 +55,8 @@ test.describe('Shop', () => {
 `;
 
 const config = () => ({ ...validConfig(), input: { testCasesPath: 'input/test-cases' } });
-const SCAFFOLD = (version: string) => JSON.stringify({ pluginVersion: version, language: 'typescript' });
+// Without `rules` this is a project scaffolded before rule fingerprints existed (cache keys fall back to the plugin version).
+const SCAFFOLD = (version: string, rules?: { generator: string; reviewer: string }) => JSON.stringify({ pluginVersion: version, language: 'typescript', ...(rules ? { rules } : {}) });
 
 function record(over: { homeName?: string } = {}): ExplorationRecord {
   const el = (role: string, name: string) => ({ role, name, testId: null, candidateLocator: `getByRole('${role}', { name: '${name}' })`, confidence: 'high' as const, notes: null });
@@ -272,7 +273,28 @@ test('a test depends only on the framework files it imports: another module\'s p
   assert.deepEqual(actions(p), { 'TC-1': 'generate', 'TC-2': 'generate' });
 });
 
-test('a new plugin version or new compiler settings invalidate every generated test; a hand-edited test is regenerated', (t) => {
+test('a plugin update that leaves the rule files unchanged keeps generated tests and reviews; changed rules invalidate only their role', (t) => {
+  const p = project(t);
+  const rules = { generator: 'g1', reviewer: 'r1' };
+  writeDep(p.root, 'state/scaffold.json', SCAFFOLD('1.0.0', rules));
+  seal(p);
+  const review = () => planReview({ rootDir: p.root, specs: p.specs, record: p.record, config: p.cfg, generation: p.generation });
+  assert.equal(plan(p).plan.summary.reuse, 2);
+  assert.deepEqual(review().plan.summary, { review: 0, skip: 2 });
+
+  writeDep(p.root, 'state/scaffold.json', SCAFFOLD('2.0.0', rules));
+  assert.equal(plan(p).plan.summary.reuse, 2, 'a new plugin version with identical rules reuses the generated tests');
+  assert.deepEqual(review().plan.summary, { review: 0, skip: 2 }, 'and the reviews');
+
+  writeDep(p.root, 'state/scaffold.json', SCAFFOLD('2.0.0', { ...rules, reviewer: 'r2' }));
+  assert.equal(plan(p).plan.summary.reuse, 2, 'changed reviewer rules do not regenerate tests');
+  assert.match(review().plan.tests[0]!.reason, /reviewer rules changed/);
+
+  writeDep(p.root, 'state/scaffold.json', SCAFFOLD('2.0.0', { ...rules, generator: 'g2' }));
+  assert.deepEqual(plan(p).plan.specs.map((s) => s.reason), ['generator rules changed', 'generator rules changed']);
+});
+
+test('without rule fingerprints a new plugin version or new compiler settings invalidate every generated test; a hand-edited test is regenerated', (t) => {
   const p = project(t);
   seal(p);
   writeDep(p.root, 'state/scaffold.json', SCAFFOLD('1.1.0'));
