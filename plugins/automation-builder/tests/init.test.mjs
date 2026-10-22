@@ -38,6 +38,23 @@ function init(root, ...args) {
 
 const names = (dir) => readdirSync(dir).sort();
 
+test('refuses to scaffold into a Cowork session folder (cwd with mnt/ and no project files) unless --root is given', (t) => {
+  const session = project(t);
+  mkdirSync(path.join(session, 'mnt', 'MyProject'), { recursive: true });
+  mkdirSync(path.join(session, 'mnt', '.local-plugins'), { recursive: true });
+  const r = spawnSync(process.execPath, [INIT, '--language', 'typescript'], { cwd: session, encoding: 'utf8' });
+  const json = JSON.parse(r.stdout);
+  assert.equal(r.status, 2, r.stdout);
+  assert.equal(json.needsInput, 'root');
+  assert.deepEqual(json.candidateRoots, [path.join(session, 'mnt', 'MyProject').split(path.sep).join('/')]);
+  assert.ok(!existsSync(path.join(session, 'automation')), 'nothing was written to the session folder');
+
+  const ok = spawnSync(process.execPath, [INIT, '--language', 'typescript', '--root', path.join(session, 'mnt', 'MyProject')], { cwd: session, encoding: 'utf8' });
+  assert.equal(ok.status, 0, ok.stdout);
+  assert.ok(existsSync(path.join(session, 'mnt', 'MyProject', 'automation', 'tests')));
+  assert.ok(existsSync(path.join(session, 'mnt', 'MyProject', 'dependencies', 'engine', 'cli', 'pipeline.ts')));
+});
+
 for (const language of ['typescript', 'javascript']) {
   test(`${language}: automation/ holds the framework only, the pipeline lives in dependencies/`, (t) => {
     const root = project(t);

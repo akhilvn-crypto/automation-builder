@@ -34,8 +34,21 @@ chosen, never carry on past a material choice (language, test-case path, reports
 
 ## Where things are
 
-- **Project root** = the folder the session works in (Claude Code: the launch folder; Cowork: the folder the user selected for the
-  task). `automation/` and `dependencies/` are created there. Run every `node dependencies/engine/cli/pipeline.ts …` from it.
+- **Project root** = the folder the user's project lives in (Claude Code: the launch folder; Cowork: the folder the user attached
+  or selected for the task). `automation/` and `dependencies/` are created there. Run every `node dependencies/engine/cli/pipeline.ts …`
+  from it.
+  **In Cowork the shell's starting directory is usually NOT that folder.** It is a per-session scratch folder, and the attached
+  folder is mounted beside it, typically `mnt/<folder name>` (other entries in `mnt/` such as `outputs`, `uploads` or dot-folders are
+  not the project). Files written anywhere else are not saved to the user's folder. So, before the first command of any pipeline
+  command, once per session:
+  1. Find the root: the attached folder named in the session (or the one `mnt/` entry that is the user's folder; `ls mnt`). If several
+     candidates remain and none is clearly the user's project, ask which one (numbered chat question).
+  2. Remember it as `<root>` and never write outside it. Pass it to the scaffolder as `--root "<root>"`, and start every engine command
+     with `cd "<root>" &&` (shell state may not persist between calls).
+  3. After scaffolding, check `<root>/dependencies/engine/cli/pipeline.ts` exists and tell the user the root path you used. If the
+     scaffolder answers `needsInput: "root"`, it refused to write into the session scratch folder: use one of its `candidateRoots`.
+  4. If no folder is attached, or it is read-only (a write fails), stop and ask the user to attach a writable folder. Do not scaffold
+     into the scratch folder, `outputs/` or the plugin folder, and do not report success.
 - **Plugin files** (`scripts/init.mjs`, `skills/…`) are at `${CLAUDE_PLUGIN_ROOT}`. If that variable arrives unexpanded or empty,
   or the file is not there (Cowork mounts plugins read-only under paths such as `mnt/.local-plugins` or `mnt/.plugins`), find it:
   `find mnt/.local-plugins mnt/.plugins -path '*automation-builder*' -name init.mjs 2>/dev/null`, and if those folders do not exist

@@ -33,11 +33,14 @@ TypeScript **or** JavaScript, as the user chooses.
      **JavaScript** — plain ES modules with JSDoc types, no compiler. Say that the choice is fixed for the project.
    - Pass the answer as `--language typescript|javascript`.
 
+   **Project root first.** Work out `<root>` as environment.md ("Where things are") describes. In Cowork the shell does not start in the
+   attached folder, so always pass `--root "<root>"` (in Claude Code it may be left out when the launch folder is the project).
+
 2. Show what will happen with a dry run (if `${CLAUDE_PLUGIN_ROOT}` is not expanded or the script is not there, locate the plugin
    as described in environment.md, "Where things are"):
 
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --dry-run --language <choice> $ARGUMENTS
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --dry-run --language <choice> [--root "<root>"] $ARGUMENTS
    ```
 
    Summarize `created`, `overwritten`, `merged`, `moved`, `removed`, `rewritten` and `warnings` from the JSON.
@@ -57,8 +60,11 @@ TypeScript **or** JavaScript, as the user chooses.
 3. Run it for real (same arguments, without `--dry-run`):
 
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --language <choice> $ARGUMENTS
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --language <choice> [--root "<root>"] $ARGUMENTS
    ```
+
+   Exit code 2 with `needsInput: "root"` means the working directory is a Cowork session folder: rerun with `--root` set to one of
+   `candidateRoots` (the user's attached folder). Afterwards confirm `projectRoot` in the JSON is the user's folder.
 
 4. Report the result and the next step. Do **not** install anything here: `typescript` (TypeScript projects only),
    `@types/node`, `@playwright/test` and browsers are offered one by one, with explicit approval, by the

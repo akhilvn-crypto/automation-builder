@@ -455,12 +455,28 @@ function mergeClaudeMd() {
   writeText(dest, `${current.replace(/\s*$/, '\n')}\n${block}`, 'merged');
 }
 
+// In Claude Cowork the shell starts in a per-session scratch folder and the folder the user attached is mounted under mnt/<name>/.
+// Scaffolding into the scratch folder "works" but nothing lands in the user's folder, so without an explicit --root a working
+// directory that looks like that (a mnt/ folder, and none of the markers of a real project) is refused with the candidates.
+function checkRootIsNotSandboxScratch() {
+  if (values.root !== undefined) return;
+  const mnt = path.join(projectRoot, 'mnt');
+  if (!existsSync(mnt) || !statSync(mnt).isDirectory()) return;
+  if (['.git', 'package.json', FRAMEWORK, DEPENDENCIES].some((n) => existsSync(path.join(projectRoot, n)))) return;
+  const candidates = readdirSync(mnt, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    .map((e) => path.join(mnt, e.name).split(path.sep).join('/'));
+  summary.candidateRoots = candidates;
+  throw new NeedsInput('root', `The working directory (${projectRoot}) looks like a Cowork session folder, not the user's project: it has a mnt/ folder and no project files. Scaffolding here would not save anything into the attached folder. Pass --root <the folder the user attached>${candidates.length ? ` (candidates: ${candidates.join(', ')})` : ''}.`);
+}
+
 // ---------------------------------------------------------------- main
 
 try {
   const major = Number(process.versions.node.split('.')[0]);
   if (major < 24) summary.warnings.push(`Node ${process.versions.node} detected; the pipeline needs Node 24+ (TypeScript type stripping)`);
   if (!existsSync(projectRoot)) throw new Error(`root does not exist: ${projectRoot}`);
+  checkRootIsNotSandboxScratch();
 
   // The language is the user's choice, made once: the scaffolded files are language-specific.
   const scaffold = readScaffold();

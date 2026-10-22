@@ -48,7 +48,10 @@ including the checkpoint summary. Runs started here are ordinary `playwright-pip
 
 ## Phase 1: language and framework
 
-1. Look for `dependencies/state/scaffold.json` (older projects: `automation/config/scaffold.json`).
+0. **Project root.** Resolve `<root>` (the user's attached folder) as environment.md "Where things are" says, and `cd "<root>"` before
+   every command. In Cowork the shell starts in a scratch folder, so nothing may be written until `<root>` is known; pass
+   `--root "<root>"` to init.
+1. Look for `<root>/dependencies/state/scaffold.json` (older projects: `automation/config/scaffold.json`).
    - **Present** → the language is fixed: read `language`, never ask, never pass `--language`. If its `pluginVersion` differs from the
      installed plugin's version (`.claude-plugin/plugin.json` in the plugin root), or the project still has the old single-folder
      layout (`automation/engine/` exists), run the init dry-run with `--update`, show it, and ask whether to update the engine now
