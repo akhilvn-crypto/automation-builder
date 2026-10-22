@@ -53,10 +53,12 @@ test('preflight marks allure required only when selected, and detects a global C
   assert.equal(r.config.status, 'valid');
 });
 
-test('preflight treats old Node as an error', (t) => {
+test('preflight does not enforce a Node version floor', (t) => {
   const root = tmpRoot(t);
-  const deps = { ...fakeDeps([], { npm: '1' }), nodeVersion: '20.11.0' };
-  assert.equal(runPreflight(root, deps).checks.find((c) => c.id === 'node')!.status, 'error');
+  const deps = { ...fakeDeps([], { npm: '1' }), nodeVersion: '22.18.0' };
+  const node = runPreflight(root, deps).checks.find((c) => c.id === 'node')!;
+  assert.equal(node.status, 'ok');
+  assert.equal(node.version, '22.18.0');
 });
 
 test('preflight detects project-local packages', (t) => {

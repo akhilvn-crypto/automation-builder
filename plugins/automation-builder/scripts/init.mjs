@@ -423,7 +423,7 @@ function mergePackageJson(dir, defaults, scripts) {
   const dest = path.join(dir, 'package.json');
   const label = rel(dest);
   if (!existsSync(dest)) {
-    return writeText(dest, JSON.stringify({ ...defaults, private: true, type: 'module', engines: { node: '>=24' }, scripts }, null, 2) + '\n', 'created');
+    return writeText(dest, JSON.stringify({ ...defaults, private: true, type: 'module', scripts }, null, 2) + '\n', 'created');
   }
   const pkg = JSON.parse(readFileSync(dest, 'utf8').replace(/^﻿/, ''));
   pkg.scripts ??= {};
@@ -473,8 +473,6 @@ function checkRootIsNotSandboxScratch() {
 // ---------------------------------------------------------------- main
 
 try {
-  const major = Number(process.versions.node.split('.')[0]);
-  if (major < 24) summary.warnings.push(`Node ${process.versions.node} detected; the pipeline needs Node 24+ (TypeScript type stripping)`);
   if (!existsSync(projectRoot)) throw new Error(`root does not exist: ${projectRoot}`);
   checkRootIsNotSandboxScratch();
 

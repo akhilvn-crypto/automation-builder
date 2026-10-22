@@ -59,13 +59,33 @@ chosen, never carry on past a material choice (language, test-case path, reports
 
 ## Cowork specifics
 
-- **Node 24+ is required** (the engine runs TypeScript directly). If `preflight` reports `node` as `error`, stop and say so; do not
-  install Node or work around it.
+- **No Node version is enforced** (the engine runs TypeScript directly, so the Node must support that natively). If the CLI cannot
+  start at all because of the `.ts` extension, stop and say so; do not install Node or work around it.
 - Installs are still **one approval per dependency**, into `automation/`, exactly as in the CLI. "Automatic" never means
   "installed without asking". Browsers are downloaded inside the sandbox; tests run headless. Do not use `test:headed`.
 - The app under test must be reachable **from the sandbox**. A `localhost` URL on the user's own machine is not: if
   `application_exploration` cannot reach the base URL, mark the stage `blocked`, say it may be a sandbox network limit, and ask for
   a URL the sandbox can reach. Never invent one.
+- **Check the sandbox can do the job before the user invests in setup.** The sandbox has an egress allowlist, and a private QA/staging
+  host or the Playwright browser download is often outside it. Run these two checks as soon as the base URL is confirmed (or, with no
+  base URL yet, at the start of `configuration`), and **before** asking about reports, auth, cleanup or any install:
+  1. App: `curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "<baseUrl>"`. Any HTTP answer from the app (200, 3xx, even 401/404)
+     means reachable. A `403` that comes from the sandbox proxy rather than the app, a timeout, a DNS failure or a connection error
+     means **not reachable**. If unsure which one answered, `curl -sI` and look at the `server`/`via` headers.
+  2. Browser: `node dependencies/engine/cli/pipeline.ts preflight` reports whether the browser the config needs is in the cache.
+     If it is missing, a download check such as `curl -sSI --max-time 15 https://cdn.playwright.dev` that fails means it cannot be
+     installed here. A different Playwright build already preinstalled in the sandbox does not count: the browser revision must
+     match the installed `@playwright/test`. Do not change the pinned version to chase a preinstalled browser unless the user asks.
+
+  If either check fails, **stop before the next question**. Do not mark stages completed or approve installs. Tell the user in plain
+  words what the sandbox cannot reach, that exploration and execution need both, and that this project should be run from Claude Code
+  on a machine that can reach the app (the project folder, config and imported test cases carry over). Offer to continue only with
+  the stages that need neither (input validation, test analysis) if they want that. A run that stops this way is `blocked` with the
+  reason recorded, not `failed`.
+- **`.env` files.** Cowork's file-writing tools may refuse `.env` paths. Write credentials only through the engine (the
+  credential-extraction commands in test-data-management), never with a file tool, and never paste a value into chat. If the write is
+  still refused, say so, list the variable **names** the user must put in `automation/.env` on their own machine, and treat the
+  credentials as missing; do not store them anywhere else.
 - **Agents.** Delegate with the Agent tool as the stages say. If a `automation-builder:<agent>` type is not available, do that
   agent's job yourself in the main session: read `agents/<name>.md` from the plugin root and follow it, with the same bounded
   brief, the same CLI validators and the same limits (a stage is completed only when the CLI accepts its artifacts).

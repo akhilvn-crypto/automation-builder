@@ -17,7 +17,7 @@ Sets up the current project so the pipeline commands can run. It creates **two s
   run state `runs/`, bookkeeping `state/`, and the optional demo app and engine tests. No `node_modules` here.
 
 The host project's own files are untouched apart from a rules block in the root `CLAUDE.md`. The pipeline engine is
-TypeScript run directly by Node 24+ (`node dependencies/engine/cli/pipeline.ts`); the Playwright framework is
+TypeScript run directly by Node (`node dependencies/engine/cli/pipeline.ts`); the Playwright framework is
 TypeScript **or** JavaScript, as the user chooses.
 
 ## Steps

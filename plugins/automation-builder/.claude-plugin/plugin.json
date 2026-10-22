@@ -1,7 +1,7 @@
 {
   "name": "automation-builder",
   "displayName": "Automation Builder",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "description": "Agentic Playwright pipeline: turn test cases into reviewed, executed, self-healing Playwright tests with auditable on-disk run state.",
   "author": {
     "name": "Akhil V Nair",

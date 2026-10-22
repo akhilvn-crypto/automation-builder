@@ -20,7 +20,7 @@ Every pipeline command takes `resume` with or without a run id. Bare `resume` co
 candidates. Details are in the root README, "Resuming a run".
 
 Claude Code and Claude Cowork: choices use the `AskUserQuestion` dialog and fall back to a numbered chat question when the dialog does
-not appear (`skills/playwright-pipeline/environment.md`, which also lists the Cowork specifics: plugin path lookup, Node 24+, headless, reachability).
+not appear (`skills/playwright-pipeline/environment.md`, which also lists the Cowork specifics: plugin path lookup, Node, headless, reachability).
 
 Knowledge skills (loaded automatically by Claude and the agents): `pipeline-setup`, `test-case-parser`,
 `playwright-framework`, `application-exploration`, `test-data-management`, `execution-and-diagnostics`,
@@ -56,7 +56,7 @@ dependencies/                                not framework
   package.json  tsconfig.json  [demo/  engine-tests/]
 ```
 
-- **Pipeline** (TypeScript, run directly by Node 24+ as `node dependencies/engine/cli/pipeline.ts`; refreshed by `--update`):
+- **Pipeline** (TypeScript, run directly by Node as `node dependencies/engine/cli/pipeline.ts`; refreshed by `--update`):
   `dependencies/engine/`, `dependencies/docs/`, the tsconfigs.
 - **Framework** (in the chosen language, yours to extend, created once): `playwright.config.*`, `fixtures/`, `pages/`, `helpers/`, `.env.example`, `README.md`.
 - **`playwright.config.{ts,js}`** is an ordinary Playwright config (the same shape `npm init playwright` creates) with your approved

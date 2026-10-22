@@ -34,7 +34,7 @@ auth/                   login setup (*.setup.{{EXT}}) and the saved storage stat
 Where the rest went (`../dependencies/`, not part of the framework):
 
 ```
-engine/                 the pipeline engine (TypeScript run by Node 24+). Plugin-managed: refresh it with
+engine/                 the pipeline engine (TypeScript run by Node). Plugin-managed: refresh it with
                         /automation-builder:init --update instead of editing it
 docs/                   test-case format and run-artifact reference
 input/test-cases/       your test cases in the pipeline's Markdown format (imported from wherever you keep them)

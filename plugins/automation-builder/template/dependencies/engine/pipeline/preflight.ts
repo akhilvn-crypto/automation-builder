@@ -37,8 +37,6 @@ export interface PreflightReport {
   config: { status: ConfigState['status']; issues: { path: string; kind: string; message: string }[]; sources: string[] };
 }
 
-export const MIN_NODE_MAJOR = 24;
-
 export interface PreflightDeps {
   run: (cmd: string, args: string[]) => { ok: boolean; stdout: string };
   env: NodeJS.ProcessEnv;
@@ -135,13 +133,14 @@ export function runPreflight(rootDir: string, deps: PreflightDeps = defaultDeps)
   checks.push({
     id: 'node',
     label: 'Node.js',
-    status: nodeMajor >= MIN_NODE_MAJOR ? 'ok' : 'error',
+    // No version floor: this code is already running, so the installed Node can execute it.
+    status: 'ok',
     required: true,
     version: deps.nodeVersion,
     location: 'system',
     purpose: 'Runtime for the pipeline (native TypeScript execution) and Playwright',
     installCommand: null,
-    detail: nodeMajor >= MIN_NODE_MAJOR ? null : `Node ${MIN_NODE_MAJOR}+ is required; upgrade Node manually.`,
+    detail: null,
   });
 
   const npm = deps.run('npm', ['--version']);
@@ -168,7 +167,7 @@ export function runPreflight(rootDir: string, deps: PreflightDeps = defaultDeps)
     version: tsVersion,
     location: tsVersion ? 'project' : null,
     purpose: 'Type-check framework code and generated tests',
-    installCommand: tsVersion ? null : 'npm install --save-dev --save-exact typescript @types/node@24',
+    installCommand: tsVersion ? null : 'npm install --save-dev --save-exact typescript @types/node@' + nodeMajor,
     detail: null,
   });
 

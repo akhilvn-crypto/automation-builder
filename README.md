@@ -24,7 +24,7 @@ tests are never skipped or weakened to get a green run.
 
 ## Quick start
 
-**Requirements:** Claude Code and Node 24+.
+**Requirements:** Claude Code and a Node.js that can run `.ts` files natively (no version is enforced; Node 22.18+ does this out of the box).
 
 **1. Install the plugin** (in Claude Code):
 
@@ -116,7 +116,7 @@ wrong password) out of `.env`.
 
 **Claude Code and Claude Cowork.** Choices are shown as a dialog (`AskUserQuestion`). Where that dialog does not appear, as can
 happen in Cowork, Claude asks the same question as a numbered list in chat and waits for your reply; it never picks for you.
-Installs are still approved one dependency at a time. Cowork needs Node 24+ in its sandbox, runs tests headless, and can only reach apps
+Installs are still approved one dependency at a time. Cowork needs a Node in its sandbox that runs `.ts` files natively, runs tests headless, and can only reach apps
 the sandbox can reach. Details: `skills/playwright-pipeline/environment.md`.
 
 **Resuming.** Run state is saved on disk, so a closed terminal, crash or declined install doesn't lose the run. Repeat the
