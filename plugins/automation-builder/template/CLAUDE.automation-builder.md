@@ -9,7 +9,7 @@ pipeline needs (`engine/`, `docs/`, `input/test-cases/`, `runs/`, `state/`; no `
 Files in `automation/tests/` starting with `// @automation-builder:generated` are pipeline-owned; every other test file is
 handwritten and never modified by the pipeline.
 
-Commands: `/automation-builder:do-automation` (init + the whole pipeline), `/automation-builder:playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`, `init --update`. Their
+Commands: `/automation-builder:do-automation` (init + the whole pipeline), `/automation-builder:playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`, `reports` (change which reports are produced), `init --update`. Their
 skills hold the stage playbook, framework conventions and config precedence; read them when you work on that part.
 
 ## Hard rules

@@ -174,6 +174,7 @@ wrong password) out of `.env`.
 | `/automation-builder:generate-tests [path]` | Parse, explore, generate and review. Does not execute. |
 | `/automation-builder:run-tests [files...]` | Execute existing tests, triage failures, report. Edits nothing. |
 | `/automation-builder:heal-tests <run-id>` | Repair eligible script defects from an earlier run, re-validate, report. |
+| `/automation-builder:reports [show]` | Change which reports are produced (Playwright default report, Allure, Extent, Evidence PDF) at any time: shows what is on, lets you turn reports off or add new ones, saves it. Applies from the next run; runs no tests. |
 
 **Claude Code and Claude Cowork.** Choices are shown as a dialog (`AskUserQuestion`). Where that dialog does not appear, as can
 happen in Cowork, Claude asks the same question as a numbered list in chat and waits for your reply; it never picks for you.

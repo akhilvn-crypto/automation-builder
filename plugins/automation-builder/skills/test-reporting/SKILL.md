@@ -21,7 +21,9 @@ no longer offered. `config reporter-preset --reporters html,extent` turns a sele
 mode follows from the selection (evidence PDF → `audit`, Allure → `full`, otherwise `standard`), so it is not asked separately.
 
 ## Where reporters are configured
-Only in `automation/config/automation.config.json` → `reporters` (changed through the pipeline-setup skill). The Playwright
+Chosen in setup and changed later with `/automation-builder:reports` (`config reporter-update --reporters <list> [--apply]` previews the
+change, then saves it; the mode and evidence follow from the selection, everything else stays). Runs keep the reports they started with,
+so a change applies from the next run. Stored only in `automation/config/automation.config.json` → `reporters` (changed through the pipeline-setup skill). The Playwright
 reporter list is written into `automation/playwright.config.*` (`config save`, or `config render` after changing it) unless that
 file was edited by hand. Reporter output goes to the framework's
 `automation/reports/<runId>/<label>/` (never into `dependencies/`); the Extent report and the evidence PDF go to

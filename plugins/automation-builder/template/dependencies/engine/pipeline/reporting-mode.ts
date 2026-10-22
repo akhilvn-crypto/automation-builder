@@ -9,7 +9,7 @@
 // Validation of a configuration against its mode lives in config/schema.ts; this file turns a mode (or a selection of reports)
 // into a plan the setup flow and `report build` can show, and into a preset the user can approve and save.
 
-import type { AutomationConfig, Reporter, ReportMode } from '../config/schema.ts';
+import type { AutomationConfig, Reporter, ReportMode, VideoMode } from '../config/schema.ts';
 
 export interface ModeProfile {
   mode: ReportMode;
@@ -97,6 +97,86 @@ export function presetForReporters(selected: readonly string[]): ModePreset {
   if (has('evidence-pdf')) notes.push(...base.notes.slice(1));
   if (selected.length === 0) notes.push('no report selected: only the JSON results the pipeline reads are written');
   return { ...base, reporters: ['json', ...SELECTABLE_REPORTERS.filter(has)], needs, notes };
+}
+
+export interface ReporterUpdate {
+  selected: SelectableReporter[];
+  before: string[]; // the reports in the saved config
+  added: SelectableReporter[];
+  removed: SelectableReporter[];
+  changed: boolean;
+  candidate: Record<string, unknown>; // the saved config with only reporters, reporting and evidence replaced
+  changes: string[]; // one line per setting that differs, with the reason when the selection forces it
+  needs: string[];
+  notes: string[];
+}
+
+// Change the reports of a saved configuration later on. Everything but reporters, reporting and evidence stays as saved;
+// those three follow the new selection (same rules as setup). Evidence the user chose is kept unless the selection makes it
+// invalid or pointless: the evidence PDF forces video "on", and without it a video kept "on" only for the PDF goes back to
+// failure-only (`video` overrides that), and "standard" cannot record everything. A legacy report (junit) is kept untouched.
+export function updateReporters(current: Record<string, unknown>, selected: readonly string[], opts: { video?: VideoMode } = {}): ReporterUpdate {
+  const preset = presetForReporters(selected);
+  const has = (r: SelectableReporter) => selected.includes(r);
+  const obj = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  const before = Array.isArray(current.reporters) ? current.reporters.filter((r): r is string => typeof r === 'string') : [];
+  const isSelectable = (r: string): r is SelectableReporter => (SELECTABLE_REPORTERS as readonly string[]).includes(r);
+  const legacy = before.filter((r) => r !== 'json' && !isSelectable(r));
+  const reporters = [...preset.reporters, ...legacy];
+
+  const reasons: Record<string, string> = {};
+  const evidence = { ...preset.evidence, ...obj(current.evidence) } as AutomationConfig['evidence'];
+  const hadPdf = before.includes('evidence-pdf');
+  if (has('evidence-pdf') && evidence.video !== 'on') {
+    reasons['evidence.video'] = 'the Evidence PDF embeds one video per test';
+    evidence.video = 'on';
+  } else if (!has('evidence-pdf') && hadPdf && evidence.video === 'on') {
+    reasons['evidence.video'] = 'video of every test was only needed by the Evidence PDF';
+    evidence.video = 'retain-on-failure';
+  }
+  if (opts.video !== undefined && opts.video !== evidence.video) {
+    reasons['evidence.video'] = 'as requested';
+    evidence.video = opts.video;
+  }
+  if (preset.mode === 'standard') {
+    const standard = { video: 'retain-on-failure', screenshot: 'only-on-failure', trace: 'retain-on-failure' } as const;
+    for (const k of ['video', 'screenshot', 'trace'] as const) {
+      if (evidence[k] === 'on' && !(k === 'video' && opts.video !== undefined)) {
+        reasons[`evidence.${k}`] = 'the standard mode is failure-focused and cannot record every test';
+        (evidence as Record<string, string>)[k] = standard[k];
+      }
+    }
+  }
+  const masks = obj(current.reporting).maskSelectors;
+  const reporting = { ...preset.reporting, ...(Array.isArray(masks) ? { maskSelectors: masks } : {}) };
+
+  const candidate = { ...current, reporters, evidence, reporting };
+  const oldEvidence = obj(current.evidence);
+  const oldReporting = obj(current.reporting);
+  const show = (v: unknown) => (v === undefined ? 'unset' : Array.isArray(v) ? v.join(', ') : String(v));
+  const diff = (label: string, was: unknown, now: unknown, why?: string): string[] =>
+    show(was) === show(now) ? [] : [`${label}: ${show(was)} -> ${show(now)}${why ? ` (${why})` : ''}`];
+  const modeWhy = `follows from the selection: ${MODE_PROFILES[preset.mode].intendedFor}`;
+  const changes = [
+    ...diff('reporters', before, reporters),
+    ...diff('reporting.mode', oldReporting.mode, reporting.mode, modeWhy),
+    ...diff('reporting.stepScreenshots', oldReporting.stepScreenshots ?? false, reporting.stepScreenshots ?? false, 'the step log and final-state screenshot are recorded only for the Evidence PDF'),
+    ...(['video', 'screenshot', 'trace'] as const).flatMap((k) => diff(`evidence.${k}`, oldEvidence[k], evidence[k], reasons[`evidence.${k}`])),
+  ];
+  const chosen = (list: readonly string[]) => SELECTABLE_REPORTERS.filter((r) => list.includes(r));
+  const wasChosen = chosen(before);
+  const now = chosen(reporters);
+  return {
+    selected: now,
+    before,
+    added: now.filter((r) => !wasChosen.includes(r)),
+    removed: wasChosen.filter((r) => !now.includes(r)),
+    changed: changes.length > 0,
+    candidate,
+    changes,
+    needs: preset.needs,
+    notes: [...preset.notes, ...(legacy.length > 0 ? [`${legacy.join(', ')} stays as saved: it is no longer offered, but it was not removed`] : [])],
+  };
 }
 
 export interface ReportPlan {

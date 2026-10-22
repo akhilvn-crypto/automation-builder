@@ -14,6 +14,7 @@ Install: `/plugin marketplace add akhilvn-crypto/automation-builder` then `/plug
 | `/automation-builder:generate-tests [path] \| resume [<run-id>]` | parse → explore → generate → review (no execution) |
 | `/automation-builder:run-tests [files...] \| resume [<run-id>]` | execute existing tests → triage → report (no edits) |
 | `/automation-builder:heal-tests <run-id> \| resume [<run-id>]` | repair eligible script defects → regression check → report |
+| `/automation-builder:reports [show]` | change which reports are produced (Playwright default report, Allure, Extent, Evidence PDF) after setup: shows what is on, turn reports off or add new ones, saves the choice for the next run; runs no tests, installs only what you approve one by one |
 
 Every pipeline command takes `resume` with or without a run id. Bare `resume` continues the newest unfinished
 (`in_progress`, `blocked` or `failed`) run of that command; `node dependencies/engine/cli/pipeline.ts run resumable` lists the

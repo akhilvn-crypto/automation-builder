@@ -9,6 +9,9 @@
 //   preflight
 //   config check | show | save --file <json> | render [--force]
 //   config reporter-preset --reporters html,allure,extent,evidence-pdf   what to save for the chosen reports (nothing is saved)
+//   config reporter-update --reporters html,extent|none [--video off|on|retain-on-failure] [--apply]
+//                                                change the reports of the saved config later: shows what would change (reporters, mode,
+//                                                evidence) and the software needed; --apply saves it. Runs keep the config they started with
 //   config mode-preset <standard|full|audit> [--step-screenshots] [--evidence-pdf]   what a report mode would set (nothing is saved)
 //   config report-plan                           configured reporters/mode and the software they need (nothing is installed)
 //                                                save writes the choices and refreshes automation/playwright.config.* from them;
@@ -85,20 +88,21 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { loadConfig, saveConfig } from '../config/load-config.ts';
+import { checkCandidate, configPath, loadConfig, saveConfig } from '../config/load-config.ts';
 import { syncFromSavedConfig } from '../config/playwright-config.ts';
-import { REPORT_MODES, type ReportMode } from '../config/schema.ts';
+import { REPORT_MODES, VIDEO_MODES, type AutomationConfig, type ReportMode, type VideoMode } from '../config/schema.ts';
 import { appendDependencyChange, type DependencyChange } from '../pipeline/dependency-log.ts';
 import { runPreflight } from '../pipeline/preflight.ts';
 import { sweepAfterStage, sweepRun, type CleanupBrief } from '../pipeline/process-cleanup.ts';
 import { dataSweepTrigger, sweepDataSafely } from '../pipeline/data-cleanup.ts';
-import { presetFor, presetForReporters, reportPlan } from '../pipeline/reporting-mode.ts';
+import { presetFor, presetForReporters, reportPlan, updateReporters } from '../pipeline/reporting-mode.ts';
 import {
   HealingLimitError, createRun, listResumable, listRuns, loadManifest, prepareResume, recordHealingAttempt, type RunManifest,
   recordSetupChange, resumeLatest, setRunConfig, setTestCounts, updateStage, type TestCounts,
 } from '../pipeline/run-manager.ts';
 import { StageContractError } from '../pipeline/stage-contracts.ts';
 import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command, type StageName } from '../pipeline/state-manager.ts';
+import { readJson } from '../utils/fs.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { toRootRelative } from '../utils/paths.ts';
 import { UsageError, savedConfig, stageCommand, updateLedgerAfterStage } from './stage-commands.ts';
@@ -127,6 +131,18 @@ function brief(m: RunManifest, stage?: StageName): Record<string, unknown> {
 function withCleanup<T extends { manifest: RunManifest }>(root: string, resumed: T, trigger: string): T & { cleanup?: CleanupBrief } {
   const cleanup = sweepRun(root, resumed.manifest.runId, trigger);
   return cleanup ? { ...resumed, cleanup } : resumed;
+}
+
+// The configured reports and the software they need, with each item's preflight status. Missing software is never installed here.
+function reportPlanStatus(root: string, config: AutomationConfig) {
+  const plan = reportPlan(config);
+  const checks = runPreflight(root).checks;
+  const requires = plan.requires.map((r) => {
+    const c = checks.find((x) => x.id === r.id);
+    return { ...r, status: c?.status ?? 'unknown', installCommand: c?.status === 'ok' ? null : c?.installCommand ?? null };
+  });
+  const missing = requires.filter((r) => r.status !== 'ok');
+  return { ok: missing.length === 0, ...plan, requires, missing: missing.map((m) => m.id), approvalNeeded: missing.length > 0 ? 'ask the user before installing each missing item, one at a time' : null };
 }
 
 function readJsonArg(file: string | undefined): unknown {
@@ -196,6 +212,8 @@ export function main(argv: string[]): number {
       'evidence-pdf': { type: 'boolean' },
       reporters: { type: 'string' },
       'dry-run': { type: 'boolean' },
+      apply: { type: 'boolean' },
+      video: { type: 'string' },
       entity: { type: 'string' },
       identifier: { type: 'string' },
       hint: { type: 'string' },
@@ -251,16 +269,35 @@ export function main(argv: string[]): number {
       if (action === 'report-plan') {
         const state = loadConfig(root);
         if (state.status !== 'valid') return out(state, 2);
-        const plan = reportPlan(state.config);
-        const checks = runPreflight(root).checks;
-        const requires = plan.requires.map((r) => {
-          const c = checks.find((x) => x.id === r.id);
-          return { ...r, status: c?.status ?? 'unknown', installCommand: c?.status === 'ok' ? null : c?.installCommand ?? null };
-        });
-        const missing = requires.filter((r) => r.status !== 'ok');
-        return out({ ok: missing.length === 0, ...plan, requires, missing: missing.map((m) => m.id), approvalNeeded: missing.length > 0 ? 'ask the user before installing each missing item, one at a time' : null }, missing.length === 0 ? 0 : 2);
+        const status = reportPlanStatus(root, state.config);
+        return out(status, status.ok ? 0 : 2);
       }
-      throw new UsageError('config <check|show|save|render [--force]|reporter-preset|mode-preset|report-plan>');
+      // Change the reports of the saved configuration later on: --reporters is the complete new selection (html, allure, extent,
+      // evidence-pdf, or "none"). Without --apply it only shows what would change; with --apply it saves (through the same validation
+      // as `config save`) and refreshes playwright.config.*. Runs keep the configuration they started with: this applies to new runs.
+      if (action === 'reporter-update') {
+        const selected = need(values.reporters, '--reporters').split(',').map((s) => s.trim()).filter((s) => s && s !== 'none');
+        if (values.video !== undefined && !(VIDEO_MODES as readonly string[]).includes(values.video)) throw new UsageError(`--video must be one of: ${VIDEO_MODES.join(', ')}`);
+        const file = readJson(configPath(root));
+        if (!file.ok || typeof file.value !== 'object' || file.value === null || Array.isArray(file.value)) {
+          return out({ ok: false, message: 'there is no saved configuration to change; run the setup first (/automation-builder:playwright-pipeline)' }, 2);
+        }
+        let update;
+        try {
+          update = updateReporters(file.value as Record<string, unknown>, selected, { video: values.video as VideoMode | undefined });
+        } catch (err) {
+          throw new UsageError(err instanceof Error ? err.message : String(err));
+        }
+        const { candidate, ...shown } = update;
+        const checked = checkCandidate(root, candidate);
+        const unfinishedRuns = listResumable(root).map((c) => ({ runId: c.runId, command: c.command, resumeStage: c.resumeStage }));
+        if (!checked.ok) return out({ ok: false, applied: false, ...shown, issues: checked.issues, unfinishedRuns }, 2);
+        if (!values.apply || !update.changed) return out({ ok: true, applied: false, ...shown, unfinishedRuns, reportPlan: reportPlanStatus(root, checked.config) });
+        const saved = saveConfig(root, candidate);
+        if (!saved.ok) return out({ ok: false, applied: false, ...shown, issues: saved.issues, unfinishedRuns }, 2);
+        return out({ ok: true, applied: true, ...shown, unfinishedRuns, playwrightConfig: syncFromSavedConfig(root), reportPlan: reportPlanStatus(root, checked.config) });
+      }
+      throw new UsageError('config <check|show|save|render [--force]|reporter-preset|reporter-update|mode-preset|report-plan>');
     }
 
     case 'run': {

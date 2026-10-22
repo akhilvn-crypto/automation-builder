@@ -83,8 +83,8 @@ export function loadConfig(rootDir: string, opts: LoadOptions = {}): ConfigState
   return { status: file.ok ? 'invalid' : 'absent', issues: [...(result.ok ? [] : result.issues), ...drift], sources };
 }
 
-// Persist approved choices. Validates the full config first; never writes an invalid file.
-export function saveConfig(rootDir: string, candidate: unknown): { ok: true } | { ok: false; issues: ConfigIssue[] } {
+// Would `saveConfig` accept this candidate? Nothing is written.
+export function checkCandidate(rootDir: string, candidate: unknown): { ok: true; config: AutomationConfig } | { ok: false; issues: ConfigIssue[] } {
   const scaffold = readScaffold(rootDir);
   const seed = structuredClone(DEFAULTS) as unknown as Json;
   if (scaffold) seed.language = scaffold.language;
@@ -92,6 +92,13 @@ export function saveConfig(rootDir: string, candidate: unknown): { ok: true } | 
   const result = validateConfig(merged);
   const drift = scaffold && isPlainObject(merged) && merged.language !== scaffold.language ? [languageDrift(scaffold.language)] : [];
   if (!result.ok || drift.length > 0) return { ok: false, issues: [...(result.ok ? [] : result.issues), ...drift] };
+  return { ok: true, config: result.config };
+}
+
+// Persist approved choices. Validates the full config first; never writes an invalid file.
+export function saveConfig(rootDir: string, candidate: unknown): { ok: true } | { ok: false; issues: ConfigIssue[] } {
+  const result = checkCandidate(rootDir, candidate);
+  if (!result.ok) return result;
   const target = configPath(rootDir);
   mkdirSync(path.dirname(target), { recursive: true });
   writeJsonAtomic(target, result.config);

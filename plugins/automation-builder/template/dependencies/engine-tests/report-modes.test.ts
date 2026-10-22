@@ -12,7 +12,7 @@ import { saveConfig } from '../engine/config/load-config.ts';
 import { REPORT_MODES, validateConfig, type AutomationConfig } from '../engine/config/schema.ts';
 import { runPreflight } from '../engine/pipeline/preflight.ts';
 import { buildSummary, type AllureRunner } from '../engine/pipeline/reporting.ts';
-import { MODE_PROFILES, presetFor, presetForReporters, reportPlan } from '../engine/pipeline/reporting-mode.ts';
+import { MODE_PROFILES, presetFor, presetForReporters, reportPlan, updateReporters } from '../engine/pipeline/reporting-mode.ts';
 import type { RunManifest } from '../engine/pipeline/run-manager.ts';
 import type { ExecutionResults } from '../engine/pipeline/execution.ts';
 import { sha256File } from '../engine/utils/fs.ts';
@@ -111,6 +111,116 @@ test('each selection of the four reports gives exactly those reports, a mode tha
   assert.deepEqual(presetForReporters(['allure']).needs, ['allure-playwright', 'allure CLI']);
   assert.deepEqual(presetForReporters([]).reporters, ['json']);
   assert.throws(() => presetForReporters(['html', 'junit']), /unknown report\(s\): junit/);
+});
+
+// ---- changing the reports later (/automation-builder:reports) ----
+
+const stored = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ ...validConfig(), ...over });
+const savedWith = (selected: string[], over: Record<string, unknown> = {}): Record<string, unknown> => {
+  const p = presetForReporters(selected);
+  return stored({ reporters: p.reporters, evidence: p.evidence, reporting: p.reporting, ...over });
+};
+
+test('changing the reports from any selection to any other gives exactly the new selection and a valid configuration', () => {
+  for (const from of everyChoice()) {
+    for (const to of everyChoice()) {
+      const u = updateReporters(savedWith(from), to);
+      assert.equal(valid(u.candidate), true, `${from.join('+') || 'none'} -> ${to.join('+') || 'none'}: ${issues(u.candidate).join()}`);
+      assert.deepEqual(u.selected, to, 'exactly the chosen reports');
+      assert.deepEqual(u.added, to.filter((r) => !from.includes(r)));
+      assert.deepEqual(u.removed, from.filter((r) => !to.includes(r)));
+      assert.equal(u.changed, from.join() !== to.join() || u.changes.length > 0);
+      if (from.join() === to.join()) assert.deepEqual(u.changes, [], 'choosing the same reports changes nothing');
+    }
+  }
+});
+
+test('changing the reports leaves every other setting as saved', () => {
+  const base = stored({
+    app: { baseUrl: 'https://qa.example.com', environment: 'qa' }, browsers: ['chromium', 'firefox'], auth: { approach: 'ui-login', credentialEnvVars: ['USER_PW'] },
+    reporting: { mode: 'standard', maskSelectors: ['#card'] }, reporters: ['json', 'html'], retention: { keepRuns: 5 },
+  });
+  const u = updateReporters(base, ['html', 'extent']);
+  const { reporters, evidence, reporting, ...rest } = u.candidate;
+  const { reporters: _r, evidence: _e, reporting: _p, ...before } = base;
+  assert.deepEqual(rest, before);
+  assert.deepEqual(reporters, ['json', 'html', 'extent']);
+  assert.deepEqual(evidence, base.evidence);
+  assert.deepEqual(reporting, { mode: 'standard', maskSelectors: ['#card'] }, 'the mask selectors survive');
+  assert.deepEqual(u.added, ['extent']);
+});
+
+test('adding the Evidence PDF turns video on and audit mode on; removing it puts video back to failure-only', () => {
+  const add = updateReporters(savedWith(['html']), ['html', 'evidence-pdf']);
+  const added = add.candidate as { evidence: { video: string; screenshot: string }; reporting: { mode: string; stepScreenshots: boolean } };
+  assert.deepEqual([added.evidence.video, added.reporting.mode, added.reporting.stepScreenshots], ['on', 'audit', true]);
+  assert.match(add.changes.join('\n'), /evidence\.video: off -> on \(the Evidence PDF embeds one video per test\)/);
+  assert.deepEqual(add.needs, ['chromium (renders the PDF)']);
+
+  const remove = updateReporters(savedWith(['html', 'evidence-pdf']), ['html']);
+  const removed = remove.candidate as { evidence: { video: string }; reporting: { mode: string; stepScreenshots?: boolean } };
+  assert.deepEqual([removed.evidence.video, removed.reporting.mode, removed.reporting.stepScreenshots], ['retain-on-failure', 'standard', undefined]);
+  assert.match(remove.changes.join('\n'), /video of every test was only needed by the Evidence PDF/);
+  assert.equal(valid(remove.candidate), true);
+
+  const keep = updateReporters(savedWith(['html', 'evidence-pdf']), ['html', 'allure'], { video: 'on' });
+  assert.equal((keep.candidate as { evidence: { video: string } }).evidence.video, 'on', '--video keeps recording every test');
+  assert.equal(valid(keep.candidate), true, 'full mode allows it');
+  assert.equal(valid(updateReporters(savedWith(['html', 'evidence-pdf']), ['html'], { video: 'on' }).candidate), false, 'standard still rejects it');
+});
+
+test('evidence the user chose is kept unless the new selection makes it invalid', () => {
+  const everything = { video: 'on', screenshot: 'on', trace: 'on' };
+  const kept = updateReporters(savedWith(['html', 'allure'], { evidence: everything }), ['allure', 'extent']);
+  assert.deepEqual((kept.candidate as { evidence: unknown }).evidence, everything, 'full may record everything');
+  const dropped = updateReporters(savedWith(['html', 'allure'], { evidence: everything }), ['html']);
+  assert.deepEqual((dropped.candidate as { evidence: unknown }).evidence, { video: 'retain-on-failure', screenshot: 'only-on-failure', trace: 'retain-on-failure' });
+  assert.match(dropped.changes.join('\n'), /evidence\.screenshot: on -> only-on-failure \(the standard mode is failure-focused/);
+  assert.equal(valid(dropped.candidate), true);
+});
+
+test('removing every report keeps only the JSON results; a legacy report is kept; unknown names are refused', () => {
+  const none = updateReporters(savedWith(['html', 'extent']), []);
+  assert.deepEqual([none.candidate.reporters, none.removed], [['json'], ['html', 'extent']]);
+  const legacy = updateReporters(stored({ reporters: ['json', 'html', 'junit'] }), ['extent']);
+  assert.deepEqual(legacy.candidate.reporters, ['json', 'extent', 'junit']);
+  assert.deepEqual(legacy.removed, ['html']);
+  assert.match(legacy.notes.join('\n'), /junit stays as saved/);
+  assert.throws(() => updateReporters(stored(), ['html', 'junit']), /unknown report\(s\): junit/);
+});
+
+test('CLI reporter-update: shows the change first, saves only with --apply, and never touches other settings', (t) => {
+  const root = tmpRoot(t);
+  const run = (...args: string[]) => spawnSync(process.execPath, [CLI, ...args, '--root', root], { encoding: 'utf8' });
+  const onDisk = () => JSON.parse(readFileSync(path.join(root, 'config', 'automation.config.json'), 'utf8'));
+  assert.equal(run('config', 'reporter-update', '--reporters', 'html').status, 2, 'no saved configuration: nothing to change');
+  assert.deepEqual(saveConfig(root, savedWith(['html'])), { ok: true });
+  const saved = onDisk();
+
+  const preview = run('config', 'reporter-update', '--reporters', 'html,extent,evidence-pdf');
+  assert.equal(preview.status, 0, preview.stdout);
+  const shown = JSON.parse(preview.stdout);
+  assert.deepEqual([shown.applied, shown.added, shown.removed, shown.needs], [false, ['extent', 'evidence-pdf'], [], ['chromium (renders the PDF)']]);
+  assert.deepEqual(onDisk(), saved, 'a preview writes nothing');
+  assert.equal(shown.candidate, undefined, 'the whole configuration is not echoed');
+  assert.deepEqual(shown.reportPlan.requires.map((r: { id: string }) => r.id), ['browser:chromium']);
+
+  const applied = JSON.parse(run('config', 'reporter-update', '--reporters', 'html,extent,evidence-pdf', '--apply').stdout);
+  assert.equal(applied.applied, true);
+  const next = onDisk();
+  assert.deepEqual([next.reporters, next.reporting.mode, next.evidence.video, next.app], [['json', 'html', 'extent', 'evidence-pdf'], 'audit', 'on', saved.app]);
+
+  const same = JSON.parse(run('config', 'reporter-update', '--reporters', 'html,extent,evidence-pdf', '--apply').stdout);
+  assert.deepEqual([same.applied, same.changed, same.changes], [false, false, []]);
+  assert.deepEqual(JSON.parse(run('config', 'reporter-update', '--reporters', 'none', '--apply').stdout).removed, ['html', 'extent', 'evidence-pdf']);
+  assert.deepEqual(onDisk().reporters, ['json']);
+  assert.equal(run('config', 'reporter-update', '--reporters', 'html,junit').status, 1, 'junit is not offered');
+  assert.equal(run('config', 'reporter-update', '--reporters', 'html', '--video', 'loud').status, 1);
+  assert.equal(run('config', 'reporter-update').status, 1, 'the selection must be stated, never assumed');
+  const refused = run('config', 'reporter-update', '--reporters', 'html', '--video', 'on', '--apply');
+  assert.equal(refused.status, 2, 'standard cannot record every test');
+  assert.match(refused.stdout, /failure-focused/);
+  assert.deepEqual(onDisk().reporters, ['json'], 'a refused change writes nothing');
 });
 
 test('the Extent report needs no software; the report plan lists only what the chosen reports need', () => {

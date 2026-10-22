@@ -1,6 +1,6 @@
 # Running in Claude Code (CLI) and Claude Cowork
 
-Every pipeline command (`init`, `do-automation`, `playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`) follows this page.
+Every pipeline command (`init`, `do-automation`, `playwright-pipeline`, `generate-tests`, `run-tests`, `heal-tests`, `reports`) follows this page.
 The pipeline is the same in both; what differs is how you reach the user and where files live.
 
 ## Asking the user
