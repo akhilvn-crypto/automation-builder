@@ -8,6 +8,7 @@
 - steps: `Test Steps`, `Procedure`, `Action`
 - expected: a short header starting `Expected …`
 - also `Preconditions`/`Prerequisites`, `Test Data`, `Priority`, `Tags`
+- depends: `Depends On`, `Dependency`/`Dependencies`, `Prerequisite Test(s)`, `Blocked By` (test IDs; several separated by comma, semicolon, "and" or new lines)
 
 The header row is the first of the first 25 rows that has both a steps and an expected-result column, so a title block above
 the table is fine. A lone ID-shaped cell (`TC-9`) in an otherwise empty row is an (incomplete) case and is flagged, not a heading.
@@ -33,6 +34,7 @@ described in `dependencies/docs/test-spec-schema.md`.
 ## TC-001: Title                  (ID optional; without one a stable AUTO-xxxxxxxx ID is derived from path + title)
 Priority: High
 Tags: smoke, auth
+Depends on: TC-000                 (optional; test IDs that must run first; also read from a "Depends on" column)
 ### Preconditions
 - ...
 ### Test Data

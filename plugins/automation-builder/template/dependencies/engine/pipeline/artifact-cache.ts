@@ -104,8 +104,9 @@ export const PARSER_VERSION = fingerprintSources(
   new URL('./test-case-parser.ts', import.meta.url), new URL('./test-spec.ts', import.meta.url),
   new URL('./input-table.ts', import.meta.url), new URL('../utils/xlsx.ts', import.meta.url),
   new URL('./canonical.ts', import.meta.url), new URL('./column-inference.ts', import.meta.url), new URL('./markdown-table.ts', import.meta.url),
+  new URL('./dependencies.ts', import.meta.url),
 );
-export const STATIC_REVIEW_VERSION = fingerprintSources(new URL('./static-review.ts', import.meta.url));
+export const STATIC_REVIEW_VERSION = fingerprintSources(new URL('./static-review.ts', import.meta.url), new URL('./session-layout.ts', import.meta.url));
 
 // The generator and reviewer rules (agents and skills) ship with the plugin, not with the project, so their version is the
 // plugin version recorded when the project was scaffolded or last updated: a plugin update invalidates what they produced.

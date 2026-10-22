@@ -99,6 +99,8 @@ export function specFingerprint(spec: TestSpec): string {
     title: spec.title,
     module: spec.module,
     preconditions: spec.preconditions,
+    // Only added when present, so a case without dependencies keeps the fingerprint it had before dependencies existed.
+    ...(spec.dependsOn && spec.dependsOn.length > 0 ? { dependsOn: spec.dependsOn } : {}),
     steps: spec.steps.map((s) => [s.action, s.expected]),
     expectedResults: spec.expectedResults,
     testData: spec.testData.map((d) => [d.name, d.envVar, d.declaredLiteral ? d.value : null]),

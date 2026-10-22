@@ -12,9 +12,10 @@ import path from 'node:path';
 import { sha256File, toPosixRelative } from '../utils/fs.ts';
 import { readXlsx } from '../utils/xlsx.ts';
 import {
-  CANONICAL_SCHEMA_VERSION, documentValidation, projectSpecs, validationOf,
+  CANONICAL_SCHEMA_VERSION, documentValidation, isAutomatable, projectSpecs, validationOf,
   type CanonicalCase, type CanonicalDocument, type CanonicalStep, type TableFinding,
 } from './canonical.ts';
+import { cycleMembers } from './dependencies.ts';
 import { quoteEnvValue } from './env-file.ts';
 import {
   hitOf, labelField, mappingFor, mappingQuestions, normalizeHeader, reportOf, resolveTable,
@@ -76,6 +77,7 @@ export interface DraftCase {
   priority: string | null;
   tags: string[];
   preconditions: string[];
+  dependsOn: string[]; // test IDs (or titles) as the source wrote them; resolved against all cases once every file is read
   steps: DraftStep[];
   expectedResults: string[];
   testData: TestDataRef[];
@@ -86,7 +88,7 @@ export interface DraftCase {
 function draft(line: number, suite: string | null, originalId: string | null, title: string): DraftCase {
   return {
     originalId, title, untitled: false, line, endLine: line, suite, heading: null, module: null, sheet: null, priority: null, tags: [],
-    preconditions: [], steps: [], expectedResults: [], testData: [], metadata: {}, issues: [],
+    preconditions: [], dependsOn: [], steps: [], expectedResults: [], testData: [], metadata: {}, issues: [],
   };
 }
 
@@ -199,12 +201,12 @@ function addMeta(c: DraftCase, key: string, value: string, joiner = '\n'): void 
 
 // ---------- Markdown ----------
 
-type Section = 'none' | 'preconditions' | 'data' | 'steps' | 'expected' | 'meta' | 'metadata';
+type Section = 'none' | 'preconditions' | 'depends' | 'data' | 'steps' | 'expected' | 'meta' | 'metadata';
 
 // A heading or label that opens one of the case sections, by the same names table headers use ("Procedure", "Expected Outcome").
 function sectionOf(label: string): Exclude<Section, 'none' | 'meta'> | null {
   const f = labelField(label.replace(/[*_:]/g, ''));
-  return f === 'preconditions' || f === 'data' || f === 'steps' || f === 'expected' ? f : null;
+  return f === 'preconditions' || f === 'depends' || f === 'data' || f === 'steps' || f === 'expected' ? f : null;
 }
 
 const LIST_ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$/;
@@ -351,7 +353,7 @@ export function parseMarkdownDocument(text: string, mapping?: TableMapping): Mar
       const named = field === 'id' || field === 'title' || field === 'module';
       if (field === 'priority') { c.priority = value || null; continue; }
       if (field === 'tags') { c.tags = splitList(value); continue; }
-      if (field === 'preconditions' || field === 'steps' || field === 'expected' || field === 'data') {
+      if (field === 'preconditions' || field === 'depends' || field === 'steps' || field === 'expected' || field === 'data') {
         section = field;
         if (value) addToSection(c, field, value);
         continue;
@@ -406,6 +408,7 @@ export function parseMarkdown(text: string, mapping?: TableMapping): DraftCase[]
 
 function addToSection(c: DraftCase, s: Section, content: string): void {
   if (s === 'preconditions') c.preconditions.push(content);
+  else if (s === 'depends') c.dependsOn.push(...splitDeps(content));
   else if (s === 'expected') c.expectedResults.push(content);
   else if (s === 'steps') c.steps.push(splitAction(content));
   else if (s === 'data') {
@@ -430,6 +433,11 @@ function appendContinuation(c: DraftCase, s: Section, metaKey: string, text: str
 
 function splitList(v: string): string[] {
   return v.split(/[,;]/).map((s) => s.trim().replace(/^@/, '')).filter(Boolean);
+}
+
+// "TC-001, TC-002", "TC-001 and TC-002", one per line. Trailing prose is kept so an unreadable reference is reported as written.
+function splitDeps(v: string): string[] {
+  return v.split(/[,;\n]|\s+and\s+/i).map((s) => s.trim().replace(/^[-*•]\s*/, '').replace(/^\[(.*)\]$/, '$1').trim()).filter((s) => s !== '' && !/^(?:none|n\/a|na|nil|-|—)$/i.test(s));
 }
 
 // ---------- Tables (CSV and spreadsheet sheets) ----------
@@ -578,6 +586,7 @@ export function parseTable(rows: TableRow[], t: ResolvedTable, opts: { sheet: st
       cur.sheet = opts.sheet;
       cur.priority = get(cells, 'priority') || null;
       cur.tags = splitList(get(cells, 'tags'));
+      cur.dependsOn = splitDeps(get(cells, 'depends'));
       cur.preconditions = cellLines(get(cells, 'preconditions')).map((l) => l.replace(NUMBERED, ''));
       cur.testData.push(...rowData);
       cur.issues = mappingIssues();
@@ -772,6 +781,91 @@ export function normalizeCases(drafts: DraftCase[], sourcePath: string, format: 
   });
 }
 
+// ---------- Dependencies between cases ----------
+
+const ID_TOKEN = /[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*/g;
+const shorten = (s: string): string => (s.length > 80 ? `${s.slice(0, 80)}…` : s);
+
+function addAmbiguity(c: CanonicalCase, a: Ambiguity): void {
+  const existing = [...c.validation.blocking, ...c.validation.warnings].map((i) => ({ kind: i.code, message: i.message, stepIndex: i.stepNumber }));
+  if (existing.some((e) => e.kind === a.kind && e.message === a.message)) return;
+  c.validation = validationOf([...existing, a]);
+}
+
+// Turns what the sources wrote after "Depends on" (and test IDs named in preconditions) into testCaseIds, and blocks the cases
+// whose dependencies cannot be honoured: unknown or ambiguous references, loops, and cases that rely on a case that is itself blocked.
+// A dependency is never guessed from the steps.
+export function resolveDependencies(cases: CanonicalCase[], draftOf: Map<CanonicalCase, DraftCase>): void {
+  const key = (s: string): string => s.trim().toLowerCase();
+  const byId = new Map<string, CanonicalCase[]>();
+  const byTitle = new Map<string, CanonicalCase[]>();
+  const index = (m: Map<string, CanonicalCase[]>, k: string, c: CanonicalCase) => m.set(k, [...(m.get(k) ?? []), c]);
+  for (const c of cases) {
+    index(byId, key(c.testCaseId), c);
+    if (c.source.originalId && key(c.source.originalId) !== key(c.testCaseId)) index(byId, key(c.source.originalId), c);
+    index(byTitle, key(c.title), c);
+  }
+  // The same ID on several sheets: the case on the referring case's own sheet/file is the one meant.
+  const pick = (from: CanonicalCase, found: CanonicalCase[] | undefined): CanonicalCase[] => {
+    const all = [...new Set(found ?? [])];
+    if (all.length <= 1) return all;
+    const local = all.filter((o) => o.source.file === from.source.file && o.source.sheet === from.source.sheet);
+    return local.length === 1 ? local : all;
+  };
+
+  for (const c of cases) {
+    const resolved: string[] = [];
+    for (const token of draftOf.get(c)?.dependsOn ?? []) {
+      const found = pick(c, byId.get(key(token)));
+      const match = found.length > 0 ? found : pick(c, byTitle.get(key(token)));
+      if (match.length === 1) resolved.push(match[0]!.testCaseId);
+      else {
+        addAmbiguity(c, {
+          kind: 'unresolved_dependency', stepIndex: null,
+          message: match.length === 0
+            ? `depends on "${shorten(token)}", which is not a test ID or title in the input; name the test ID it needs`
+            : `depends on "${shorten(token)}", which matches ${match.length} test cases (${match.map((m) => m.testCaseId).slice(0, 4).join(', ')}); name one test ID`,
+        });
+      }
+    }
+    // A precondition that names another case is read as a dependency, and says so: it is the author's own wording, but the order
+    // it implies is worth a second look.
+    for (const p of c.preconditions) {
+      for (const m of p.matchAll(ID_TOKEN)) {
+        const found = pick(c, byId.get(key(m[0])));
+        if (found.length !== 1 || found[0] === c || resolved.includes(found[0]!.testCaseId)) continue;
+        resolved.push(found[0]!.testCaseId);
+        addAmbiguity(c, {
+          kind: 'dependency_inferred', stepIndex: null,
+          message: `a precondition names ${found[0]!.testCaseId}, so it is run first; if that is not meant as a dependency, reword the precondition, and if it is, add it to a "Depends on" column to confirm`,
+        });
+      }
+    }
+    const unique = [...new Set(resolved)];
+    if (unique.length > 0) c.dependsOn = unique;
+  }
+
+  const nodes = cases.map((c) => ({ id: c.testCaseId, module: c.module, moduleSlug: c.moduleSlug, dependsOn: c.dependsOn }));
+  const cyclic = cycleMembers(nodes);
+  for (const c of cases) {
+    if (cyclic.has(c.testCaseId)) addAmbiguity(c, { kind: 'dependency_cycle', stepIndex: null, message: `it is part of a loop of dependencies (${(c.dependsOn ?? []).join(', ')}); no order can satisfy it` });
+  }
+  // Spread "cannot be automated yet" to everything that needs such a case, until nothing changes.
+  const byTestId = new Map(cases.map((c) => [c.testCaseId, c]));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const c of cases) {
+      for (const d of c.dependsOn ?? []) {
+        const dep = byTestId.get(d);
+        if (!dep || isAutomatable(dep.validation.status)) continue;
+        const before = c.validation.blocking.length;
+        addAmbiguity(c, { kind: 'dependency_not_ready', stepIndex: null, message: `it depends on ${d}, which cannot be automated until its own questions are answered` });
+        if (c.validation.blocking.length !== before) changed = true;
+      }
+    }
+  }
+}
+
 export interface ParseError {
   path: string;
   message: string;
@@ -892,10 +986,14 @@ export function parseInputs(baseDir: string, files: string[], now: Date = new Da
   // After every file is read, so names the user wrote as env:VAR anywhere in the input are reserved first.
   const alloc = new EnvAllocator(parsed.flatMap((p) => p.drafts.flatMap((c) => [...c.testData, ...c.steps.flatMap((s) => s.data)].flatMap((d) => (d.envVar ? [d.envVar] : [])))));
   const testCases: CanonicalCase[] = [];
+  const draftOf = new Map<CanonicalCase, DraftCase>();
   for (const { rel, format, drafts } of parsed) {
     for (const c of drafts) extractCredentials(c, c.originalId ?? autoId(rel, c.title, c.sheet), alloc);
-    testCases.push(...normalizeCases(drafts, rel, format, seen));
+    const normalized = normalizeCases(drafts, rel, format, seen);
+    normalized.forEach((n, i) => draftOf.set(n, drafts[i]!));
+    testCases.push(...normalized);
   }
+  resolveDependencies(testCases, draftOf);
 
   // Where reading a table needed a person (or a second look), at the level of the whole input.
   const findings: TableFinding[] = [];

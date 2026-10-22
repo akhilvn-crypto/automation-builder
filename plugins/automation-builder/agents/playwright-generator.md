@@ -36,8 +36,25 @@ orchestrator reruns the batches one after another. Without a brief (a single gen
 - Add a page object in `pages/<Name>Page.<ext>` (extending `BasePage`) when the playwright-framework skill's policy says
   so (a page used by 2+ tests, or with 3+ interactions); assertions stay in the tests. A generic helper in `helpers/` only when it
   removes real duplication (page-specific behaviour stays in `pages/`). List every such file in `sharedFilesChanged`.
-- For `auth.approach = storage-state`, write `auth/auth.setup.<ext>` (login once, save the storage state to
-  `auth/storage-state.json`; list it in `sharedFilesChanged`). Non-sensitive data files, only if a test needs them, go in `test-data/`.
+- For `auth.approach = storage-state`, write `auth/auth.setup.<ext>` (list it in `sharedFilesChanged`) around `reuseOrSignIn` from
+  `../helpers/auth.<ext>`: `setup('authenticate', async ({ browser, baseURL }) => { await reuseOrSignIn({ browser, baseURL, stateFile:
+  path.join(import.meta.dirname, 'storage-state.json'), check, signIn }); })`. `check(page)` opens the page the sign-in lands on and asserts something only a
+  signed-in user sees, with a short timeout (it decides whether the saved session is still accepted); `signIn(page)` is the UI login from the login
+  case's steps and exploration, ending in an assertion that it worked. The setup project runs before every browser project in every run, so a saved session
+  that ended is replaced before any test uses it. Non-sensitive data files, only if a test needs them, go in `test-data/`.
+- **Tests that sign in, sign out or change the session** (their steps log in with credentials, log out, reset or change a password, switch account or let
+  the session expire) must start signed out and are tagged `@own-session`. Only with `storage-state`. Put them in a `test.describe('without a saved
+  session', …)` that calls `test.use({ storageState: { cookies: [], origins: [] } })`, and give each test the tag: `test('[TC-001] …', { annotation: {…},
+  tag: ['@own-session'] }, …)`. The generated Playwright config runs these after every test that shares the saved login, because signing in again as the
+  same account can end the session the others are using. The static review fails a signed-out test without the tag, and the tag without the override.
+  Tests that merely need to be signed in never sign in themselves: they use the saved login.
+- **Dependent test cases.** `specs modules` lists `chains` per file: the cases that need other cases to have run first, prerequisites first. Write each
+  chain's tests in exactly that order inside one `test.describe.serial('<first id> chain', () => { … })`, and nothing else in that group. Tests outside a
+  chain are not wrapped. A chain that spans modules has a file of its own (`chain-<id>.spec.<ext>`, module name "Chain <id>"); use the file and name the
+  plan gives. Data that a later test needs from an earlier one is derived from a value both compute the same way (for example a name made once at the top
+  of the group with `uniqueSuffix()`), never from a variable the earlier test assigned: a retry runs the whole group again from its first test. The
+  prerequisite's steps are its own test, not repeated inside the dependent one. `generate validate` and the static review fail a chain that is out of
+  order, split over files or not in a serial group.
 - Test data: when a test creates a record, request the `cleanup` fixture (`async ({ page, cleanup })`) and call `cleanup.register({ entity,
   identifier, undo })` right after the creation, before the assertions (see test-data-management). Give `undo` only when the exploration evidence
   or the spec shows how the app removes that record (a delete control on a page you already use, a page-object action); never invent a delete

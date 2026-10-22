@@ -10,6 +10,7 @@ import { ARTIFACTS, assertExecutionLabel, reportsDirFor, runDir } from './artifa
 import type { AuthRunInfo } from './auth-state.ts';
 import { secretValuesFor } from './env-file.ts';
 import type { ExecutionPlan } from './execution-plan.ts';
+import { OWN_SESSION_TAG } from './session-layout.ts';
 import { runSupervised } from './supervised-run.ts';
 
 export const EXECUTION_SCHEMA_VERSION = 1;
@@ -28,6 +29,9 @@ export interface Attempt {
   durationMs: number;
   errors: AttemptError[];
   attachments: { name: string; contentType: string; path: string }[]; // relative to automation/
+  // The page's address (no query or fragment) when the test did not finish as expected; set by the diagnostics fixture. It is how a
+  // test that was sent back to the login page is recognised without depending on the wording of its error.
+  finalUrl?: string;
 }
 
 export interface TestResult {
@@ -39,6 +43,8 @@ export interface TestResult {
   project: string;
   outcome: Outcome; // flaky = failed first, passed on retry; never counted as passed
   attempts: Attempt[];
+  // Tagged @own-session: the test signs in itself, so a login page at the end is expected and is not a lost session.
+  ownSession?: boolean;
 }
 
 export interface ExecutionResults {
@@ -172,14 +178,15 @@ export function saveResults(runDirectory: string, results: ExecutionResults): st
 // ---- normalizing Playwright's JSON reporter output ----
 
 interface PwError { message?: string; stack?: string; location?: { file: string; line: number } }
-interface PwResult { retry?: number; status?: string; duration?: number; error?: PwError; errors?: PwError[]; attachments?: { name: string; contentType: string; path?: string }[] }
+interface PwResult { retry?: number; status?: string; duration?: number; error?: PwError; errors?: PwError[]; attachments?: { name: string; contentType: string; path?: string; body?: string }[] }
 interface PwTest { projectName?: string; annotations?: { type: string; description?: string }[]; expectedStatus?: string; status?: string; results?: PwResult[] }
-interface PwSpec { title: string; file?: string; line?: number; tests?: PwTest[] }
+interface PwSpec { title: string; file?: string; line?: number; tags?: string[]; tests?: PwTest[] }
 interface PwSuite { title?: string; file?: string; specs?: PwSpec[]; suites?: PwSuite[] }
 interface PwReport { config?: { rootDir?: string }; suites?: PwSuite[]; errors?: PwError[] }
 
 // Reserved Playwright project that logs in and writes the storage state (see playwright-config.ts).
 export const SETUP_PROJECT = 'setup';
+export const FINAL_URL_ATTACHMENT = 'final-url';
 const ANSI = /\u001b\[[0-9;]*m/g;
 const TITLE_ID = /^\[([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*)\]/;
 
@@ -188,6 +195,13 @@ export function testIdFor(title: string, annotations: PwTest['annotations'], fil
   if (a) return a.description!;
   const m = TITLE_ID.exec(title);
   return m ? m[1]! : `untagged:${file}:${title}`;
+}
+
+// The address the diagnostics fixture attached. The attachment is a small text body, which the JSON report carries as base64.
+function finalUrlOf(r: PwResult): { finalUrl?: string } {
+  const a = (r.attachments ?? []).find((x) => x.name === FINAL_URL_ATTACHMENT && typeof x.body === 'string');
+  const url = a ? Buffer.from(a.body!, 'base64').toString('utf8').trim().slice(0, 300) : '';
+  return url ? { finalUrl: url } : {};
 }
 
 function outcomeOf(t: PwTest): Outcome {
@@ -225,10 +239,12 @@ export function normalizeReport(raw: unknown, ctx: { rootDir: string; runId: str
           line: spec.line ?? 0,
           project,
           outcome: outcomeOf(t),
+          ...(spec.tags?.includes(OWN_SESSION_TAG) || spec.title.includes(OWN_SESSION_TAG) || project === 'own-session' ? { ownSession: true } : {}),
           attempts: (t.results ?? []).map((r) => ({
             retry: r.retry ?? 0,
             status: r.status ?? 'unknown',
             durationMs: r.duration ?? 0,
+            ...finalUrlOf(r),
             errors: (r.errors?.length ? r.errors : r.error ? [r.error] : []).map((e) => ({
               message: clean(e.message).slice(0, 4000),
               stack: e.stack ? clean(e.stack).slice(0, 4000) : null,

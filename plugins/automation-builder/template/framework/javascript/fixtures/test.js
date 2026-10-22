@@ -4,14 +4,16 @@
 //   test('[TC-001] Valid user can sign in', { annotation: { type: 'testId', description: 'TC-001' } }, async ({ page }) => { ... });
 //
 // `diagnostics` (auto): collects console errors, page errors and failed requests, and attaches them
-// (secret-redacted) only when the test does not end with its expected status.
+// (secret-redacted) only when the test does not end with its expected status. It also attaches "final-url" then: the address the
+// page ended on, without query or fragment. The pipeline uses it to tell a test that was sent back to the login page (the
+// session ended) from one that failed for another reason.
 //
 // `stepEvidence` (auto, only in audit mode with reporting.stepScreenshots and the "evidence-pdf" reporter): wraps `test.step`
 // so that every step records its outcome, duration and error, and takes ONE final-state screenshot when the test ends. The
 // journey itself is Playwright's own per-test video (evidence.video "on"), which report_generation embeds in the evidence PDF
 // next to the screenshot. Without that reporter nothing is captured, so normal runs pay nothing for it. Password inputs and
 // reporting.maskSelectors are masked in the screenshot.
-// evidence-fixture-revision: 3 (init --update uses this marker to tell a current copy from an older one)
+// evidence-fixture-revision: 4 (init --update uses this marker to tell a current copy from an older one)
 //
 // `cleanup` (opt-in): see its definition below.
 //
@@ -121,6 +123,21 @@ async function recordStep(title, body) {
   }
 }
 
+/**
+ * The page's address without query or fragment (they can carry tokens); null when the page is already gone.
+ * @param {import('@playwright/test').Page} page
+ * @returns {string | null}
+ */
+function finalUrlOf(page) {
+  if (page.isClosed()) return null;
+  try {
+    const u = new URL(page.url());
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return null; // about:blank and the like
+  }
+}
+
 const extended = base.extend({
   diagnostics: [
     async ({ page }, use, testInfo) => {
@@ -137,9 +154,13 @@ const extended = base.extend({
 
       await use();
 
-      if (testInfo.status !== testInfo.expectedStatus && lines.length > 0) {
-        const body = redactSensitive(redact(lines.join('\n'), secretValues(credentialEnvVars())));
-        await testInfo.attach('diagnostics', { body, contentType: 'text/plain' });
+      if (testInfo.status !== testInfo.expectedStatus) {
+        const finalUrl = finalUrlOf(page);
+        if (finalUrl) await testInfo.attach('final-url', { body: finalUrl, contentType: 'text/plain' });
+        if (lines.length > 0) {
+          const body = redactSensitive(redact(lines.join('\n'), secretValues(credentialEnvVars())));
+          await testInfo.attach('diagnostics', { body, contentType: 'text/plain' });
+        }
       }
     },
     { auto: true },

@@ -155,6 +155,8 @@ export function testDependencyHash(rootDir: string, file: string, testId: string
 export function generationInputs(spec: TestSpec, record: ExplorationRecord | null, config: AutomationConfig, deps: string): Record<string, string> {
   return {
     spec: specFingerprint(spec), evidence: explorationEvidenceHash(record, spec.id), language: config.language, authApproach: config.auth.approach, deps,
+    // Which file the test lives in follows its chain, so moving into or out of a cross-module chain regenerates it.
+    ...(spec.layout ? { layout: spec.layout.moduleSlug } : {}),
   };
 }
 

@@ -83,12 +83,21 @@ export interface FailureEntry {
 
 export const FAILURE_ANALYSIS_SCHEMA_VERSION = 1;
 
+// A test that did not run because a test it depends on failed (or was itself blocked). It is not a failure of its own: fix the
+// test it names first, then run it again.
+export interface BlockedEntry {
+  key: string;
+  testId: string;
+  blockedBy: string[]; // test IDs, the ones that failed or were blocked
+}
+
 export interface FailureAnalysis {
   schemaVersion: typeof FAILURE_ANALYSIS_SCHEMA_VERSION;
   analyzedAt: string;
   sourceRunId: string;
   sourceLabel: string;
   failures: FailureEntry[];
+  blocked?: BlockedEntry[];
 }
 
 // Only a script defect with at least medium confidence may be repaired.
@@ -96,15 +105,39 @@ export function isHealingEligible(category: Category, confidence: Confidence): b
   return category === 'script_defect' && confidence !== 'low';
 }
 
-export function buildFailureAnalysis(results: ExecutionResults, now = new Date()): FailureAnalysis {
+// Skipped tests whose prerequisites failed. `dependsOn` maps a test ID to the test IDs it needs (from the specs); a skipped test is
+// only called blocked when a test it depends on really did not pass, so a skip for any other reason stays a skip.
+export function blockedByDependencies(results: ExecutionResults, dependsOn: ReadonlyMap<string, readonly string[]>): BlockedEntry[] {
+  const notPassed = new Set(results.tests.filter((t) => t.outcome === 'failed').map((t) => t.testId));
+  const blocked: BlockedEntry[] = [];
+  const done = new Set<string>();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const t of results.tests) {
+      if (t.outcome !== 'skipped' || done.has(t.key)) continue;
+      const by = (dependsOn.get(t.testId) ?? []).filter((d) => notPassed.has(d));
+      if (by.length === 0) continue;
+      done.add(t.key);
+      notPassed.add(t.testId);
+      blocked.push({ key: t.key, testId: t.testId, blockedBy: by });
+      changed = true;
+    }
+  }
+  return blocked;
+}
+
+export function buildFailureAnalysis(results: ExecutionResults, now = new Date(), dependsOn: ReadonlyMap<string, readonly string[]> = new Map()): FailureAnalysis {
+  const lostLoginIds = new Set(results.authState?.lostLoginTests ?? []);
   const failures = results.tests
     .filter((t) => t.outcome === 'failed' || t.outcome === 'flaky')
     .map((t): FailureEntry => {
       let c = classifyResult(t);
       // Logged out although a fresh login was done in this run: the account or its credentials are the problem, not the
       // test script, so it is never offered for repair.
-      if (results.authState && t.outcome === 'failed' && t.attempts.some((a) => a.errors.some((e) => GENERIC_LOGGED_OUT.test(`${e.message}\n${e.stack ?? ''}`)))) {
-        c = { category: 'test_data_or_precondition', confidence: 'high', signals: ['logged out despite a fresh login (check the test account and credentials)'] };
+      // (The login step signs in again whenever a saved session is refused, so a test that still ends logged out was logged out by
+      // something else: another test that signed in or out as the same account, a session that is cut short, or wrong credentials.)
+      if (results.authState && t.outcome === 'failed' && !t.ownSession && (lostLoginIds.has(t.testId) || t.attempts.some((a) => a.errors.some((e) => GENERIC_LOGGED_OUT.test(`${e.message}\n${e.stack ?? ''}`))))) {
+        c = { category: 'test_data_or_precondition', confidence: 'high', signals: ['logged out although the login was checked or renewed just before the run (the account, its credentials, a session that ends early, or another test signing in or out as the same account)'] };
       }
       const failed = t.attempts.find((a) => a.errors.length > 0);
       return {
@@ -117,7 +150,8 @@ export function buildFailureAnalysis(results: ExecutionResults, now = new Date()
         healingEligible: isHealingEligible(c.category, c.confidence),
       };
     });
-  return { schemaVersion: FAILURE_ANALYSIS_SCHEMA_VERSION, analyzedAt: now.toISOString(), sourceRunId: results.runId, sourceLabel: results.label, failures };
+  const blocked = blockedByDependencies(results, dependsOn);
+  return { schemaVersion: FAILURE_ANALYSIS_SCHEMA_VERSION, analyzedAt: now.toISOString(), sourceRunId: results.runId, sourceLabel: results.label, failures, ...(blocked.length > 0 ? { blocked } : {}) };
 }
 
 // Agent override after looking at the evidence. A rationale is mandatory.

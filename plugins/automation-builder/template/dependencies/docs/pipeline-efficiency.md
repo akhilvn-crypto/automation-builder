@@ -85,15 +85,27 @@ With `auth.approach: storage-state`, `exec run` first decides *reuse* or *refres
 well-formed, created by the pipeline (a small record next to it holds only time, origin and variable names), for the same origin, no older
 than `auth.state.maxAgeHours` (default 8), with not every cookie expired, and, when `auth.state.probePath` is set, accepted by the
 application (one request with the state's cookies; only the status and redirect target are looked at). Otherwise the stale file is removed
-and the setup project logs in. The generated `playwright.config.*` leaves the setup project out only when the executor sets
-`PIPELINE_AUTH_STATE=reuse`, so a plain `npx playwright test` always logs in.
+and the setup project signs in.
 
-If reused state is rejected during the run (tests fail as logged out) the run is diagnosed (`authState.diagnosis`), the state discarded and
-the tests run again **once** with a fresh login. A failing login is a `runnerError`. A test still logged out after a fresh login is classified
-`test_data_or_precondition` and never offered for healing.
+**The setup project runs in every run, before any test.** When the state was judged usable the executor sets `PIPELINE_AUTH_STATE=reuse`; the setup
+(`reuseOrSignIn` in `helpers/auth`) then asks the application once, in this run, whether the saved session is still accepted and
+signs in again only if it is not (`authState.gate`: `reused` or `signed_in`). A session that ended since it was saved (expired, ended on the server,
+cut by another sign-in) therefore never reaches a test, and this needs no `probePath`. A plain `npx playwright test` always signs in.
 
-Limits: without a probe, reuse rests on age and cookie expiry (`verifiedByApplication: false`). Apps that answer 200 with a login page cannot
-be detected before the run; the age limit and the mid-run check catch them. `auth.state.loggedOutPattern` replaces the generic heuristic.
+**Tests that sign in or out themselves** (tag `@own-session`, starting from `storageState: { cookies: [], origins: [] }`) run in the `own-session`
+project, the teardown of `setup`: Playwright runs it after every project that depends on `setup` has finished, pass or fail. Signing in again as the
+same account (a one-session-per-user app, a one-time code) can otherwise end the session another worker's test is using. A project can have only one
+teardown, so with several browsers these tests run in the first browser only (`exec plan` says so).
+
+**Dependent tests** run in order in one serial group on one worker; a failure skips the rest of the group, reported as blocked by the test that failed.
+
+If the application still treats tests as logged out after the setup accepted the session, the run is diagnosed (`authState.diagnosis`), the state
+discarded and the tests run again **once**. After a sign-in that just happened, no second run is made: a test that ends on a login page or fails as
+logged out (`authState.lostLoginTests`; found from the page it ended on, `finalUrl`, as well as from its error text) is classified
+`test_data_or_precondition` and never offered for healing. A failing login is a `runnerError`.
+
+Limits: without a probe, the age/cookie check alone cannot tell that the application dropped a session, but the setup's check does. Apps that answer 200
+with a login page are caught by the setup's check only if `check` asserts something a signed-in user sees. `auth.state.loggedOutPattern` replaces the generic heuristic.
 Secrets: `.env` and `auth/storage-state*.json` must be git-ignored (preflight `secrets-ignored`); logs, errors and diagnostics mask configured
 secrets and credential-shaped text.
 

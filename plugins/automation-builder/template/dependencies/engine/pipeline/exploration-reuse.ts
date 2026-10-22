@@ -20,7 +20,7 @@ import {
   emptyStore, markStale, originOf, pageKey, specFingerprint,
   type ObservationStore, type StoreState, type StoredElement, type StoredPage,
 } from './exploration-store.ts';
-import type { TestSpec, TestSpecDocument } from './test-spec.ts';
+import { layoutModule, type TestSpec, type TestSpecDocument } from './test-spec.ts';
 
 export const REVALIDATION_SCHEMA_VERSION = 1;
 const RUN_EVIDENCE_PREFIX = 'dependencies/runs'; // where a run's files live, relative to the project root
@@ -142,7 +142,8 @@ export interface ExplorationPlan {
   summary: Record<Action, number>;
 }
 
-export const moduleOf = (s: TestSpec): string => s.module;
+// The module a case is generated under: its dependency chain's when the chain spans modules, else its own.
+export const moduleOf = (s: TestSpec): string => layoutModule(s);
 
 interface Ref {
   key: string;

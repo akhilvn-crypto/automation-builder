@@ -23,6 +23,11 @@ A medium-confidence `script_defect` ("locator found no element") needs **current
 showing the control exists under a different name or role. If the control is genuinely missing, it is an
 `application_defect`.
 
+`triage run` also lists `blockedByDependency`: tests that did not run because a test they depend on failed. They are not failures of their own and are
+never healed. Work on the test they name (the first failure of the chain); once it passes, the rest run again. A failure classified
+`test_data_or_precondition` with the signal "logged out although the login was checked or renewed" is not a script defect: report it (the account,
+a session that ends early, or another test signing in or out as the same account), do not edit the test.
+
 **Phase B: heal (healing)**, only for failures with `healingEligible: true`. Follow the auto-healing skill exactly:
 `heal begin` → minimal edit → `heal check` → typecheck (TypeScript projects; `node --check` for JavaScript) → rerun through the CLI with `--retries 0` → `heal record`.
 

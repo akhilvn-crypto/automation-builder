@@ -88,6 +88,8 @@ function cut<T>(items: T[], max = MAX_BRIEF_ITEMS): { items: T[]; omitted: numbe
 function specBrief(s: TestSpec) {
   return {
     id: s.id, title: s.title, module: s.module, preconditions: s.preconditions,
+    // Present only for a case that needs other cases to have run first: they are explored first, and generated before it in one serial group.
+    ...(s.dependsOn?.length ? { dependsOn: s.dependsOn } : {}),
     steps: s.steps.map((st) => ({ index: st.index, action: st.action, expected: st.expected })),
     expectedResults: s.expectedResults,
     testData: s.testData.map((d) => ({ name: d.name, envVar: d.envVar, literal: d.declaredLiteral ? d.value : null })), // never secret values

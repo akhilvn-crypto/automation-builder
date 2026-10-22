@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { validateConfig, type AutomationConfig } from '../engine/config/schema.ts';
 import { cookieHeaderFor, evaluateProbeResponse, probeState, type ProbeRunner } from '../engine/pipeline/auth-probe.ts';
 import {
-  AUTH_META_FILE, authRejectedTests, clearAuthState, inspectAuthState, runWithAuthState, writeAuthMeta,
+  AUTH_META_FILE, authRejectedTests, clearAuthState, inspectAuthState, lostLogin, runWithAuthState, writeAuthMeta,
 } from '../engine/pipeline/auth-state.ts';
 import { buildFailureAnalysis } from '../engine/pipeline/failure-classifier.ts';
 import { normalizeReport, validateExecutionResults, type ExecutionResults } from '../engine/pipeline/execution.ts';
@@ -210,12 +210,13 @@ test('no saved state: the first run logs in and records when; the next run reuse
   });
 
   const first = run();
-  assert.deepEqual([first.authState?.decision, first.authState?.setup, first.authState?.status], ['refresh', 'passed', 'absent']);
+  assert.deepEqual([first.authState?.decision, first.authState?.setup, first.authState?.status, first.authState?.gate], ['refresh', 'passed', 'absent', 'signed_in']);
   assert.ok(existsSync(path.join(root, AUTH_META_FILE)), 'creation time recorded');
   const second = run();
   assert.deepEqual([second.authState?.decision, second.authState?.reason.includes('1h') || second.authState?.reason.includes('0h')], ['reuse', true]);
   assert.deepEqual(calls, ['refresh', 'reuse'], 'the second run did not log in');
   assert.equal(second.authState?.verifiedByApplication, false);
+  assert.equal(second.authState?.gate, 'reused', 'the saved session was still accepted: nothing was replaced');
 });
 
 test('state rejected during a run is diagnosed, discarded and the tests are run again once with a fresh login', (t) => {
@@ -234,7 +235,7 @@ test('state rejected during a run is diagnosed, discarded and the tests are run 
   });
   assert.deepEqual(calls, [{ env: 'reuse', stateExistedAtStart: true }, { env: 'refresh', stateExistedAtStart: false }], 'the rejected state is removed before logging in again');
   assert.equal(out.authState?.recovered, true);
-  assert.match(out.authState?.diagnosis ?? '', /saved authentication state was rejected during the run \(1 test\(s\) failed as logged out: TC-1\)/);
+  assert.match(out.authState?.diagnosis ?? '', /saved authentication state was rejected during the run \(1 test\(s\) ended logged out: TC-1\)/);
   assert.equal(out.stats.failed, 0, 'the final results are those of the fresh login');
   assert.ok(existsSync(path.join(root, AUTH_META_FILE)));
 });
@@ -259,9 +260,83 @@ test('a login that fails is a runner problem, not a pile of test failures; a con
 
 test('logged out despite a fresh login is classified as an account problem and never offered for repair', () => {
   const rejected = failing('Error: net::ERR_ABORTED; Unauthorized (401)');
-  const fresh = buildFailureAnalysis(results({ tests: [rejected], authState: { decision: 'refresh', status: 'absent', reason: 'x', verifiedByApplication: false, recovered: false, setup: 'passed', diagnosis: null, warnings: [] } }));
+  const authState: NonNullable<ExecutionResults['authState']> = { decision: 'refresh', status: 'absent', reason: 'x', verifiedByApplication: false, recovered: false, setup: 'passed', gate: 'signed_in', lostLoginTests: [], diagnosis: null, warnings: [] };
+  const fresh = buildFailureAnalysis(results({ tests: [rejected], authState: { ...authState, lostLoginTests: [] } }));
   assert.deepEqual([fresh.failures[0]!.category, fresh.failures[0]!.healingEligible], ['test_data_or_precondition', false]);
-  assert.match(fresh.failures[0]!.signals[0]!, /logged out despite a fresh login/);
+  assert.match(fresh.failures[0]!.signals[0]!, /logged out although the login was checked or renewed/);
+
+  // A test that ended on the login page is recognised from the page it ended on, whatever its error says.
+  const quiet = withFinalUrl(failing('expect(page).toHaveURL(expected) failed'), 'https://test.example.com/login');
+  const byUrl = buildFailureAnalysis(results({ tests: [quiet], authState: { ...authState, lostLoginTests: ['TC-1'] } }));
+  assert.deepEqual([byUrl.failures[0]!.category, byUrl.failures[0]!.healingEligible], ['test_data_or_precondition', false]);
+});
+
+const withFinalUrl = (t: ExecutionResults['tests'][number], finalUrl: string): ExecutionResults['tests'][number] => ({ ...t, attempts: t.attempts.map((a) => ({ ...a, finalUrl })) });
+
+test('a test sent back to the login page is a lost login, found by its final page and not by the wording of its error', () => {
+  const config = storageConfig();
+  const sentBack = withFinalUrl(failing('expect(page).toHaveURL(expected) failed\nExpected pattern: /userdashboard/\nReceived string: "https://test.example.com/login"'), 'https://test.example.com/login');
+  assert.equal(lostLogin(sentBack, config), true);
+  // The same wording but the page it ended on is not a login page, and the error alone does not say it was logged out.
+  assert.equal(lostLogin(withFinalUrl(failing('expect(page).toHaveURL(expected) failed'), 'https://test.example.com/projects'), config), false);
+  // Paths that merely contain the word are not login pages.
+  assert.equal(lostLogin(withFinalUrl(failing('x'), 'https://test.example.com/blog/login-tips'), config), false);
+  // A test that signs in itself may legitimately end on a login page.
+  assert.equal(lostLogin({ ...sentBack, ownSession: true }, config), false);
+  // A configured pattern replaces the built-in one.
+  assert.equal(lostLogin(withFinalUrl(failing('x'), 'https://test.example.com/welcome-back'), storageConfig({ state: { loggedOutPattern: 'welcome-back' } })), true);
+  assert.equal(authRejectedTests(results({ tests: [sentBack, { ...sentBack, key: 'TC-2@chromium', testId: 'TC-2', ownSession: true }] }), config).map((t) => t.testId).join(), 'TC-1');
+});
+
+test('the login step renews a session the application refuses; tests then run on the new one and no second run is needed', (t) => {
+  const root = tmpRoot(t);
+  const config = storageConfig();
+  saveState(root, [cookie()], 1);
+  const calls: (string | undefined)[] = [];
+  const out = runWithAuthState(root, config, {
+    now: NOW,
+    runOnce: (env) => {
+      calls.push(env.PIPELINE_AUTH_STATE);
+      saveState(root, [cookie({ value: 'a-new-session' })], null); // the setup project found the session refused and signed in again
+      return results({ authSetup: { outcome: 'passed', error: null } });
+    },
+  });
+  assert.deepEqual(calls, ['reuse'], 'one run');
+  assert.deepEqual([out.authState?.gate, out.authState?.setup, out.authState?.recovered], ['signed_in', 'passed', false]);
+  assert.match(readFileSync(path.join(root, AUTH_META_FILE), 'utf8'), new RegExp(NOW.toISOString()), 'the new session\'s age starts now');
+
+  // Tests that still end logged out after a sign-in that just happened are an account problem: no pointless second run.
+  saveState(root, [cookie()], 1);
+  const again: (string | undefined)[] = [];
+  const stillOut = runWithAuthState(root, config, {
+    now: NOW,
+    runOnce: (env) => {
+      again.push(env.PIPELINE_AUTH_STATE);
+      saveState(root, [cookie({ value: 'newer' })], null);
+      return results({ authSetup: { outcome: 'passed', error: null }, tests: [withFinalUrl(failing('x'), 'https://test.example.com/login')], stats: { total: 1, passed: 0, failed: 1, flaky: 0, skipped: 0 } });
+    },
+  });
+  assert.deepEqual(again, ['reuse']);
+  assert.deepEqual([stillOut.authState?.gate, stillOut.authState?.lostLoginTests], ['signed_in', ['TC-1']]);
+});
+
+test('the diagnostics fixture\'s final page and the @own-session tag reach the results', (t) => {
+  const root = tmpRoot(t);
+  const body = Buffer.from('https://test.example.com/login').toString('base64');
+  const report = {
+    config: { rootDir: path.join(root, 'tests') },
+    suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [
+      { title: '[TC-1] shared', file: 'a.spec.ts', line: 3, tags: [], tests: [{ projectName: 'chromium', annotations: [], expectedStatus: 'passed', status: 'unexpected', results: [{ retry: 0, status: 'failed', duration: 5, errors: [{ message: 'x' }], attachments: [{ name: 'final-url', contentType: 'text/plain', body }] }] }] },
+      { title: '[TC-2] signs in @own-session', file: 'a.spec.ts', line: 9, tags: ['@own-session'], tests: [{ projectName: 'own-session', annotations: [], expectedStatus: 'passed', status: 'expected', results: [{ retry: 0, status: 'passed', duration: 5, errors: [], attachments: [] }] }] },
+    ] }],
+    errors: [], stats: {},
+  };
+  const normalized = normalizeReport(report, { rootDir: root, runId: 'r', label: 'initial', secrets: [], now: NOW });
+  const [shared, own] = normalized.tests;
+  assert.equal(shared!.attempts[0]!.finalUrl, 'https://test.example.com/login');
+  assert.equal(shared!.ownSession, undefined);
+  assert.equal(own!.ownSession, true);
+  assert.equal(own!.attempts[0]!.finalUrl, undefined);
 });
 
 test('clearing saved state is explicit and reports exactly what was removed', (t) => {

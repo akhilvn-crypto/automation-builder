@@ -60,7 +60,7 @@ If a layout is not recognised, `input import` / `specs parse` exit 2 and list th
    Never invent a mapping to make a parse pass.
 3. `… input map <file> [--sheet <name>] --column id="Code" --column steps="How to test" --column expected="Result" [--header-row N] [--module "Name"] [--skip]`
    saves it in `dependencies/state/input-mapping.json` (CLI only; refused if the table still wouldn't parse; `--clear` removes
-   it; without `--sheet` it applies to the CSV or every sheet). Fields: `id title module preconditions steps expected data priority tags`.
+   it; without `--sheet` it applies to the CSV or every sheet). Fields: `id title module preconditions steps expected data priority tags depends`.
 4. Re-run `input import` (or `specs parse`).
 
 ## Modules
@@ -77,6 +77,15 @@ silently. Tests are generated one file per module (`specs modules <runId>` print
 `specs parse` also writes the input back as Markdown per module to `dependencies/runs/<runId>/normalized-input/<slug>.md`
 (the record of what was understood; `env:VAR` instead of credentials).
 
+## Dependencies between cases
+
+A case that needs another to have run first says so in the input: a **Depends on** column (also `Dependency`, `Dependencies`, `Prerequisite test(s)`,
+`Blocked by`), or a `Depends on: TC-001, TC-002` line under the case heading in Markdown. A precondition that names another case's ID is also read as a
+dependency, with a warning so it can be confirmed. Nothing is inferred from the steps. References are matched to test IDs (or exact titles), so
+`TC001` on a sheet finds that sheet's `TC001`. The result is `dependsOn` (test IDs) on the canonical case and the spec. `specs modules` lists the
+`chains`: the cases connected by dependencies, prerequisites first. A chain inside one module stays in that module's file; a chain across modules gets
+its own file (`chain-<first id>`), which the specs mark with `layout`. Tests of a chain run in order in one serial group.
+
 ## Ambiguities
 
 Every canonical case has a status: `valid`, `warning` (usable; a remark), `needs_clarification` (a person must answer) or
@@ -85,7 +94,8 @@ Every canonical case has a status: `valid`, `warning` (usable; a remark), `needs
 
 Blocking (case → `needs_clarification`, never generated): `missing_expected_result`, `missing_steps`, `empty_step`,
 `duplicate_id`, `undefined_data_reference`, `ambiguous_column_mapping`, `possible_secret_literal`; `untitled_case` makes it
-`invalid`. Warning only: `vague_expected_result` ("works correctly"): mention it, the case stays `ready`.
+`invalid`. For dependencies: `unresolved_dependency` (the reference is not a test in the input, or matches several), `dependency_cycle` and
+`dependency_not_ready` (it needs a case that is itself blocked) are blocking; `dependency_inferred` (a precondition named another case) is a warning. Warning only: `vague_expected_result` ("works correctly"): mention it, the case stays `ready`.
 `node dependencies/engine/cli/pipeline.ts specs check <runId>` re-verifies that `test-specs.json` is exactly the projection of
 the canonical document (hash and content, and that the source files are unchanged) and lists the cases that are not automatable.
 

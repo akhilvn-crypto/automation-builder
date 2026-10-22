@@ -7,6 +7,7 @@
 // Versioned independently from test-specs.json; documented in docs/test-spec-schema.md.
 
 import { canonicalJson, hashValue } from './artifact-cache.ts';
+import { chainLayouts } from './dependencies.ts';
 import {
   AMBIGUITY_KINDS, BLOCKING_AMBIGUITIES, INPUT_FORMATS, TEST_ID_PATTERN, TEST_SPEC_SCHEMA_VERSION, slugify, validateTestSpecDocument,
   type Ambiguity, type AmbiguityKind, type InputFormat, type SourceFile, type SpecStatus, type TestDataRef, type TestSpec, type TestSpecDocument,
@@ -63,6 +64,9 @@ export interface CanonicalCase {
   moduleSlug: string; // always slugify(module)
   suite: string | null; // the Markdown "# heading" the case sat under (informational)
   preconditions: string[];
+  // testCaseIds of the cases that must run before this one (resolved from the "depends on" column/label or a precondition that
+  // names another case). Absent when there are none.
+  dependsOn?: string[];
   steps: CanonicalStep[];
   expectedResults: string[]; // case-level expected results, original wording
   testData: TestDataRef[]; // case-level data; credentials are env var references, never values
@@ -152,6 +156,7 @@ export function projectSpec(c: CanonicalCase): TestSpec {
     priority: c.priority,
     tags: c.tags,
     preconditions: c.preconditions,
+    ...(c.dependsOn && c.dependsOn.length > 0 ? { dependsOn: c.dependsOn } : {}),
     steps: c.steps.map((s) => ({ index: s.stepNumber, action: s.action, expected: s.expectedResult ?? null })),
     expectedResults: c.expectedResults,
     testData: c.testData,
@@ -167,12 +172,15 @@ export function canonicalHash(doc: CanonicalDocument): string {
 }
 
 export function projectSpecs(doc: CanonicalDocument): TestSpecDocument {
+  const specs = doc.testCases.map(projectSpec);
+  // A dependency chain across modules is generated in one file of its own; every member says so.
+  const layouts = chainLayouts(specs);
   return {
     schemaVersion: TEST_SPEC_SCHEMA_VERSION,
     generatedAt: doc.generatedAt,
     sources: doc.sources,
     canonical: { schemaVersion: doc.schemaVersion, sha256: canonicalHash(doc) },
-    specs: doc.testCases.map(projectSpec),
+    specs: layouts.size === 0 ? specs : specs.map((s) => (layouts.has(s.id) ? { ...s, layout: layouts.get(s.id)! } : s)),
   };
 }
 
@@ -249,6 +257,7 @@ export function validateCanonicalDocument(v: unknown): string[] {
     else if (c.moduleSlug !== slugify(c.module)) issues.push(`${at}.moduleSlug must be "${slugify(c.module)}"`);
     if (!isStrArray(c.preconditions) || !isStrArray(c.expectedResults) || !isStrArray(c.tags)) issues.push(`${at}: preconditions, expectedResults and tags must be string arrays`);
     if (!(c.priority === null || typeof c.priority === 'string')) issues.push(`${at}.priority must be a string or null`);
+    if (c.dependsOn !== undefined && (!isStrArray(c.dependsOn) || c.dependsOn.length === 0)) issues.push(`${at}.dependsOn must be a non-empty array of test IDs when present`);
 
     const s = c.source;
     if (!isObj(s) || typeof s.file !== 'string' || typeof s.fileName !== 'string' || !(INPUT_FORMATS as readonly unknown[]).includes(s.format)) {

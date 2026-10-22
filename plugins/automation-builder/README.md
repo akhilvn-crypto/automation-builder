@@ -109,8 +109,12 @@ Mechanics, trade-offs and limits: `dependencies/docs/pipeline-efficiency.md` (sc
   only while their inputs, the plugin version and the framework files each test imports are unchanged and the entry still validates.
   `cache status <runId>` lists every reuse/rebuild with its reason. Execution results are never reused.
 - **Agents on demand:** `agents plan <runId> <stage>` decides in code whether a stage needs an agent and writes the bounded brief it gets.
-- **Saved login state** is checked (age, cookies, origin, optional probe) before reuse; a session rejected mid-run is discarded and the run
-  repeated once. `auth check` / `auth clear` explain and clean up.
+- **Saved login state** is checked (age, cookies, origin, optional probe) before reuse, and the setup project runs first in every run: it asks the
+  application once whether the saved session is still accepted and signs in again if not, so no test starts on a session that has ended. A session
+  rejected mid-run is discarded and the run repeated once. `auth check` / `auth clear` explain and clean up.
+- **Tests that sign in or out** (tag `@own-session`) start signed out and run after every test that shares the saved login, so signing in again as the same
+  account cannot end a session another test is using. **Dependent test cases** (a "Depends on" column or line) run in order in one serial group; if one fails
+  the later ones are reported as blocked by it, not as failures of their own.
 - **Parallelism:** a conservative default of 2 workers, capped by `execution.isolation`; generation batches (one per module file) never share a
   file; all shared state updates are locked. `run compare <baseline> <candidate>` checks that no test went missing or got worse before it
   believes a speed-up.

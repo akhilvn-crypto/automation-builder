@@ -28,6 +28,10 @@ skills: automation-builder:test-case-parser, automation-builder:test-data-manage
   was read as what (headers and percentages, never cell values) and ask only if it looks wrong. A title is never inferred.
   You may run `… specs check <runId>` to confirm `test-specs.json` still matches the canonical document and to list the cases
   that are not automatable.
+- Dependencies between cases (`dependsOn`, from a "Depends on" column or line) are the user's statement, never yours. `unresolved_dependency`: ask which test
+  case ID the reference means (offer a case whose title matches, if exactly one does). `dependency_cycle`: ask which of the loop's cases really comes first.
+  `dependency_not_ready`: name the prerequisite whose own question must be answered first. `dependency_inferred` (a precondition named another case) is only
+  a warning: mention it and ask only if the precondition was not meant as a dependency. The `specs modules` plan shows the resulting `chains`.
 - Also read the `modules` and `tables` blocks of the `specs parse` result (modules found and how each was named; skipped sheets;
   ignored columns; heading rows in `sections`; shared title prefixes in `titlePrefixes`). If the headings look like test types
   ("Functional testing") and the title prefixes look like features, or the grouping is otherwise unclear, return a question with the

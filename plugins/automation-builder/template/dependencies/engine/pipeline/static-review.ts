@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { CLI_REF_PATTERN } from './exploration.ts';
+import { chainIssues, ownSessionIssues, type ChainSpec } from './session-layout.ts';
 
 export const SEVERITIES = ['critical', 'major', 'minor', 'info'] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -50,11 +51,13 @@ function hasSecretLiteral(line: string): boolean {
   return SECRET_WORD.test(line) && /\.(?:fill|type|pressSequentially)\(\s*['"`][^'"`]{4,}['"`]/.test(line);
 }
 const TEST_CALL = /\btest\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g;
+const AUTH_SETUP_FILE = /(?:^|\/)auth\/[^/]+\.setup\.(?:ts|js)$/;
 const SHARED_FIXTURE_IMPORT = /from\s+['"][^'"]*fixtures\/test(?:\.ts|\.js)?['"]/;
 
 // kind "support" = page objects written by the generator: only the line-level safety rules apply
 // (no tests, titles or fixture import are expected there).
-export function reviewSource(file: string, source: string, kind: 'test' | 'support' = 'test'): ReviewFinding[] {
+// `chains`: dependency chains whose tests are all in this file (see dependencies.ts), checked for order and a serial group.
+export function reviewSource(file: string, source: string, kind: 'test' | 'support' = 'test', chains: ChainSpec[] = []): ReviewFinding[] {
   const findings: Omit<ReviewFinding, 'id'>[] = [];
   const lines = source.split(/\r?\n/);
   lines.forEach((text, i) => {
@@ -67,7 +70,17 @@ export function reviewSource(file: string, source: string, kind: 'test' | 'suppo
     }
   });
 
-  if (kind === 'support') return withIds(file, findings);
+  if (kind === 'support') {
+    // The login setup must check the saved session before trusting it, so a stale one is replaced instead of failing every test.
+    if (AUTH_SETUP_FILE.test(file) && !/reuseOrSignIn\s*\(/.test(source)) {
+      findings.push({
+        severity: 'major', file, line: null, rule: 'auth-gate',
+        message: 'the login setup must call reuseOrSignIn(...) from helpers/auth: it reuses the saved session only after the application accepts it, and signs in again otherwise',
+        status: 'open', source: 'static',
+      });
+    }
+    return withIds(file, findings);
+  }
 
   if (!SHARED_FIXTURE_IMPORT.test(source)) {
     findings.push({ severity: 'major', file, line: null, rule: 'use-shared-fixtures', message: 'import { test, expect } from fixtures/test, not directly from @playwright/test', status: 'open', source: 'static' });
@@ -96,6 +109,10 @@ export function reviewSource(file: string, source: string, kind: 'test' | 'suppo
       });
     }
   });
+
+  for (const i of [...ownSessionIssues(source), ...chainIssues(source, chains)]) {
+    findings.push({ severity: i.severity, file, line: i.line, rule: i.rule, message: i.message, status: 'open', source: 'static' });
+  }
 
   return withIds(file, findings);
 }
@@ -129,9 +146,9 @@ export function testBlocks(source: string): TestBlock[] {
   });
 }
 
-export function reviewFiles(rootDir: string, files: string[], supportFiles: string[] = []): ReviewFinding[] {
+export function reviewFiles(rootDir: string, files: string[], supportFiles: string[] = [], chainsByFile: ReadonlyMap<string, ChainSpec[]> = new Map()): ReviewFinding[] {
   return [
-    ...files.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8'))),
+    ...files.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8'), 'test', chainsByFile.get(f) ?? [])),
     ...supportFiles.flatMap((f) => reviewSource(f, readFileSync(path.join(rootDir, f), 'utf8'), 'support')),
   ];
 }

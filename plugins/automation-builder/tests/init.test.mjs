@@ -249,7 +249,7 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('final-state screenshot')), JSON.stringify(kept.json.warnings));
 
     // A copy that already has the current fixture is left alone silently.
-    writeFileSync(fixture, `${custom}// evidence-fixture-revision: 3\n`);
+    writeFileSync(fixture, `${custom}// evidence-fixture-revision: 4\n`);
     const quiet = init(root, '--update');
     assert.ok(!quiet.json.warnings.some((w) => w.includes('customised')));
   });
@@ -279,7 +279,7 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
     assert.ok(init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
     const current = readFileSync(fixture, 'utf8');
-    assert.match(current, /evidence-fixture-revision: 3/);
+    assert.match(current, /evidence-fixture-revision: 4/);
     assert.doesNotMatch(current, /step-\$\{String\(index\)/, 'no screenshot per step any more');
     assert.match(current, /capture\(r, 'final'\)/, 'the final-state screenshot is still taken');
     assert.match(current, /input\[type="password"\]/);
@@ -297,7 +297,7 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
     assert.ok(init(root, '--update').json.overwritten.includes(`automation/fixtures/test.${ext}`));
     const current = readFileSync(fixture, 'utf8');
-    assert.match(current, /evidence-fixture-revision: 3/);
+    assert.match(current, /evidence-fixture-revision: 4/);
     assert.match(current, /startCleanup\(/);
     assert.match(current, /cleanup\.register|cleanup: async/);
     assert.match(current, /session\.run\(\)/, 'the undo functions run after the test');
@@ -307,6 +307,32 @@ for (const [language, ext] of [['typescript', 'ts'], ['javascript', 'js']]) {
     const kept = init(root, '--update');
     assert.ok(!kept.json.overwritten.includes(`automation/fixtures/test.${ext}`));
     assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('cleanup')), JSON.stringify(kept.json.warnings));
+  });
+
+  test(`${language}: --update brings the unmodified 0.18.2 fixtures/test.${ext} up to date (adds the final-url attachment) and adds helpers/auth`, (t) => {
+    const root = project(t);
+    assert.equal(init(root, '--language', language).code, 0);
+    const fixture = path.join(root, 'automation', 'fixtures', `test.${ext}`);
+    const shipped = readFileSync(path.join(DATA, `fixture-0.18.2.${ext}.txt`), 'utf8');
+    assert.match(shipped, /evidence-fixture-revision: 3/);
+    assert.doesNotMatch(shipped, /final-url/);
+    writeFileSync(fixture, shipped.replace(/\n/g, '\r\n'));
+    // An older project has no helpers/auth: --update adds the file without touching the helpers it already has.
+    rmSync(path.join(root, 'automation', 'helpers', `auth.${ext}`));
+    const updated = init(root, '--update');
+    assert.ok(updated.json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    assert.ok(updated.json.created.includes(`automation/helpers/auth.${ext}`), JSON.stringify(updated.json.created));
+    assert.ok(!updated.json.overwritten.includes(`automation/helpers/test-data.${ext}`));
+    const current = readFileSync(fixture, 'utf8');
+    assert.match(current, /evidence-fixture-revision: 4/);
+    assert.match(current, /testInfo\.attach\('final-url'/, 'a failed test records the page it ended on');
+    assert.match(readFileSync(path.join(root, 'automation', 'helpers', `auth.${ext}`), 'utf8'), /export async function reuseOrSignIn/);
+
+    // A customised 0.18.2 copy is never touched; the warning names the new attachment.
+    writeFileSync(fixture, `${shipped}\n// my own fixture\n`);
+    const kept = init(root, '--update');
+    assert.ok(!kept.json.overwritten.includes(`automation/fixtures/test.${ext}`));
+    assert.ok(kept.json.warnings.some((w) => w.includes(`test.${ext} was customised`) && w.includes('final-url')), JSON.stringify(kept.json.warnings));
   });
 }
 

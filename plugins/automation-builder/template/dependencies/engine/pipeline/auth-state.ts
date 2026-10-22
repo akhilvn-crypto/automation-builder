@@ -9,7 +9,8 @@
 //
 // Nothing here prints or stores cookie, token or password values; reports contain only names, counts, ages and statuses.
 
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { AUTH_DIR, AUTH_STATE_FILE } from '../config/playwright-config.ts';
 import { DEFAULT_AUTH_STATE_MAX_AGE_HOURS, type AutomationConfig } from '../config/schema.ts';
@@ -157,17 +158,43 @@ export interface AuthRunInfo {
   verifiedByApplication: boolean;
   recovered: boolean; // the first attempt was rejected and the tests were run again after a fresh login
   setup: 'passed' | 'failed' | 'not_run';
+  // What the login step did: 'reused' the saved session (the application accepted it just before the tests), 'signed_in' (it had to
+  // sign in: no usable session, or the saved one was refused at that moment), or 'not_run'.
+  gate: 'reused' | 'signed_in' | 'not_run';
+  // Tests (not the ones that sign in themselves) that ended on a login page or failed as logged out, in the final results.
+  lostLoginTests: string[];
   diagnosis: string | null;
   warnings: string[];
 }
 
 export const GENERIC_LOGGED_OUT = /\b401\b|unauthori[sz]ed|session (?:has )?expired|(?:redirect\w*|navigat\w+) to [^\n]*(?:log-?in|sign-?in)/i;
+// A page address that is a login page: /login, /signin, /sign-in, /auth, /sso ... as a path segment.
+export const GENERIC_LOGIN_URL = /\/(?:log-?in|sign-?in|sign_in|auth|sso|session\/new)(?:[/?#]|$)/i;
+
+// Did this test fail because it was logged out? Two independent signals, either is enough: the error says so, or the page it
+// ended on (recorded by the diagnostics fixture) is a login page. A test that signs in itself is not judged: ending on the
+// login page can be exactly what it checks.
+export function lostLogin(t: TestResult, config: AutomationConfig): boolean {
+  if (t.outcome !== 'failed' || t.ownSession) return false;
+  const configured = config.auth.state?.loggedOutPattern;
+  const errorPattern = configured ? new RegExp(configured, 'i') : GENERIC_LOGGED_OUT;
+  const urlPattern = configured ? new RegExp(configured, 'i') : GENERIC_LOGIN_URL;
+  return t.attempts.some((a) => a.errors.some((e) => errorPattern.test(`${e.message}\n${e.stack ?? ''}`)) || (a.finalUrl !== undefined && urlPattern.test(a.finalUrl)));
+}
 
 // Tests that failed in a way that points at being logged out. Only meaningful when saved state was reused.
 export function authRejectedTests(results: ExecutionResults, config: AutomationConfig): TestResult[] {
-  const configured = config.auth.state?.loggedOutPattern;
-  const pattern = configured ? new RegExp(configured, 'i') : GENERIC_LOGGED_OUT;
-  return results.tests.filter((t) => t.outcome === 'failed' && t.attempts.some((a) => a.errors.some((e) => pattern.test(`${e.message}\n${e.stack ?? ''}`))));
+  return results.tests.filter((t) => lostLogin(t, config));
+}
+
+// A fingerprint of the saved state file (null when absent), to tell whether the login step replaced the session during a run.
+// Only the hash is kept; nothing of the content leaves this function.
+export function stateFingerprint(rootDir: string): string | null {
+  try {
+    return createHash('sha256').update(readFileSync(statePath(rootDir))).digest('hex');
+  } catch {
+    return null;
+  }
 }
 
 export interface ManagedRunOptions extends InspectOptions {
@@ -186,28 +213,38 @@ export function runWithAuthState(rootDir: string, config: AutomationConfig, opts
   const report = inspectAuthState(rootDir, config, opts);
   const info = (over: Partial<AuthRunInfo>): AuthRunInfo => ({
     decision: report.decision === 'reuse' ? 'reuse' : 'refresh', status: report.status, reason: report.reason, verifiedByApplication: report.verifiedByApplication,
-    recovered: false, setup: 'not_run', diagnosis: null, warnings: report.warnings, ...over,
+    recovered: false, setup: 'not_run', gate: 'not_run', lostLoginTests: [], diagnosis: null, warnings: report.warnings, ...over,
   });
+  const lost = (r: ExecutionResults): string[] => [...new Set(authRejectedTests(r, config).map((t) => t.testId))];
 
   if (report.decision !== 'reuse') {
     clearAuthState(rootDir); // never leave state we have just judged unusable where a failed login could resurrect it
     const results = opts.runOnce({ PIPELINE_AUTH_STATE: 'refresh' });
     const setup = setupOutcome(results, rootDir);
     if (setup === 'passed') writeAuthMeta(rootDir, config, now);
-    return { ...results, authState: info({ setup }) };
+    return { ...results, authState: info({ setup, gate: setup === 'passed' ? 'signed_in' : 'not_run', lostLoginTests: lost(results) }) };
   }
 
+  // The state looked fine on paper. The login step still asks the application before the tests start and signs in again when the
+  // session is refused, so a session that ended since it was saved never reaches a test.
+  const before = stateFingerprint(rootDir);
   const first = opts.runOnce({ PIPELINE_AUTH_STATE: 'reuse' });
+  const firstSetup = setupOutcome(first, rootDir);
+  const replaced = firstSetup === 'passed' && stateFingerprint(rootDir) !== before;
+  if (replaced) writeAuthMeta(rootDir, config, now); // a new session was saved: its age starts now
   const rejected = authRejectedTests(first, config);
-  if (rejected.length === 0) return { ...first, authState: info({}) };
+  // After a sign-in that just happened, being logged out means the account, not the saved session: a rerun would not change it.
+  if (rejected.length === 0 || replaced) {
+    return { ...first, authState: info({ setup: firstSetup, gate: replaced ? 'signed_in' : 'reused', lostLoginTests: lost(first) }) };
+  }
 
-  // The state looked fine but the application treated the tests as logged out: replace it and run again, once.
+  // The login step accepted the session but the tests were treated as logged out anyway: replace it and run again, once.
   clearAuthState(rootDir);
   const second = opts.runOnce({ PIPELINE_AUTH_STATE: 'refresh' });
   const setup = setupOutcome(second, rootDir);
   if (setup === 'passed') writeAuthMeta(rootDir, config, now);
-  const diagnosis = `saved authentication state was rejected during the run (${rejected.length} test(s) failed as logged out: ${rejected.map((t) => t.testId).slice(0, 5).join(', ')}); it was discarded, a fresh login was done and the tests were run again`;
-  return { ...second, authState: info({ decision: 'refresh', status: 'rejected_by_app', reason: diagnosis, recovered: true, setup, diagnosis }) };
+  const diagnosis = `saved authentication state was rejected during the run (${rejected.length} test(s) ended logged out: ${rejected.map((t) => t.testId).slice(0, 5).join(', ')}); it was discarded, a fresh login was done and the tests were run again`;
+  return { ...second, authState: info({ decision: 'refresh', status: 'rejected_by_app', reason: diagnosis, recovered: true, setup, gate: setup === 'passed' ? 'signed_in' : 'not_run', lostLoginTests: lost(second), diagnosis }) };
 }
 
 export function summarizeSecretsHandling(rootDir: string): { env: boolean; state: boolean; meta: boolean } {

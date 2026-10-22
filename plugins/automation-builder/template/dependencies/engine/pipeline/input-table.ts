@@ -7,7 +7,7 @@ import path from 'node:path';
 import { stateDir } from '../utils/layout.ts';
 import { AUTO_APPLY_CONFIDENCE, suggestColumns, type ColumnSuggestion } from './column-inference.ts';
 
-export const FIELDS = ['id', 'title', 'module', 'preconditions', 'steps', 'expected', 'data', 'priority', 'tags'] as const;
+export const FIELDS = ['id', 'title', 'module', 'preconditions', 'steps', 'expected', 'data', 'priority', 'tags', 'depends'] as const;
 export type Field = (typeof FIELDS)[number];
 
 export interface TableRow { line: number; cells: string[] }
@@ -34,6 +34,12 @@ const ALIASES: Record<Field, readonly string[]> = {
   data: ['test data', 'data', 'input data', 'test input', 'test inputs', 'input', 'inputs'],
   priority: ['priority', 'prio', 'test priority'],
   tags: ['tags', 'tag', 'labels', 'label', 'keywords'],
+  // Which other cases must run first (test IDs). "Prerequisite" alone stays a precondition; only the test-naming forms are dependencies.
+  depends: [
+    'depends on', 'depends', 'dependent on', 'dependency', 'dependencies', 'depends on test', 'depends on test case', 'depends on tc', 'depends on id',
+    'prerequisite test', 'prerequisite tests', 'prerequisite test case', 'prerequisite test cases', 'pre requisite test', 'pre requisite tests',
+    'blocked by', 'requires test', 'requires tests',
+  ],
 };
 // "TC ID", "Test Case No.", "Scenario #", ... : any test/case/scenario word followed by id/no/number/ref.
 const ID_PATTERN = /^(?:test ?case|testcase|tc|test|case|scenario|test scenario)(?: ?(?:id|no|number|ref|#))$/;

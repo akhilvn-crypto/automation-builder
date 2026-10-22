@@ -11,10 +11,15 @@
 // video, traces) to test-results/<run-id>/<label>/. A plain `npx playwright test` uses reports/adhoc/ and
 // test-results/adhoc/, so it never wipes a pipeline run's evidence (Playwright cleans its outputDir on start).
 //
-// Saved login state: with auth.approach "storage-state" the browser projects normally depend on a `setup` project that logs in.
-// The executor sets PIPELINE_AUTH_STATE=reuse only after it has checked the saved state (pipeline/auth-state.ts); then the
-// setup project is left out and the saved state is used as it is. Anything else (including a plain `npx playwright test`)
-// logs in. Workers and in-file parallelism come from pipeline/execution-plan.ts (a conservative default; PW_WORKERS, which the
+// Saved login state (auth.approach "storage-state"): the `setup` project ALWAYS runs first and every browser project depends on it,
+// so no test can start before the login exists. The executor sets PIPELINE_AUTH_STATE=reuse once it has checked the saved state's
+// age (pipeline/auth-state.ts); the setup (helpers/auth reuseOrSignIn) then asks the application whether the saved session is still
+// accepted and signs in again if not. Anything else (including a plain `npx playwright test`) signs in.
+// Tests that sign in themselves are tagged @own-session and start signed out. They run in the `own-session` project, which is the
+// teardown of `setup`: Playwright runs it after every project that depends on `setup` has finished, pass or fail, so signing in
+// again as the same account can never end the session a test is still using. (A project can have only one teardown, so with
+// several browsers these tests run in the first browser only.)
+// Workers and in-file parallelism come from pipeline/execution-plan.ts (a conservative default; PW_WORKERS, which the
 // executor sets after reading the per-worker accounts from .env, overrides the number).
 
 import { createHash } from 'node:crypto';
@@ -22,11 +27,14 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ADHOC_SCOPE, EVIDENCE_DIR, REPORTS_DIR } from '../pipeline/artifact-manager.ts';
 import { resolveExecutionPlan } from '../pipeline/execution-plan.ts';
+import { OWN_SESSION_TAG } from '../pipeline/session-layout.ts';
 import { loadConfig } from './load-config.ts';
 import type { AutomationConfig, Browser } from './schema.ts';
 
 export const AUTH_DIR = 'auth'; // login setup (*.setup.*) and the saved storage state; the state file is git-ignored
 export const AUTH_STATE_FILE = `${AUTH_DIR}/storage-state.json`;
+export const SETUP_PROJECT = 'setup'; // signs in; every browser project depends on it
+export const OWN_SESSION_PROJECT = 'own-session'; // tests that sign in themselves; the teardown of the setup project, so they run last
 
 const MARKER = '// automation-builder:config sha256=';
 // Shipped in the scaffold before any configuration exists: nothing is hand-edited yet, so the first render replaces it.
@@ -66,13 +74,16 @@ export function renderPlaywrightConfig(config: AutomationConfig, opts: RenderOpt
   // The fallback worker count when nothing sets PW_WORKERS: the plan without per-worker accounts (they are read from .env at run time).
   const plan = resolveExecutionPlan(config, {}, Number.MAX_SAFE_INTEGER);
   const projects: string[] = [];
-  if (storageState) projects.push(`    ...(reuseSavedLogin ? [] : [{ name: 'setup', testDir: ${q(`./${AUTH_DIR}`)}, testMatch: ${q(`**/*.setup.${ext}`)} }]),`);
-  for (const b of config.browsers) {
-    const use = storageState
-      ? `{ ...devices[${q(DEVICE[b])}], storageState: \`\${import.meta.dirname}/${AUTH_STATE_FILE}\` }, dependencies: reuseSavedLogin ? [] : ['setup']`
-      : `{ ...devices[${q(DEVICE[b])}] }`;
-    projects.push(`    { name: ${q(b)}, use: ${use} },`);
+  if (storageState) {
+    projects.push(`    { name: ${q(SETUP_PROJECT)}, testDir: ${q(`./${AUTH_DIR}`)}, testMatch: ${q(`**/*.setup.${ext}`)}, teardown: ${q(OWN_SESSION_PROJECT)} },`);
   }
+  for (const b of config.browsers) {
+    projects.push(storageState
+      ? `    { name: ${q(b)}, use: { ...devices[${q(DEVICE[b])}], storageState: \`\${import.meta.dirname}/${AUTH_STATE_FILE}\` }, dependencies: [${q(SETUP_PROJECT)}], grepInvert: /${OWN_SESSION_TAG}/ },`
+      : `    { name: ${q(b)}, use: { ...devices[${q(DEVICE[b])}] } },`);
+  }
+  // Signed-out tests: no saved login, and they run last (see the note at the top of this file).
+  if (storageState) projects.push(`    { name: ${q(OWN_SESSION_PROJECT)}, use: { ...devices[${q(DEVICE[config.browsers[0]!])}] }, grep: /${OWN_SESSION_TAG}/ },`);
 
   const lines = [
     '// Playwright Test configuration. Written by the Automation Builder pipeline from config/automation.config.json and',
@@ -94,7 +105,6 @@ export function renderPlaywrightConfig(config: AutomationConfig, opts: RenderOpt
     "  ? `${process.env.PIPELINE_RUN_ID}/${process.env.PIPELINE_LABEL ?? 'initial'}`",
     `  : ${q(ADHOC_SCOPE)};`,
     '',
-    ...(storageState ? ["// Set by the pipeline once it has verified the saved login (auth/storage-state.json); then no login runs.", "const reuseSavedLogin = process.env.PIPELINE_AUTH_STATE === 'reuse';", ''] : []),
     'export default defineConfig({',
     "  testDir: './tests',",
     `  testMatch: ${q(`**/*.spec.${ext}`)},`,

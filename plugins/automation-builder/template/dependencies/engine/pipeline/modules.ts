@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import type { Language } from '../config/schema.ts';
 import { TESTS_DIR, isPipelineOwned, specFileExtension } from './generation.ts';
-import type { TestSpec, TestSpecDocument } from './test-spec.ts';
+import { chainsInLayoutModule } from './dependencies.ts';
+import { layoutModule, layoutModuleSlug, type TestSpec, type TestSpecDocument } from './test-spec.ts';
 
 export interface ModulePlan {
   module: string; // display name, used for test.describe(...)
@@ -15,12 +16,15 @@ export interface ModulePlan {
   ready: string[]; // spec IDs to generate
   needsClarification: string[]; // spec IDs that must not be generated
   sources: string[]; // input files (with sheet) the module's cases came from
+  // Dependency chains inside this file, prerequisites first (only the ids to generate). Each is written inside ONE serial group,
+  // in this order, so the tests run in order on one worker and the rest are skipped when one fails.
+  chains: { id: string; ids: string[] }[];
 }
 
-export function groupByModule(specs: TestSpec[]): Map<string, TestSpec[]> {
+export function groupByModule(specs: TestSpec[], slugOf: (s: TestSpec) => string = (s) => s.moduleSlug): Map<string, TestSpec[]> {
   const groups = new Map<string, TestSpec[]>();
   for (const s of specs) {
-    const key = s.moduleSlug;
+    const key = slugOf(s);
     groups.set(key, [...(groups.get(key) ?? []), s]);
   }
   return groups;
@@ -31,7 +35,10 @@ export function groupByModule(specs: TestSpec[]): Map<string, TestSpec[]> {
 export function planModules(doc: TestSpecDocument, language: Language, rootDir: string): ModulePlan[] {
   const ext = specFileExtension(language);
   const plans: ModulePlan[] = [];
-  for (const [slug, specs] of groupByModule(doc.specs)) {
+  const nodes = doc.specs.map((s) => ({ id: s.id, module: s.module, moduleSlug: s.moduleSlug, dependsOn: s.dependsOn }));
+  const layoutSlug = new Map(doc.specs.map((s) => [s.id, layoutModuleSlug(s)]));
+  const isReady = new Set(doc.specs.filter((s) => s.status === 'ready').map((s) => s.id));
+  for (const [slug, specs] of groupByModule(doc.specs, layoutModuleSlug)) {
     let file = `${TESTS_DIR}/${slug}${ext}`;
     let owned = false;
     let renamed = false;
@@ -41,13 +48,16 @@ export function planModules(doc: TestSpecDocument, language: Language, rootDir: 
       file = `${TESTS_DIR}/${slug}.generated${n === 1 ? '' : `-${n}`}${ext}`;
     }
     plans.push({
-      module: specs[0]!.module,
+      module: layoutModule(specs[0]!),
       moduleSlug: slug,
       file,
       fileState: owned ? 'pipeline-owned' : renamed ? 'handwritten-renamed' : 'new',
       ready: specs.filter((s) => s.status === 'ready').map((s) => s.id),
       needsClarification: specs.filter((s) => s.status === 'needs_clarification').map((s) => s.id),
       sources: [...new Set(specs.map((s) => (s.source.sheet ? `${s.source.path} [${s.source.sheet}]` : s.source.path)))],
+      chains: chainsInLayoutModule(nodes, (n) => layoutSlug.get(n.id)!, slug)
+        .map((c) => ({ id: c.id, ids: c.ids.filter((id) => isReady.has(id)) }))
+        .filter((c) => c.ids.length >= 2),
     });
   }
   return plans;
@@ -68,6 +78,7 @@ function renderSpec(s: TestSpec, metadata?: Record<string, string>): string[] {
   if (s.priority) out.push(`Priority: ${oneLine(s.priority)}`);
   if (s.tags.length) out.push(`Tags: ${s.tags.join(', ')}`);
   if (s.preconditions.length) out.push('### Preconditions', ...s.preconditions.map((p) => `- ${oneLine(p)}`));
+  if (s.dependsOn?.length) out.push(`Depends on: ${s.dependsOn.join(', ')}`);
   if (s.testData.length) {
     out.push('### Test Data');
     for (const d of s.testData) out.push(`- ${d.name}: ${d.envVar !== null ? `env:${d.envVar}` : d.declaredLiteral ? `literal:${d.value}` : d.value}`);

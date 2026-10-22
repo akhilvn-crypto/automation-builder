@@ -29,6 +29,9 @@ to snapshot); `app.baseUrl` and `exploration.tool` from the run's config (`node 
 - For specs marked `explore`, start from the brief's `knownPages`: confirm a known page you reach with one snapshot + `explore revalidate`, then
   reference it as `"pageId": "saved:<key>"` in `fresh.json` (listing only locators that came back `present`) instead of re-observing and re-listing
   it. Explore fresh only what is new (see the skill's *Known pages*).
+- A spec with `dependsOn` needs what its prerequisites leave behind (a project one of them created, an account another registered). Explore the
+  prerequisites' steps first, in the order given, in the same session, then the dependent case's steps. Record only what you really did and saw. If a
+  prerequisite cannot be completed, mark the dependent entry `blocked` and name the prerequisite in its `uncertainties`.
 - If a step creates a record, register it with `pipeline.ts cleanup record <runId> --entity <kind> --identifier <name or id> --hint "<where it is
   deleted in the UI>"` (see the skill), so the data you made while exploring is removed with the run's test data. Record only what you created.
 - Every locator you put in a step's `locators` must also be listed in that page's `elements` (with role, name and confidence), including each

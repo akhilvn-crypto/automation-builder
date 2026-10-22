@@ -44,11 +44,12 @@ of `'`, `"` and a backtick) stays `possible_secret_literal`; tell the user to pu
 ## Auth approaches (`config.auth.approach`)
 - `none`: no login.
 - `ui-login`: each test logs in through the UI with `requireEnv` credentials. Simplest; use while suites are small.
-- `storage-state`: an `auth/auth.setup.<ext>` setup project logs in and saves `auth/storage-state.json` (git-ignored); browser projects
-  depend on it. Create the `auth/` folder only for this approach. The pipeline decides before every run whether the saved state may be
-  reused (`auth check`): unknown age, other origin, too old, expired cookies or an app that no longer accepts it all mean a fresh login, so the
-  setup test must be able to run whenever it is asked to. The state is shared by all workers of a run, so it suits tests that do not change the
-  account's data. Never commit, copy or print that file; `auth clear` removes it.
+- `storage-state`: an `auth/auth.setup.<ext>` setup project saves `auth/storage-state.json` (git-ignored); browser projects depend on it and the
+  setup runs in every run. It uses `reuseOrSignIn` (`helpers/auth`): when the pipeline has judged the saved state usable (`auth check`: age, origin,
+  cookies, and the application's answer when `auth.state.probePath` is set) the setup still asks the application once (`check`) and signs in again only
+  if the session is refused, so a session that ended since it was saved never reaches a test. The state is shared by all workers of a run, so it suits
+  tests that do not change the account's data. A test that signs in or out itself must not share it: it is tagged `@own-session`, starts signed out and
+  runs after the others. Never commit, copy or print the state file; `auth clear` removes it.
 - Never share a mutable browser context between unrelated tests; use the `page` fixture.
 
 ## Isolation

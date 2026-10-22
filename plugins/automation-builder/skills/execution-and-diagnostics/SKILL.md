@@ -26,10 +26,16 @@ user-invocable: false
   parallel. The plan, with the reason for every limit, is in the `exec run` output (`executionPlan`), in the normalized results, and available
   beforehand from `exec plan <runId>`. The generated `playwright.config.*` carries the same defaults for a plain `npx playwright test`.
 - Saved login (`auth.approach: storage-state`): before the run the pipeline checks the saved state (exists, well-formed, same origin, young
-  enough, cookies not expired, accepted by the app when `auth.state.probePath` is set). Valid → the setup login is skipped; anything else → a
-  fresh login. If state that looked fine is rejected mid-run (tests fail as logged out), it is diagnosed, discarded and the run is repeated once
-  with a fresh login (`authState.recovered`). A login that fails is a `runnerError` ("authentication setup failed"), not a pile of test failures.
+  enough, cookies not expired, accepted by the app when `auth.state.probePath` is set). The setup project runs first in every case: when the state
+  looked usable it asks the application once and signs in again only if the session is refused (`authState.gate`: `reused` or `signed_in`);
+  otherwise it signs in. A test that still ends on a login page (`finalUrl`, recorded by the diagnostics fixture) or fails as logged out is listed in
+  `authState.lostLoginTests` and classified `test_data_or_precondition`: after a fresh sign-in that means the account, a session that ends early, or
+  another test signing in or out as the same account. If a session the setup accepted is still rejected mid-run, it is discarded and the run repeated
+  once (`authState.recovered`). A login that fails is a `runnerError` ("authentication setup failed"), not a pile of test failures.
   `auth check` explains the decision without printing secrets; `auth clear` removes the saved session.
+- Order: tests tagged `@own-session` (they sign in themselves) run in the `own-session` project after all the others; dependent tests run in order
+  in one serial group, and a test skipped because a test it depends on failed is listed under `blockedByDependency` in `triage run`, not counted as a
+  failure of its own. `exec plan` shows both under `executionPlan.session`.
 - Exit 0 = the runner worked (tests may still have failed). Exit 2 = `runnerError` (config error, crash, no tests,
   missing browser). That is an environment/config problem, never a test result. The execution stage is then `failed`.
 

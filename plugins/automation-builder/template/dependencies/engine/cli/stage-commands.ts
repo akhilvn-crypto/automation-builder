@@ -3,7 +3,7 @@
 // with `run stage <runId> <stage> completed --artifact <name>=<path>`.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../config/load-config.ts';
 import { syncFromSavedConfig } from '../config/playwright-config.ts';
@@ -18,7 +18,7 @@ import {
   AGENT_BY_STAGE, boundBrief, planAgentStage, readAgentUsage, recordDecision, recordInvocation, summarizeUsage, type PlannerInput,
 } from '../pipeline/agent-planner.ts';
 import { clearAuthState, inspectAuthState, runWithAuthState } from '../pipeline/auth-state.ts';
-import { resolveExecutionPlan } from '../pipeline/execution-plan.ts';
+import { resolveExecutionPlan, sessionPlan } from '../pipeline/execution-plan.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { checkSpecsAgainstCanonical, validateCanonicalDocument, type CanonicalDocument } from '../pipeline/canonical.ts';
 import { resultsPathFor, runPlaywright, saveResults, type ExecutionResults } from '../pipeline/execution.ts';
@@ -56,6 +56,7 @@ import {
 import { planReview, refreshAfterHeal, sealReview, typecheckKey, type ReviewPlan } from '../pipeline/review-reuse.ts';
 import { parseSpecsCached } from '../pipeline/specs-cache.ts';
 import { isStageName } from '../pipeline/state-manager.ts';
+import { type ChainSpec } from '../pipeline/session-layout.ts';
 import {
   REVIEW_SCHEMA_VERSION, SEVERITIES, reviewFiles, type ReviewFinding, type ReviewReport, type Severity,
 } from '../pipeline/static-review.ts';
@@ -238,7 +239,9 @@ function envWithDotEnv(root: string): NodeJS.ProcessEnv {
 function planFor(root: string, config: AutomationConfig) {
   const env = envWithDotEnv(root);
   const requested = env.PW_WORKERS && /^\d+$/.test(env.PW_WORKERS) ? Number(env.PW_WORKERS) : null;
-  return resolveExecutionPlan(requested === null ? config : { ...config, execution: { ...config.execution, workers: requested } }, env);
+  const plan = resolveExecutionPlan(requested === null ? config : { ...config, execution: { ...config.execution, workers: requested } }, env);
+  const session = sessionPlan(root, config);
+  return session ? { ...plan, session, warnings: [...plan.warnings, ...session.notes.filter((n) => /not tagged @own-session/.test(n))] } : plan;
 }
 
 function inputPathOf(r: RunCtx, v: Values): string {
@@ -646,7 +649,7 @@ export function stageCommand(root: string, group: string, action: string | undef
         ok: results.runnerError === null,
         artifact: toPosixRelative(r.dir, file),
         label, exitCode: results.exitCode, runnerError: results.runnerError, stats: results.stats,
-        executionPlan: { workers: executionPlan.workers, fullyParallel: executionPlan.fullyParallel, isolation: executionPlan.isolation, limits: executionPlan.limits, warnings: executionPlan.warnings },
+        executionPlan: { workers: executionPlan.workers, fullyParallel: executionPlan.fullyParallel, isolation: executionPlan.isolation, limits: executionPlan.limits, warnings: executionPlan.warnings, ...(executionPlan.session ? { session: executionPlan.session } : {}) },
         authState: results.authState ?? null,
         notPassed: results.tests.filter((t) => t.outcome !== 'passed').map((t) => ({ key: t.key, outcome: t.outcome, file: t.file, line: t.line })),
         runnerLog: results.runnerLog,
@@ -733,10 +736,18 @@ export function stageCommand(root: string, group: string, action: string | undef
       const src = artifactWithSource<ExecutionResults>(r, ARTIFACTS.executionResults);
       if (!src.value) return notReady({ ok: false, issues: ['no execution results in this run or its source run'] });
       if (src.value.runnerError) return notReady({ ok: false, issues: [`source execution had a runner error: ${src.value.runnerError}`] });
-      const analysis = buildFailureAnalysis(src.value);
+      // Tests that did not run because a test they depend on failed are reported as blocked, not as failures of their own.
+      const specs = validatedSpecs(r).specs;
+      const dependsOn = new Map((specs?.specs ?? []).filter((s) => s.dependsOn?.length).map((s) => [s.id, s.dependsOn!]));
+      const analysis = buildFailureAnalysis(src.value, new Date(), dependsOn);
       saveFailureAnalysis(path.join(r.dir, ARTIFACTS.failureAnalysis), analysis);
       const invalidatedObservations = invalidateObservations(r, analysis);
-      return ok({ ok: true, artifact: ARTIFACTS.failureAnalysis, resultsFrom: src.from, failures: analysis.failures.map(brief), eligibleForHealing: analysis.failures.filter((f) => f.healingEligible).map((f) => f.key), invalidatedObservations });
+      return ok({
+        ok: true, artifact: ARTIFACTS.failureAnalysis, resultsFrom: src.from, failures: analysis.failures.map(brief),
+        eligibleForHealing: analysis.failures.filter((f) => f.healingEligible).map((f) => f.key),
+        blockedByDependency: (analysis.blocked ?? []).map((b) => ({ key: b.key, blockedBy: b.blockedBy })),
+        invalidatedObservations,
+      });
     }
 
     case 'triage classify': {
@@ -973,9 +984,32 @@ function loadReview(r: RunCtx): ReviewReport {
 function supportFiles(r: RunCtx): string[] {
   const g = readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest);
   const files = (g?.sharedFilesChanged ?? []).map((f) => String(f).replace(/\\/g, '/'));
-  return [...new Set(files)]
-    .filter((f) => f.startsWith(`${PAGE_OBJECTS_DIR}/`) && /\.(?:ts|js)$/.test(f) && !isAbsoluteOrEscaping(f) && existsSync(path.join(r.root, f)))
+  // Page objects, and the login setup (it is reviewed as support code: it holds no tests).
+  const setup = AUTH_SETUP_DIR_FILE;
+  const found = existsSync(path.join(r.root, 'auth'))
+    ? readdirSync(path.join(r.root, 'auth')).map((n) => `auth/${n}`).filter((f) => setup.test(f))
+    : [];
+  return [...new Set([...files, ...found])]
+    .filter((f) => (f.startsWith(`${PAGE_OBJECTS_DIR}/`) || setup.test(f)) && /\.(?:ts|js)$/.test(f) && !isAbsoluteOrEscaping(f) && existsSync(path.join(r.root, f)))
     .sort();
+}
+
+const AUTH_SETUP_DIR_FILE = /^auth\/[^/]+\.setup\.(?:ts|js)$/;
+
+// The dependency chains of each generated file, from the specs and where the generator put each test.
+function chainsByFile(r: RunCtx): Map<string, ChainSpec[]> {
+  const out = new Map<string, ChainSpec[]>();
+  const { specs } = validatedSpecs(r);
+  const g = readArtifact<GenerationManifest>(r.dir, ARTIFACTS.generationManifest);
+  if (!specs || !g) return out;
+  const fileOf = new Map(g.tests.map((t) => [t.testId, t.file]));
+  for (const plan of planModules(specs, configOf(r).language, r.root)) {
+    for (const chain of plan.chains) {
+      const file = fileOf.get(chain.ids[0]!);
+      if (file) out.set(file, [...(out.get(file) ?? []), chain]);
+    }
+  }
+  return out;
 }
 
 function generatedFiles(r: RunCtx): string[] {
@@ -1017,7 +1051,14 @@ function reviewStatic(r: RunCtx, useCache: boolean): Result {
   const testFiles = generatedFiles(r);
   const support = supportFiles(r);
   const files = [...testFiles, ...support];
-  const fresh = reviewFiles(r.root, testFiles, support);
+  const fresh = reviewFiles(r.root, testFiles, support, chainsByFile(r));
+  // Saved login state needs the setup that creates (and re-checks) it.
+  if (configOf(r).auth.approach === 'storage-state' && !support.some((f) => AUTH_SETUP_DIR_FILE.test(f))) {
+    fresh.push({
+      id: 'S000-auth', severity: 'critical', file: 'auth/', line: null, rule: 'auth-setup-missing', status: 'open', source: 'static',
+      message: 'auth.approach is "storage-state" but there is no auth/*.setup file that signs in and saves the session; the tests would start without a login',
+    });
+  }
   const prev = readArtifact<ReviewReport>(r.dir, ARTIFACTS.reviewReport);
   const freshKeys = new Set(fresh.map(findingKey));
   // Static findings from an earlier pass that no longer reproduce are marked fixed (kept for the audit trail).

@@ -27,7 +27,7 @@ only with a clear responsibility. No other top-level folders in `automation/`.
 | `pages/BasePage.<ext>` | framework | base class (`path`, `open()`, `byTestId()`) |
 | `pages/<Name>Page.<ext>` | generator | page objects extending `BasePage`, named for the page, shared across modules |
 | `tests/<module>.spec.<ext>` | generator + humans | every test, **one file per module**. A pipeline-written file starts with `// @automation-builder:generated` and is the only kind it regenerates or heals; files without it are handwritten and never modified. Never overwrite a file lacking the header: choose another name |
-| `auth/*.setup.<ext>` | generator | only for `auth.approach = storage-state`: logs in once, saves `auth/storage-state.json` (git-ignored, never commit) |
+| `auth/*.setup.<ext>` | generator | only for `auth.approach = storage-state`: `reuseOrSignIn` (`helpers/auth`) re-checks the saved session in every run and signs in again only when the application refuses it; saves `auth/storage-state.json` (git-ignored, never commit) |
 | `reports/`, `test-results/` | generated | output per run (`<runId>/<label>/`); never write source here |
 | `../dependencies/engine/` | plugin | never edit |
 
@@ -41,6 +41,16 @@ Specs belong to modules (`module`/`moduleSlug` in `test-specs.json`). **Every mo
 only.** Get the plan from `node dependencies/engine/cli/pipeline.ts specs modules <runId>`: per module the file to write
 (`tests/<moduleSlug>.spec.<ext>`, or `tests/<moduleSlug>.generated.spec.<ext>` when a handwritten test has that name), the spec IDs
 to generate and the ones to hold back. Use exactly those names. Wrap the tests in one `test.describe('<module name>', …)`.
+
+## Saved login, signed-out tests and dependent tests
+
+- With `storage-state`, the `setup` project always runs first and every browser project depends on it, so no test starts before the login exists.
+- A test that signs in or out, or otherwise changes the session, starts signed out (`test.use({ storageState: { cookies: [], origins: [] } })`) and carries
+  the tag `@own-session`. These run in the `own-session` project, which Playwright runs after every project that shares the saved login (pass or fail),
+  so signing in again cannot end a session another test is using. With several browsers they run in the first one.
+- Cases that depend on each other (`dependsOn`; `specs modules` lists the `chains`) are written in dependency order inside one
+  `test.describe.serial(…)`: they run in order on one worker, and when one fails the later ones are skipped (reported as blocked). A chain across modules has
+  its own file, `chain-<id>.spec.<ext>`, treated as a module of its own.
 
 Page objects are named for the page (`LoginPage`, `ProjectFormPage`), not the module; two modules using one page import the one
 class, and a cross-module flow uses the other module's page object, never a copy of its locators. `generate validate` fails

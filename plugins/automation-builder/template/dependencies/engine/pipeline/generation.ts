@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { isAbsoluteOrEscaping, type Language } from '../config/schema.ts';
-import type { TestSpecDocument } from './test-spec.ts';
+import { layoutModuleSlug, type TestSpecDocument } from './test-spec.ts';
 
 export const GENERATION_SCHEMA_VERSION = 1;
 // Generated and handwritten tests share tests/. Ownership is a header marker, not a folder: the pipeline writes,
@@ -39,9 +39,10 @@ export interface GenerationManifest {
 }
 
 // Tests are organised module by module: every file holds the tests of exactly one module, and a module's tests are not
-// spread over several files. `specs modules` gives the file name to use for each module.
+// spread over several files. `specs modules` gives the file name to use for each module. A dependency chain that spans modules
+// counts as a module of its own ("chain-<id>"), so it is written to one file and can run in order.
 export function moduleLayoutIssues(tests: { testId: string; file: string }[], specs: TestSpecDocument): string[] {
-  const slugOf = new Map(specs.specs.map((s) => [s.id, s.moduleSlug]));
+  const slugOf = new Map(specs.specs.map((s) => [s.id, layoutModuleSlug(s)]));
   const modulesIn = new Map<string, Set<string>>();
   const filesOf = new Map<string, Set<string>>();
   for (const t of tests) {

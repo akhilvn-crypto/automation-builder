@@ -102,6 +102,8 @@ Step-level data and metadata exist only in the canonical document.
     "priority": "High",                   // or null
     "tags": ["smoke", "auth"],
     "preconditions": ["An active test account exists"],
+    "dependsOn": ["TC-000"],              // only when the case needs other cases to run first (test IDs, all present in this document)
+    "layout": { "module": "Chain TC-000", "moduleSlug": "chain-tc-000" },   // only for a dependency chain across modules: its generated file
     "steps": [
       { "index": 1, "action": "Open the login page", "expected": null },
       { "index": 4, "action": "Click the \"Sign in\" button", "expected": "The dashboard is displayed" }
@@ -126,6 +128,10 @@ Step-level data and metadata exist only in the canonical document.
 - Generated tests are organised by module: `generate validate` fails if a test file mixes two modules or one module's tests
   are split over several files (`engine/pipeline/generation.ts`, `moduleLayoutIssues`).
 
+- `dependsOn` lists test IDs that exist in the document. A chain of dependent cases is generated in one file in dependency order inside a
+  serial group; across modules the chain's file is `chain-<first id>` (`layout`). A reference that is not a test, a loop, or a case that needs a
+  blocked case is a blocking ambiguity (`unresolved_dependency`, `dependency_cycle`, `dependency_not_ready`); a precondition naming another case is read
+  as a dependency with a `dependency_inferred` warning. `generate validate` and the static review check order, file and serial group.
 - IDs match `PREFIX-REST` and are unique. Duplicate source IDs are flagged on every occurrence and suffixed `-dup2`, …
 - Steps are numbered 1..n. Wording is copied verbatim from the source.
 - Each `testData` entry has exactly one of `value` / `envVar`; `envVar` is a variable **name**.
@@ -134,7 +140,8 @@ Step-level data and metadata exist only in the canonical document.
   Email addresses typed inside steps become `{email}` placeholders with a Test Data entry. `literal:<value>` keeps a value as is.
 - `status` must agree with the ambiguities, so a case can't be marked ready by hand. Blocking kinds (`missing_expected_result`,
   `missing_steps`, `empty_step`, `duplicate_id`, `undefined_data_reference`, `ambiguous_column_mapping`, `untitled_case`, and
-  `possible_secret_literal` for a value that cannot be stored in a `.env` file) make the spec `needs_clarification`;
+  `possible_secret_literal` for a value that cannot be stored in a `.env` file, and the dependency kinds `unresolved_dependency`, `dependency_cycle`,
+  `dependency_not_ready`) make the spec `needs_clarification`;
   `vague_expected_result` is a warning.
 - The `test_analysis` stage completes only if **both** `canonicalCases` and `testSpecs` are registered, the canonical document is
   valid and has no input errors, at least one case is `valid` or `warning`, every source file still has the hash recorded in it,

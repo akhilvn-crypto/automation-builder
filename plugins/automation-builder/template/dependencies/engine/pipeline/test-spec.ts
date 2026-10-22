@@ -19,6 +19,10 @@ export const AMBIGUITY_KINDS = [
   'vague_expected_result', // e.g. "works correctly" — not verifiable as written
   'ambiguous_column_mapping', // two columns of the table fit the same field equally well; a person must say which one
   'untitled_case', // the source gives the case neither an ID nor a title, so it cannot be identified (invalid)
+  'unresolved_dependency', // "depends on" names a case that is not in the input (or matches several), so the order is unknown
+  'dependency_cycle', // the case is part of a loop of dependencies; there is no order in which they can run
+  'dependency_not_ready', // a case it depends on cannot be automated yet, so this one would run without what it needs
+  'dependency_inferred', // a precondition names another case and was read as a dependency; confirm it (warning only)
 ] as const;
 export type AmbiguityKind = (typeof AMBIGUITY_KINDS)[number];
 
@@ -26,6 +30,7 @@ export type AmbiguityKind = (typeof AMBIGUITY_KINDS)[number];
 export const BLOCKING_AMBIGUITIES: readonly AmbiguityKind[] = [
   'missing_expected_result', 'missing_steps', 'empty_step', 'duplicate_id',
   'undefined_data_reference', 'possible_secret_literal', 'ambiguous_column_mapping', 'untitled_case',
+  'unresolved_dependency', 'dependency_cycle', 'dependency_not_ready',
 ];
 
 export interface SourceRef {
@@ -65,12 +70,21 @@ export interface TestSpec {
   priority: string | null;
   tags: string[];
   preconditions: string[];
+  // IDs of the cases that must run (and pass) before this one, in the words of the input. Absent when there are none.
+  dependsOn?: string[];
+  // Present only when this case belongs to a dependency chain that spans several modules: the generated file is then the
+  // chain's own ("chain-<id>"), not the module's, so the whole chain can run in order in one file. `module` stays the source's.
+  layout?: { module: string; moduleSlug: string };
   steps: SpecStep[];
   expectedResults: string[]; // case-level expected results, original wording
   testData: TestDataRef[];
   ambiguities: Ambiguity[];
   status: SpecStatus;
 }
+
+// The module a generated test is written under: its chain's when it has one, else its own.
+export const layoutModule = (s: Pick<TestSpec, 'module' | 'layout'>): string => s.layout?.module ?? s.module;
+export const layoutModuleSlug = (s: Pick<TestSpec, 'moduleSlug' | 'layout'>): string => s.layout?.moduleSlug ?? s.moduleSlug;
 
 export interface SourceFile {
   path: string;
@@ -137,6 +151,10 @@ export function validateTestSpecDocument(v: unknown): string[] {
     if (!isStrArray(s.tags) || !isStrArray(s.preconditions) || !isStrArray(s.expectedResults)) {
       issues.push(`${at}: tags, preconditions and expectedResults must be string arrays`);
     }
+    if (s.dependsOn !== undefined && (!isStrArray(s.dependsOn) || s.dependsOn.length === 0)) issues.push(`${at}.dependsOn must be a non-empty array of test IDs when present`);
+    if (s.layout !== undefined && (!isObj(s.layout) || typeof s.layout.module !== 'string' || s.layout.moduleSlug !== slugify(String(s.layout.module)))) {
+      issues.push(`${at}.layout must be {module, moduleSlug} with moduleSlug = slugify(module)`);
+    }
     if (!Array.isArray(s.steps)) issues.push(`${at}.steps must be an array`);
     else s.steps.forEach((st, j) => {
       if (!isObj(st) || st.index !== j + 1 || typeof st.action !== 'string' || !(st.expected === null || typeof st.expected === 'string')) {
@@ -160,6 +178,9 @@ export function validateTestSpecDocument(v: unknown): string[] {
       const expected = specStatus(s.ambiguities as Ambiguity[]);
       if (s.status !== expected) issues.push(`${at}.status must be "${expected}" given its ambiguities (got ${JSON.stringify(s.status)})`);
     }
+  });
+  v.specs.forEach((s, i) => {
+    if (isObj(s) && isStrArray(s.dependsOn)) for (const d of s.dependsOn) if (!ids.has(d)) issues.push(`specs[${i}].dependsOn names "${d}", which is not a test in this document`);
   });
   return issues;
 }

@@ -175,16 +175,20 @@ test('playwright.config is a plain Playwright config with the approved values as
   assert.match(renderPlaywrightConfig({ ...validConfig(), language: 'javascript' }, { allure: false }), /testMatch: '\*\*\/\*\.spec\.js'/);
 });
 
-test('storage-state auth adds a setup project the browser projects depend on', () => {
+test('storage-state auth: the setup project always runs first, and tests that sign in themselves run last', () => {
   const cfg = validConfig();
   cfg.auth = { approach: 'storage-state', credentialEnvVars: ['TEST_USER_PASSWORD'] };
   const text = renderPlaywrightConfig(cfg, { allure: false });
-  // The login only runs unless the executor has verified the saved state and sets PIPELINE_AUTH_STATE=reuse.
-  assert.match(text, /const reuseSavedLogin = process\.env\.PIPELINE_AUTH_STATE === 'reuse';/);
-  assert.match(text, /\.\.\.\(reuseSavedLogin \? \[\] : \[\{ name: 'setup', testDir: '\.\/auth', testMatch: '\*\*\/\*\.setup\.ts' \}\]\),/);
+  // The login step is never left out: it re-checks a saved session in this run, so no test starts on a session that has ended.
+  assert.doesNotMatch(text, /reuseSavedLogin/);
+  assert.match(text, /\{ name: 'setup', testDir: '\.\/auth', testMatch: '\*\*\/\*\.setup\.ts', teardown: 'own-session' \},/);
   // Playwright resolves a relative storageState against the working directory, so it is anchored to the config's folder.
-  assert.match(text, /storageState: `\$\{import\.meta\.dirname\}\/auth\/storage-state\.json` \}, dependencies: reuseSavedLogin \? \[\] : \['setup'\]/);
-  assert.doesNotMatch(renderPlaywrightConfig(validConfig(), { allure: false }), /reuseSavedLogin/, 'no saved login, nothing to reuse');
+  assert.match(text, /storageState: `\$\{import\.meta\.dirname\}\/auth\/storage-state\.json` \}, dependencies: \['setup'\], grepInvert: \/@own-session\/ \},/);
+  // Tests tagged @own-session start signed out and are the teardown of the setup project: they run after everything that shares the login.
+  assert.match(text, /\{ name: 'own-session', use: \{ \.\.\.devices\['Desktop Chrome'\] \}, grep: \/@own-session\/ \},/);
+  assert.ok(text.indexOf("name: 'setup'") < text.indexOf("name: 'chromium'"), 'setup is listed before the browsers');
+  const plain = renderPlaywrightConfig(validConfig(), { allure: false });
+  assert.doesNotMatch(plain, /setup|own-session|reuseSavedLogin/, 'no saved login: no setup, no signed-out project');
 });
 
 test('workers and in-file parallelism come from the execution plan', () => {
