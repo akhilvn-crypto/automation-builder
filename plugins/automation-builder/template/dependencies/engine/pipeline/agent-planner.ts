@@ -182,20 +182,26 @@ export function planAgentStage(i: PlannerInput): { decision: AgentDecision; brie
       const plan = i.generationPlan;
       if (!plan) return none('no generation plan yet', ['generate plan']);
       if (plan.batches.length === 0) return none(`all ${plan.summary.reuse} generated tests are unchanged and still valid`, ['generate assemble']);
-      const briefs = plan.batches.map((b): Brief => ({
-        name: `generation-${b.batchId}`,
-        content: {
-          stage: i.stage, batchId: b.batchId, language: plan.language, targetFile: b.targetFile, writeManifestTo: b.manifest,
-          rules: [
-            `write only ${b.targetFile}; never edit another test file`,
-            `the file starts with this header line, exactly: ${GENERATED_HEADER}`,
-            'report any shared file you had to change in sharedFilesChanged (another batch may not change the same one)',
-            'keep the other tests already in the target file exactly as they are',
-          ],
-          testCases: b.testIds.map((id) => i.specs?.specs.find((s) => s.id === id)).filter((s): s is TestSpec => !!s).map(specBrief),
-          evidence: Object.fromEntries(b.testIds.map((id) => [id, evidenceFor(i.exploration, id)])),
-        },
-      }));
+      const briefs = plan.batches.map((b): Brief => {
+        // Tests rebuilt only because the engine changed: their earlier version is still in the file and is the starting point.
+        const redesign = Object.fromEntries(plan.specs.filter((e) => b.testIds.includes(e.testId) && e.previous).map((e) => [e.testId, { previousFile: e.previous, why: e.reason }]));
+        return {
+          name: `generation-${b.batchId}`,
+          content: {
+            stage: i.stage, batchId: b.batchId, language: plan.language, targetFile: b.targetFile, writeManifestTo: b.manifest,
+            rules: [
+              `write only ${b.targetFile}; never edit another test file`,
+              `the file starts with this header line, exactly: ${GENERATED_HEADER}`,
+              'report any shared file you had to change in sharedFilesChanged (another batch may not change the same one)',
+              'keep the other tests already in the target file exactly as they are',
+              ...(Object.keys(redesign).length > 0 ? ['a test listed under redesign already exists in the target file and its test case and evidence are unchanged: edit that test in place, changing only what its `why` requires (keep its flow and the locators the evidence still supports), instead of writing it from scratch'] : []),
+            ],
+            testCases: b.testIds.map((id) => i.specs?.specs.find((s) => s.id === id)).filter((s): s is TestSpec => !!s).map(specBrief),
+            evidence: Object.fromEntries(b.testIds.map((id) => [id, evidenceFor(i.exploration, id)])),
+            ...(Object.keys(redesign).length > 0 ? { redesign } : {}),
+          },
+        };
+      });
       return withAgent(plan.batches.length, `${plan.summary.generate} test(s) must be generated (${plan.summary.reuse} reused), in ${plan.batches.length} independent batch(es)`, briefs, ['generate assemble']);
     }
 

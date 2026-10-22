@@ -412,7 +412,7 @@ test('the framework ignores secrets and saved logins, and the pipeline ignores i
   const framework = readFileSync(path.join(template, 'framework', 'common', 'gitignore'), 'utf8');
   for (const line of ['.env', 'auth/storage-state*.json', '**/storage-state*.json']) assert.ok(framework.split(/\r?\n/).includes(line), line);
   const dependencies = readFileSync(path.join(template, 'dependencies', 'gitignore'), 'utf8');
-  for (const line of ['runs/', 'state/exploration-store/', 'state/artifact-cache/']) assert.ok(dependencies.split(/\r?\n/).includes(line), line);
+  for (const line of ['runs/', 'state/exploration-store/', 'state/artifact-cache/', 'state/ledger/']) assert.ok(dependencies.split(/\r?\n/).includes(line), line);
 });
 
 test('--update moves an unedited "playwright test" npm test script to the recorded run, and leaves an edited one alone', (t) => {

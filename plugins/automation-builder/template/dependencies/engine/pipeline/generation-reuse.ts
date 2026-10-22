@@ -41,6 +41,9 @@ export interface PlanEntry {
   reason: string;
   changed: string[];
   file: string | null; // where the reused test lives
+  // A test that must be rebuilt but whose earlier version is still in its file: the generator edits that test instead of writing it
+  // from nothing (what changed is in `reason`). Absent for a new test, a test case that changed, and a forced regeneration.
+  previous?: string;
 }
 
 export interface GenerationBatch {
@@ -167,7 +170,7 @@ export function testBlockHash(rootDir: string, file: string, testId: string): st
   return block ? hashText(normalizeSource(block.text)) : null;
 }
 
-function asPayload(v: unknown): GeneratedTestPayload | null {
+export function asPayload(v: unknown): GeneratedTestPayload | null {
   const p = v as Partial<GeneratedTestPayload> | null;
   return p && typeof p.testId === 'string' && typeof p.file === 'string' && typeof p.title === 'string' && typeof p.testSha256 === 'string' ? (p as GeneratedTestPayload) : null;
 }
@@ -226,6 +229,15 @@ export function generationStillCurrent(
   return file ? `the generated test in ${file} is unchanged and still valid; this run's execution re-checks its locators` : null;
 }
 
+// The earlier version of a test that is being rebuilt only because the engine around it changed (rules, framework, a file it imports,
+// its evidence format) - not because its test case changed, which makes the old steps wrong.
+function previousTestFile(rootDir: string, spec: TestSpec, d: CacheDecision): string | null {
+  if (d.changed.length === 0 || d.changed.includes('inputs.spec')) return null;
+  const prior = readEntry(rootDir, 'generation', spec.id);
+  const payload = prior.status === 'ok' ? asPayload(prior.entry.payload) : null;
+  return payload && testBlockHash(rootDir, payload.file, spec.id) !== null ? payload.file : null;
+}
+
 export function planGeneration(i: PlanInput): { plan: GenerationPlan; decisions: CacheDecision[] } {
   const versions = ruleVersions(i.rootDir);
   const decisions: CacheDecision[] = [];
@@ -233,7 +245,11 @@ export function planGeneration(i: PlanInput): { plan: GenerationPlan; decisions:
     const d = decideGeneration(i, spec, i.record, versions);
     decisions.push(d);
     const payload = d.entry ? asPayload(d.entry.payload) : null;
-    return { testId: spec.id, module: moduleOf(spec), action: d.action === 'reuse' ? 'reuse' : 'generate', reason: d.reason, changed: d.changed, file: payload?.file ?? null };
+    const previous = d.action === 'rebuild' && !i.force && i.useCache !== false ? previousTestFile(i.rootDir, spec, d) : null;
+    return {
+      testId: spec.id, module: moduleOf(spec), action: d.action === 'reuse' ? 'reuse' : 'generate', reason: d.reason, changed: d.changed, file: payload?.file ?? null,
+      ...(previous ? { previous } : {}),
+    };
   });
   const plan: GenerationPlan = {
     schemaVersion: GENERATION_PLAN_SCHEMA_VERSION,

@@ -41,7 +41,7 @@ export interface ReviewPlan {
   summary: { review: number; skip: number };
 }
 
-interface ReviewCtx {
+export interface ReviewCtx {
   rootDir: string;
   specs: TestSpecDocument;
   record: ExplorationRecord | null;
@@ -53,7 +53,7 @@ export function reviewVersions(rootDir: string): Record<string, string> {
   return { staticReview: STATIC_REVIEW_VERSION, reviewerRules: rulesVersion(rootDir, 'reviewer'), framework: fingerprintFiles(rootDir, FRAMEWORK_FILES) };
 }
 
-function reviewInputs(c: ReviewCtx, testId: string, file: string): Record<string, string> | null {
+export function reviewInputs(c: ReviewCtx, testId: string, file: string): Record<string, string> | null {
   const spec = c.specs.specs.find((s) => s.id === testId);
   const block = testBlockHash(c.rootDir, file, testId);
   if (!spec || block === null) return null;

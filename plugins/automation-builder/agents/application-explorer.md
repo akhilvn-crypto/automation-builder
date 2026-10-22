@@ -23,7 +23,9 @@ to snapshot); `app.baseUrl` and `exploration.tool` from the run's config (`node 
   write them to files, or keep them in saved snapshots. Their values are in `automation/.env`, which your shell does not
   load: run steps that need them with `pipeline.ts env run -- sh -c '… "$VAR" …'` (see the application-exploration skill).
   If a name has no value, stop and report it: the orchestrator tells the user to fill it in `automation/.env`.
-- Start from `explore plan <runId>`: explore only the specs it marks `explore`; for `revalidate` take one snapshot per listed page and call
+- Start from `explore plan <runId>`: explore only the specs it marks `explore`. The orchestrator has already run `explore snapshot <runId>`, which
+  revalidates what a headless snapshot can prove, so your brief lists only the pages it could not prove (redirected, or a locator that may need an
+  interaction to appear): for those, `revalidate` means take one snapshot per listed page and call
   `explore revalidate` (see the skill's *Reuse* section). Saved observations are never trusted without that snapshot, except for specs the plan
   marks `covered` (a still-current generated test exists): leave those alone, they need no work from you.
 - For specs marked `explore`, start from the brief's `knownPages`: confirm a known page you reach with one snapshot + `explore revalidate`, then

@@ -44,7 +44,8 @@
 //   explore validate <runId>
 //   explore plan <runId> [--fresh|--revalidate]  per test case: explore | revalidate | covered | reuse, with reasons
 //   explore revalidate <runId> --page <url|path> --file <snapshot, relative to run dir>
-//   explore assemble <runId>                     fresh.json + revalidated saved evidence -> exploration.json
+//   explore snapshot <runId>                     revalidate the plan's saved pages with a headless snapshot, no agent; unprovable pages stay for the explorer
+//   explore assemble <runId>                   fresh.json + revalidated saved evidence -> exploration.json
 //   explore invalidate <runId> --page <url|path> --reason <text> [--locator <expr>]
 //   explore store <runId>                        summary of the saved observations
 //   generate plan <runId> [--force] [--no-cache]   per test case: generate | reuse (with reasons) + one batch per module file
@@ -53,6 +54,8 @@
 //   review static <runId> [--no-cache] | plan <runId> | seal <runId> | add <runId> --file <json> | resolve <runId> <id> --status fixed|accepted
 //   cache status <runId>                         hits/misses of the run, and the reason for every rebuild
 //   cache inspect <kind> <name>                  one cached artifact's inputs, versions and validation (kind: specs|generation|review|typecheck)
+//   ledger plan <runId>                          per test case: what this run must redo (unchanged | re-review | redesign | explore | new) and why; a preview
+//   ledger update <runId> | show [<runId>] [--test-id <id>]   record / read the test ledger (evidence, test file, review, last execution per test)
 //   agents plan <runId> <stage>                  which stages need an agent (and why), plus its bounded brief in briefs/
 //   agents record <runId> <stage> --agent <name> [--input-tokens n --output-tokens n]
 //   agents show <runId>                          decisions, invocations and tokens (only when reported)
@@ -98,7 +101,7 @@ import { StageContractError } from '../pipeline/stage-contracts.ts';
 import { COMMANDS, isStageName, isStageStatus, TransitionError, type Command, type StageName } from '../pipeline/state-manager.ts';
 import { inputBaseDir } from '../utils/layout.ts';
 import { toRootRelative } from '../utils/paths.ts';
-import { UsageError, savedConfig, stageCommand } from './stage-commands.ts';
+import { UsageError, savedConfig, stageCommand, updateLedgerAfterStage } from './stage-commands.ts';
 
 // dependencies/engine/cli -> dependencies -> <project>/automation
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'automation');
@@ -300,6 +303,7 @@ export function main(argv: string[]): number {
           const updated = updateStage(root, need(runId, 'runId'), stage, status, { message: values.message, artifacts });
           // The state change is already saved; a cleanup that finds nothing prints nothing.
           const cleanup = sweepAfterStage(root, updated.runId, stage, status);
+          updateLedgerAfterStage(root, updated.runId, stage, status);
           // Stages that ran tests leave the data they created: remove it now, so a later failure cannot strand it.
           const dataTrigger = dataSweepTrigger(stage, status);
           const data = dataTrigger ? sweepDataSafely(root, updated.runId, savedConfig(root), { trigger: dataTrigger }) : null;
@@ -347,13 +351,13 @@ export function main(argv: string[]): number {
     }
 
     case 'input': case 'specs': case 'env': case 'explore': case 'generate': case 'review':
-    case 'exec': case 'triage': case 'heal': case 'report': case 'agents': case 'cache': case 'auth': case 'cleanup': {
+    case 'exec': case 'triage': case 'heal': case 'report': case 'agents': case 'cache': case 'auth': case 'cleanup': case 'ledger': {
       const r = stageCommand(root, group, action, rest, values);
       return out(r.value, r.code);
     }
 
     default:
-      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report|agents|cache|auth|cleanup> ...');
+      throw new UsageError('usage: pipeline <preflight|config|run|deps|input|specs|env|explore|generate|review|exec|triage|heal|report|agents|cache|ledger|auth|cleanup> ...');
   }
 }
 

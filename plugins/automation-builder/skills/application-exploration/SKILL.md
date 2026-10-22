@@ -73,9 +73,17 @@ exploration; `--revalidate` (or `--no-cache`) turns `covered` off so saved evide
 | Plan says | Do |
 |---|---|
 | `explore` | explore it as described above (new/changed test case, unknown/stale/ambiguous locator, no store, corrupt store), starting from its `knownPages` (below) |
-| `revalidate` | for each page in `pagesToRevalidate`: reach it (same login/navigation the spec needs), take **one** accessibility snapshot into `runs/<runId>/exploration/<name>.aria.yml`, then `explore revalidate <runId> --page <url-or-path> --file exploration/<name>.aria.yml`. (In Git Bash pass the full URL: a bare `/login` is rewritten to a Windows path.) |
+| `revalidate` | the orchestrator has normally run `explore snapshot <runId>` already (below), so only the pages in `pagesToRevalidate` that are still listed are yours. For each: reach it (same login/navigation the spec needs), take **one** accessibility snapshot into `runs/<runId>/exploration/<name>.aria.yml`, then `explore revalidate <runId> --page <url-or-path> --file exploration/<name>.aria.yml`. (In Git Bash pass the full URL: a bare `/login` is rewritten to a Windows path.) |
 | `covered` | nothing to do: the test case is unchanged, its saved evidence is consistent and verified, and its generated test is still current (same evidence, rules and reviewed source). This run's execution is the check; a locator that fails to resolve there makes the evidence stale, so the next run explores it |
 | `reuse` | nothing to do |
+
+**`explore snapshot <runId>` (no agent).** For every page in `pagesToRevalidate` it opens the page headless with `engine/tools/aria-snapshot.ts`
+(navigation only; saved login state is used only when `auth-state.ts` has just accepted it), takes the one snapshot, and applies the same
+role + name check. It commits a page only when the browser landed on the page asked for (a login redirect or another route is never compared) and
+every locator the waiting specs rely on is found exactly once; a page that looked incomplete is snapshotted once more after a longer settle. It **never
+invalidates**: a locator that is not on the page as loaded may only appear after a click, so the page is left as it was, still `revalidate`, and
+listed in `pagesLeft` with the reason. Those pages are yours to reach and snapshot with the steps above; `explore revalidate` stays the only
+command that marks locators stale. If the tool cannot run (`unavailable`, e.g. no `@playwright/test` installed) every page is left for you.
 
 `explore revalidate` looks for each saved control's role + accessible name in your fresh snapshot: exactly one match = still valid; none
 or several = marked **stale with a reason** and the specs that rely on it become `explore`; controls without a role+name (test-id only)

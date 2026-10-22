@@ -30,7 +30,7 @@ spawn subagents). This skill plays the `pipeline-orchestrator` role.
 - Ask the user only for what is missing (pipeline-setup skill), one approval per dependency.
 - Use agents only where `pl agents plan <runId> <stage>` says judgment is needed, and give each agent just its bounded brief. Run parsing,
   hashing, test execution, validation and report assembly yourself through the CLI. Reuse earlier work only through the CLI's cache
-  decisions (`specs parse`, `generate plan`, `review plan`); never decide yourself that an old artifact or an old test result is still good.
+  decisions (`specs parse`, `generate plan`, `review plan`; `ledger plan` previews them all per test case); never decide yourself that an old artifact or an old test result is still good.
 
 ## Start or resume
 

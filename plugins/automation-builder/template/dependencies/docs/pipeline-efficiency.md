@@ -19,6 +19,12 @@ CLI: `node dependencies/engine/cli/pipeline.ts` (`pl` below). Run state is in `d
   (cache hit on evidence, rules, imports and the reviewed source): nothing is explored or revalidated, because the run's own execution is the
   check and a locator that fails to resolve there makes the evidence stale. `explore plan --revalidate` (or `--no-cache`) turns this off for a run.
   Evidence is saved only if every locator a step names is listed in its page's elements, so a half-recorded step can no longer force a re-exploration.
+  **Snapshots without an agent:** `explore snapshot <runId>` takes the revalidation snapshots itself (`engine/tools/aria-snapshot.ts --batch`, one
+  headless browser, navigation only, under the process supervisor) and so a plugin or engine update with no application change costs no explorer
+  call. The rule is unchanged - a snapshot from this run must show every needed locator exactly once - with two guards an agent's judgment would have
+  supplied: the page must be the one asked for (a login redirect is never compared), and a locator not found is inconclusive, never stale (it may only
+  appear after an interaction), so such a page is left for the explorer and nothing is invalidated. Only `explore revalidate` invalidates. Login
+  state is used only when `auth-state.ts` accepts it; with `ui-login` a page behind the login is left for the explorer.
   **Known pages:** a test case that must be explored (new or changed) is no longer explored from nothing. The plan lists the saved pages it
   probably visits (`knownPages`: its own earlier pages, its module's pages, pages most cases share) and the explorer's brief carries their verified
   locators. The explorer confirms each page it reaches with one snapshot (`explore revalidate`) and points its steps at `saved:<page key>` instead of
@@ -60,6 +66,31 @@ versions. Flags: `--no-cache` on `specs parse`, `generate plan`, `review static|
 **Generation flow:** `generate plan` (one batch per module file) → generator agent(s) only for tests marked `generate` → `generate assemble`
 (merges the batch manifests and the reused tests into `generation-manifest.json`) → `generate validate` → review → `review seal` (the point
 where tests become reusable: only validated and reviewed work is cached; sealing is refused if a test the plan skipped changed meanwhile).
+
+### The test ledger: knowing what is already built before doing anything
+
+`state/ledger/<origin>.json` (git-ignored, one file per base-URL origin, next to the observation store of the same name) has one entry per
+automated test case: its title and module, the test-case file, **where its exploration evidence lives** (the run that observed it, the page
+keys, the store file, the evidence hash), **the generated test file** (path, source hash, the plugin version and generator rules it was sealed
+with), its review (reviewer rules), and **how it last ran** (last outcome, last run that passed, the last five outcomes).
+
+It is an index, not a cache. The store, the artifact cache and the run directories stay the authority, and nothing is reused because the
+ledger says so. It exists for two things:
+
+- **`ledger plan <runId>`** (run right after `specs parse`) tells you, per test case and before any agent is chosen, what this run has to redo
+  and why. It asks the same deciders the stages use, so the preview and the stages agree (a test covers: `unchanged`; `re-review` - only the
+  review is redone; `redesign` - the evidence is kept and only the test is rebuilt, e.g. after a plugin update changed the generator rules;
+  `explore` - the case or its evidence changed; `new`). Its `work` block counts the agent calls ahead: fresh explorations, snapshot-only
+  revalidations, generator batches, reviewer tests; `causes` groups the reasons. A `redesign` test is never re-explored: the explorer takes one
+  snapshot of the pages it uses, and the generator is pointed at the version already in the file (`redesign` in its brief: `previousFile`, `why`)
+  and edits that test in place instead of writing it from scratch. A test whose case changed, or whose file was edited by hand, is written anew.
+- **History for context.** `ledger show [<runId>] [--test-id <id>]` lists the automated tests, where their knowledge is, which pages are shared by
+  which tests (so a new test case can see what already covers a page), and how each last ran. The last outcome never decides whether a test runs:
+  execution results are not reused, and a failing last run changes no plan.
+
+The ledger is written by `ledger update <runId>`, which runs by itself when `script_review` and `report_generation` complete and in `run finalize`
+(a failure there never blocks a stage). A missing or corrupt ledger changes no decision (a corrupt one is rebuilt from the store and the cache; its
+execution history is lost). Tests that are not in the current input stay in the ledger untouched, so running a subset of the cases forgets nothing.
 
 ## 3. Agents only where judgment is needed
 

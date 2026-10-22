@@ -17,7 +17,9 @@ import {
 import {
   AGENT_BY_STAGE, boundBrief, planAgentStage, readAgentUsage, recordDecision, recordInvocation, summarizeUsage, type PlannerInput,
 } from '../pipeline/agent-planner.ts';
-import { clearAuthState, inspectAuthState, runWithAuthState } from '../pipeline/auth-state.ts';
+import { clearAuthState, inspectAuthState, runWithAuthState, statePath } from '../pipeline/auth-state.ts';
+import { runSupervised } from '../pipeline/supervised-run.ts';
+import { buildJobs, judgeSnapshot, snapshotName, type Judgement, type SnapshotResult } from '../pipeline/snapshot-revalidation.ts';
 import { resolveExecutionPlan, sessionPlan } from '../pipeline/execution-plan.ts';
 import { ARTIFACTS, runDir } from '../pipeline/artifact-manager.ts';
 import { checkSpecsAgainstCanonical, validateCanonicalDocument, type CanonicalDocument } from '../pipeline/canonical.ts';
@@ -49,12 +51,13 @@ import { loadMappings } from '../pipeline/input-table.ts';
 import { validateInput } from '../pipeline/input-validation.ts';
 import { buildBaseline, buildRunMetrics, compareRuns, writeRunMetrics } from '../pipeline/metrics.ts';
 import { planModules, writeNormalizedInput } from '../pipeline/modules.ts';
-import { buildSummary, reportersOk } from '../pipeline/reporting.ts';
+import { buildSummary, reportersOk, type RunSummary } from '../pipeline/reporting.ts';
 import {
   HealingLimitError, loadManifest, mutateManifest, pruneRuns, recordHealingAttempt, setTestCounts, type RunManifest,
 } from '../pipeline/run-manager.ts';
 import { planReview, refreshAfterHeal, sealReview, typecheckKey, type ReviewPlan } from '../pipeline/review-reuse.ts';
 import { parseSpecsCached } from '../pipeline/specs-cache.ts';
+import { loadLedger, pageIndex, previewReuse, recordRun, updateLedger } from '../pipeline/test-ledger.ts';
 import { isStageName } from '../pipeline/state-manager.ts';
 import { type ChainSpec } from '../pipeline/session-layout.ts';
 import {
@@ -217,6 +220,72 @@ function currentPlan(r: RunCtx, forceFresh: boolean, skipCoverage = false): { pl
   });
   writeInRun(r, ARTIFACTS.explorationPlan, plan);
   return { plan, issues: [] };
+}
+
+const SNAPSHOT_DIR = 'exploration/snapshots'; // this run's deterministic snapshots (relative to the run dir)
+const SNAPSHOT_SETTLE_MS = [0, 2000]; // extra wait before the first snapshot and before the one retry of a page that looked incomplete
+
+interface PageOutcome {
+  page: string;
+  outcome: 'revalidated' | 'left-for-explorer';
+  snapshot: string | null;
+  presentElements?: number;
+  reason?: string;
+}
+
+// Commits one page's revalidation from a snapshot the pipeline took itself, if the snapshot is allowed to prove it (see
+// snapshot-revalidation.ts). Never invalidates anything: a page that does not check out is left as it was for the explorer.
+function commitSnapshot(r: RunCtx, baseUrl: string, key: string, needed: string[], result: SnapshotResult): { judgement: Judgement; file: string | null } {
+  const file = result.snapshot !== null ? `${SNAPSHOT_DIR}/${snapshotName(key)}` : null;
+  const now = new Date().toISOString();
+  const judgement = updateStore<Judgement>(r.root, baseUrl, (state) => {
+    const no = (reason: string): { store: null; result: Judgement } => ({ store: null, result: { commit: false, reason, retry: false, notPresent: [] } });
+    if (state.status !== 'ok') return no(`no usable observation store: ${state.reason}`);
+    const saved = state.store.pages[key];
+    if (!saved) return no(`page ${key} is not in the store`);
+    const text = file !== null && existsSync(path.join(r.dir, file)) ? readFileSync(path.join(r.dir, file), 'utf8') : '';
+    const j = judgeSnapshot({ key, baseUrl, result, page: saved, needed, snapshotText: text });
+    return { store: j.commit ? applyRevalidation(state.store, key, j.checks, r.runId, now) : null, result: j };
+  });
+  if (judgement.commit && file !== null) {
+    const revalidation = readRevalidation(r);
+    revalidation.pages[key] = { revalidatedAt: now, snapshot: file, elements: judgement.checks };
+    writeInRun(r, ARTIFACTS.explorationRevalidation, revalidation);
+  }
+  return { judgement, file };
+}
+
+// Writes what this run left behind into the test ledger. The ledger is an index over the store, the cache and the run, so a failure
+// here is reported but never blocks a stage; a corrupt ledger is rebuilt from what those hold (its execution history is lost).
+function recordLedger(r: RunCtx): { recorded: string[]; tests: number; rebuilt?: string } | { skipped: string } {
+  const { specs } = validatedSpecs(r);
+  if (!specs) return { skipped: 'the run has no validated test cases yet' };
+  if (!r.manifest.config) return { skipped: 'the run has no configuration yet' };
+  const baseUrl = r.manifest.config.app.baseUrl;
+  const store = loadStore(r.root, baseUrl);
+  const generation = artifactWithSource<GenerationManifest>(r, ARTIFACTS.generationManifest).value;
+  const exploration = readArtifact<ExplorationRecord>(r.dir, ARTIFACTS.exploration);
+  const summary = readArtifact<RunSummary>(r.dir, ARTIFACTS.summary);
+  return updateLedger(r.root, baseUrl, (state) => {
+    const done = recordRun({
+      rootDir: r.root, runId: r.runId, baseUrl, specs, generation, exploration, store, summary,
+      previous: state.status === 'ok' ? state.ledger : null, now: new Date().toISOString(),
+    });
+    return {
+      ledger: done.recorded.length > 0 || state.status !== 'ok' ? done.ledger : null,
+      result: { recorded: done.recorded, tests: Object.keys(done.ledger.tests).length, ...(state.status === 'corrupt' ? { rebuilt: state.reason } : {}) },
+    };
+  });
+}
+
+// Called after a stage that settles what a test is built from (script_review) or how it ran (report_generation), and at finalization.
+export function updateLedgerAfterStage(root: string, runId: string, stage: string, status: string): void {
+  if (status !== 'completed' || (stage !== 'script_review' && stage !== 'report_generation')) return;
+  try {
+    recordLedger(run(root, runId));
+  } catch {
+    // Derived data: the next stage or `ledger update` records it again.
+  }
 }
 
 // Locators that failed to resolve in execution make the saved observations unproven.
@@ -449,6 +518,67 @@ export function stageCommand(root: string, group: string, action: string | undef
         // Test cases on this page and what happens to them now.
         specs: plan.specs.filter((s) => s.pages.includes(key) || s.action === 'explore'),
         summary: plan.summary,
+      });
+    }
+
+    // Revalidates the plan's pages without an agent: one headless snapshot per page, taken now, checked against the saved locators.
+    // A page that cannot be proven this way (redirected, needs an interaction, a locator not found) is left untouched for the explorer.
+    case 'explore snapshot': {
+      const r = run(root, rest[0]);
+      const config = configOf(r);
+      const baseUrl = config.app.baseUrl;
+      const first = currentPlan(r, false);
+      if (!first.plan) return notReady({ ok: false, issues: first.issues });
+      const todo = first.plan.pagesToRevalidate;
+      if (todo.length === 0) return ok({ ok: true, pages: [], note: 'no saved page needs a snapshot', summary: first.plan.summary, explorerNeeded: first.plan.summary.explore > 0 });
+
+      // Saved login state is used only when auth-state.ts says it is good; otherwise the page is opened logged out, and a redirect to the
+      // login page is caught by the landed-on check instead of being compared.
+      const auth = inspectAuthState(root, config);
+      const stateFile = auth.decision === 'reuse' ? statePath(root) : null;
+      const snapshotsAbs = path.join(r.dir, SNAPSHOT_DIR);
+      mkdirSync(snapshotsAbs, { recursive: true });
+      const toolPath = path.join(import.meta.dirname, '..', 'tools', 'aria-snapshot.ts');
+      const needed = new Map(todo.map((p) => [p.key, p.locators]));
+      const outcomes = new Map<string, PageOutcome>();
+      let pending = todo.map((p) => ({ key: p.key, url: p.url }));
+      let unavailable: string | null = null;
+
+      for (const settleMs of SNAPSHOT_SETTLE_MS) {
+        if (pending.length === 0 || unavailable) break;
+        const jobsFile = path.join(snapshotsAbs, 'jobs.json');
+        writeJsonAtomic(jobsFile, buildJobs(pending, baseUrl, (k) => path.join(snapshotsAbs, snapshotName(k))));
+        const ran = runSupervised(process.execPath, [toolPath, '--batch', jobsFile, '--framework', root, '--settle-ms', String(settleMs), ...(stateFile ? ['--storage-state', stateFile] : [])], {
+          cwd: root, timeoutMs: Math.min(300_000, 60_000 + pending.length * 20_000), ledgerDir: r.dir, role: 'explore:snapshot',
+        });
+        let results: SnapshotResult[] | null = null;
+        try { results = (JSON.parse(ran.stdout) as { results?: SnapshotResult[] }).results ?? null; } catch { /* reported below */ }
+        if (!results) {
+          unavailable = ran.error?.message ?? (ran.stderr.trim().split('\n')[0] || `the snapshot tool exited with ${ran.status}`);
+          break;
+        }
+        const retry: typeof pending = [];
+        for (const res of results) {
+          const { judgement, file } = commitSnapshot(r, baseUrl, res.key, needed.get(res.key) ?? [], res);
+          if (judgement.commit) {
+            outcomes.set(res.key, { page: res.key, outcome: 'revalidated', snapshot: file, presentElements: Object.keys(judgement.checks).length });
+          } else if (judgement.retry && settleMs === SNAPSHOT_SETTLE_MS[0]) {
+            retry.push(pending.find((p) => p.key === res.key)!);
+          } else {
+            outcomes.set(res.key, { page: res.key, outcome: 'left-for-explorer', snapshot: file, reason: judgement.reason });
+          }
+        }
+        pending = retry;
+      }
+      for (const p of pending) outcomes.set(p.key, { page: p.key, outcome: 'left-for-explorer', snapshot: null, reason: unavailable ?? 'no snapshot was taken' });
+
+      const plan = currentPlan(r, false).plan!;
+      return ok({
+        ok: true, pages: todo.map((p) => outcomes.get(p.key)!), summary: plan.summary,
+        ...(unavailable ? { unavailable: `the deterministic snapshot could not run (${unavailable}); the explorer takes these snapshots instead` } : {}),
+        auth: { approach: auth.approach, used: stateFile !== null, status: auth.status },
+        explorerNeeded: plan.specs.some((s) => s.action === 'explore' || s.action === 'revalidate'),
+        pagesLeft: plan.pagesToRevalidate.map((p) => p.key),
       });
     }
 
@@ -864,6 +994,8 @@ export function stageCommand(root: string, group: string, action: string | undef
       const cleanup = sweepRun(root, r.runId, 'run finalize') ?? { trigger: 'run finalize', stopped: 0, sessions: [], stillRunning: [] };
       // The same for test data: a last sweep, and the list of what is still there (informational: it never blocks finalization).
       const data = sweepDataSafely(root, r.runId, savedConfig(root), { trigger: 'run finalize' });
+      // The last chance to record how this run ended in the test ledger (derived data: never blocks finalization either).
+      updateLedgerAfterStage(root, r.runId, 'report_generation', 'completed');
       return ok({ ok: true, counts: summary?.counts ?? null, pruned, summary: summary ? toPosixRelative(path.dirname(root), path.join(r.dir, ARTIFACTS.summaryMarkdown)) : null, metrics, cleanup, ...(data ? { data } : {}) });
     }
 
@@ -953,6 +1085,59 @@ export function stageCommand(root: string, group: string, action: string | undef
       if (read.status !== 'ok') return ok({ ok: true, ...read });
       const { payload: _payload, ...meta } = read.entry;
       return ok({ ok: true, status: 'ok', entry: meta });
+    }
+
+    // What the test ledger says each test case needs this run, before any stage runs. A preview built from the same deciders the
+    // stages use (nothing is reused because of it); it tells the orchestrator how much exploration, generation and review is ahead.
+    case 'ledger plan': {
+      const r = run(root, rest[0]);
+      const { specs, issues } = validatedSpecs(r);
+      if (!specs) return notReady({ ok: false, issues });
+      const config = configOf(r);
+      const baseUrl = config.app.baseUrl;
+      const plan = previewReuse({ rootDir: root, specs, config, baseUrl, store: loadStore(root, baseUrl), ledger: loadLedger(root, baseUrl), now: new Date().toISOString() });
+      writeInRun(r, ARTIFACTS.ledgerPlan, plan);
+      const MAX_LISTED = 40;
+      const work = plan.tests.filter((t) => t.verdict !== 'unchanged');
+      return ok({
+        ok: true, artifact: ARTIFACTS.ledgerPlan, ledger: plan.ledger, summary: plan.summary, work: plan.work, causes: plan.causes,
+        unchanged: plan.tests.filter((t) => t.verdict === 'unchanged').map((t) => t.testId),
+        needWork: work.slice(0, MAX_LISTED).map((t) => ({
+          testId: t.testId, verdict: t.verdict, why: t.why, builtWith: t.builtWith?.pluginVersion ?? null, lastOutcome: t.lastExecution?.outcome ?? null,
+        })),
+        omitted: Math.max(0, work.length - MAX_LISTED),
+      });
+    }
+
+    case 'ledger update': {
+      const r = run(root, rest[0]);
+      return ok({ ok: true, ...recordLedger(r) });
+    }
+
+    // The ledger as it stands: every automated test with where its evidence, test file and last execution are.
+    case 'ledger show': {
+      const baseUrl = rest[0] ? configOf(run(root, rest[0])).app.baseUrl : savedConfig(root)?.app.baseUrl;
+      if (!baseUrl) throw new UsageError('ledger show <runId> (or save the configuration first)');
+      const state = loadLedger(root, baseUrl);
+      if (state.status !== 'ok') return ok({ ok: true, status: state.status, reason: state.reason });
+      const l = state.ledger;
+      const one = v['test-id']?.[0];
+      if (one) {
+        const t = l.tests[one];
+        return t ? ok({ ok: true, test: t }) : notReady({ ok: false, issues: [`${one} is not in the ledger`] });
+      }
+      const MAX_LISTED = 100;
+      const all = Object.values(l.tests).sort((a, b) => a.testId.localeCompare(b.testId, undefined, { numeric: true }));
+      return ok({
+        ok: true, status: 'ok', origin: l.origin, updatedAt: l.updatedAt, engine: l.engine, tests: all.length,
+        listed: all.slice(0, MAX_LISTED).map((t) => ({
+          testId: t.testId, title: t.title, module: t.module, file: t.generated?.file ?? null, explored: t.exploration?.runId ?? null,
+          pages: t.exploration?.pages.length ?? 0, sealed: t.generated?.runId ?? null, built: t.generated?.pluginVersion ?? null,
+          lastOutcome: t.lastExecution?.outcome ?? null, lastRun: t.lastExecution?.runId ?? null, lastPassedRun: t.lastPassed?.runId ?? null,
+        })),
+        omitted: Math.max(0, all.length - MAX_LISTED),
+        pages: pageIndex(l),
+      });
     }
 
     default:

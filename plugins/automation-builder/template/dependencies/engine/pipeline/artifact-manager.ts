@@ -43,6 +43,7 @@ export const ARTIFACTS = {
   summary: 'summary.json',
   summaryMarkdown: 'summary.md',
   metrics: 'metrics.json', // derived from the manifest + artifacts; safe to regenerate
+  ledgerPlan: 'ledger-plan.json', // what the test ledger says each test needs this run (a preview; the stages still decide), see test-ledger.ts
   cacheDecisions: 'cache-decisions.json', // every reuse/rebuild decision of this run, with reasons
   agentUsage: 'agents.json', // which stages needed an agent, which ran deterministically, recorded invocations
   briefsDir: 'briefs', // bounded structured inputs handed to stage agents
