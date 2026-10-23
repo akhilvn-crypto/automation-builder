@@ -234,14 +234,3 @@ are left alone.
 Projects scaffolded by 0.2.x (everything inside `automation/`) are migrated by `/automation-builder:init`: it shows a dry run,
 and moves files only after you confirm. 0.1.x projects (scaffolded at the project root) are left untouched with a warning; move
 `config/`, `tests/` and `input/` by hand if you want to keep them.
-
-## More
-
-- Plugin internals, layout rules and the template: [plugins/automation-builder/README.md](plugins/automation-builder/README.md)
-- After `init`: `dependencies/docs/` holds the test-spec schema, examples and `pipeline-efficiency.md`.
-
-## Releasing a new version
-
-Run `node --test plugins/automation-builder/tests/init.test.mjs`, then scaffold with `--with-pipeline-tests` and run
-`npm run validate` in `dependencies/`. Bump `version` in both `plugins/automation-builder/.claude-plugin/plugin.json` and
-`.claude-plugin/marketplace.json`, run `claude plugin validate .`, then push.
